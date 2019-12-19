@@ -310,8 +310,6 @@ var
   pt: TPoint;
 begin
   inherited MouseEnter;
-  if Self.Name.StartsWith('Cal') then
-    Invalidate;
   pt := ScreenToControl(Mouse.CursorPos);
   MouseMove([], pt.x, pt.y);
 end;

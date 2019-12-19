@@ -66,7 +66,7 @@ type
   TCSSFlexWrap = (cfwNoWrap, cfwWrap, cfwWrapReverse);  // https://developer.mozilla.org/en-US/docs/Web/CSS/flex-wrap
   TCSSFlexDirection = (cfdRow, cfdColumn, cfdColumnReverse); // https://developer.mozilla.org/en-US/docs/Web/CSS/flex-direction
   TCSSPosition = (cpStatic, cpRelative, cpAbsolute, cpFixed, cpSticky); // https://developer.mozilla.org/en-US/docs/Web/CSS/position
-
+  TCSSAlignItems = (caiStretch, caiBaseline, caiCenter, caiFlexStart, caiFlexEnd);  // https://developer.mozilla.org/en-US/docs/Web/CSS/CSS_Flexible_Box_Layout/Aligning_Items_in_a_Flex_Container
 
   {$ifndef fpc}
   TStringArray = array of String;
@@ -156,6 +156,8 @@ type
   TCSSItem = class(TPersistent)
   public
     Attributes: String;
+    AlignSelf,
+    AlignItems: TCSSAlignItems;
     Background: TCSSBackground;
     Color: TCSSColor;
     Cursor: TCursor;
@@ -291,7 +293,7 @@ type
       TargetHeight: Integer; out NewWidth, NewHeight: Integer);
     procedure LayoutDoFlexAlign(AParentNode: THtmlNode; AList: TList; AWidth,
       AHeight: Integer);
-    procedure LayoutDoVerticalAlign(AList: TList);
+    procedure LayoutDoVerticalAlign(AList: TList; ClearList: Boolean = True);
     procedure LayoutGetNodeSize(ANode: THtmlNode; ParentWidth,
       ParentHeight: Integer; InFlex: Boolean = False);
     procedure SetHovered(AValue: Boolean);
@@ -587,6 +589,17 @@ begin
     'r': Result := ctaRight;    // righ
     'c': Result := ctaCenter;   // center
     'j': Result := ctaJustify;  // justify
+  end;
+end;
+
+function CSSToAlignItems(AValue: String): TCSSAlignItems;
+begin
+  if AValue = '' then Exit(caiStretch);
+  case AValue[1] of
+    'f': if AValue = 'flex-start' then Result := caiFlexStart else Result := caiFlexEnd;
+    'c': Result := caiCenter; // center
+    's': Result := caiStretch; // stretch
+    'b': Result := caiBaseline; // baseline
   end;
 end;
 
@@ -1361,6 +1374,12 @@ procedure TCSSItem.AddParsedProperty(AName: String; AValue: String);
 begin
   if AValue = '' then Exit;
   case AName[1] of
+    'a':
+      if AName = 'align-items' then
+        AlignItems := CSSToAlignItems(AValue)
+      else
+      if AName = 'align-self' then
+        AlignSelf := CSSToAlignItems(AValue);
     'b':
       if AName = 'border-top' then
         Border[csTop] := CSSToBorder(AValue)
@@ -1465,6 +1484,7 @@ begin
   if Source = Nil then Exit;
 	if Source is TCSSItem then begin
 		Src := TCSSItem(Source);
+    AlignItems := Src.AlignItems;
     Background := Src.Background;
     Color := Src.Color;
     Cursor := Src.Cursor;
@@ -2025,7 +2045,7 @@ end;
   https://developer.mozilla.org/en-US/docs/Web/CSS/vertical-align
   TODO: Add support for various vertical-align
 *)
-procedure THtmlNode.LayoutDoVerticalAlign(AList: TList);
+procedure THtmlNode.LayoutDoVerticalAlign(AList: TList; ClearList: Boolean = True);
 var
   Dif,
   mI: Integer;
@@ -2049,7 +2069,7 @@ begin
       Inc(Item.FCompSize.MarginRect.Bottom, Dif);
     end;
   end;
-  AList.Clear;
+  if ClearList then AList.Clear;
 end;
 
 procedure THtmlNode.LayoutGetNodeSize(ANode: THtmlNode; ParentWidth, ParentHeight: Integer; InFlex: Boolean = False);
@@ -2129,8 +2149,6 @@ begin
   if ANode.FChildCount > 0 then begin
     if (cs.Display in [cdtBlock, cdtFlex]) and (cW = -1) {and (not InFlex)} then
       cW := ParentWidth;
-//      LayoutCalcPosition(ANode.FFirstChild, TargetWidth, cH, childWidth, childHeight)
-//    else
     LayoutCalcPosition(ANode.FFirstChild, cW, cH, childWidth, childHeight);
     if cW = -1 then cW := childWidth;
     if cH = -1 then cH := childHeight;
@@ -2156,6 +2174,7 @@ var
   I: Integer;
   Node: THtmlNode;
   UsedSpace,
+  MaxBaseline,
   MaxSize: Integer; // width or height
 begin
   // only one row is supported now
@@ -2171,17 +2190,19 @@ begin
      SumFlexGrow := SumFlexGrow + Node.CompStyle.FlexGrow;
      Inc(CountFlexGrow);
    end;
-   Inc(UsedSpace, Node.CompSize.ContentWidth);
+   Inc(UsedSpace, Node.CompSize.ContentWidth + Node.CompSize.Margin.Left + Node.CompSize.Margin.Right);
   end;
 
   // calculate max size (height only just now) and make second iteration for nodes layout
   MaxSize := 0;
+  MaxBaseline := 0;
   for I := 0 to AList.Count -1 do begin
     Node := THtmlNode(AList.Items[I]);
     if Node.CompStyle.Position <> cpAbsolute then begin
       if Node.CompStyle.FlexGrow > 0 then
-        LayoutGetNodeSize(Node, Node.CompSize.ContentWidth +  Round(((AWidth - UsedSpace) / SumFlexGrow) * Node.CompStyle.FlexGrow), AHeight, True);
+        LayoutGetNodeSize(Node, Node.CompSize.ContentWidth + Node.CompSize.Margin.Left + Node.CompSize.Margin.Right +  Round(((AWidth - UsedSpace) / SumFlexGrow) * Node.CompStyle.FlexGrow), AHeight, True);
       MaxSize := Math.Max(MaxSize, Node.CompSize.ContentHeight + Node.CompSize.Margin.Top + Node.CompSize.Margin.Bottom);
+      if Node.CompStyle.Position <> cpAbsolute then  MaxBaseLine := Max(MaxBaseLine, Node.FCompSize.MarginRect.Bottom -  Node.FCompSize.BaseLine - Node.FCompSize.Position.Top);
     end;
   end;
 
@@ -2199,20 +2220,34 @@ begin
       );
     end else
     begin
-      if Node.CompStyle.FlexGrow > 0 then
-        NewWidth := Math.Max(Node.CompSize.ContentWidth, Node.CompSize.ContentWidth +  Round(((AWidth - UsedSpace) / SumFlexGrow) * Node.CompStyle.FlexGrow))
-      else
-        NewWidth := Node.CompSize.ContentWidth;
-      NewHeight := MaxSize;
-      Node.CompSize.MarginRect := Rect(X, Y,  X + NewWidth, Y + NewHeight);
       // TODO: fine align node due ROUND
-      Node.CompSize.ContentRect := Rect(Node.CompSize.MarginRect.Left + Node.CompSize.Margin.Left, Node.CompSize.MarginRect.Top + Node.CompSize.Margin.Top,
-        Node.CompSize.MarginRect.Right - Node.CompSize.Margin.Right, Node.CompSize.MarginRect.Bottom - Node.CompSize.Margin.Bottom
-      );
+      if Node.CompStyle.FlexGrow > 0 then
+        NewWidth := Math.Max(Node.CompSize.ContentWidth, Node.CompSize.ContentWidth + Node.CompSize.Margin.Left + Node.CompSize.Margin.Right +  Round(((AWidth - UsedSpace) / SumFlexGrow) * Node.CompStyle.FlexGrow))
+      else
+        NewWidth := Node.CompSize.ContentWidth + Node.CompSize.Margin.Left + Node.CompSize.Margin.Right;
+      if AParentNode.CompStyle.AlignItems = caiStretch then begin
+        NewHeight := MaxSize;
+        Node.CompSize.MarginRect := Rect(X, Y,  X + NewWidth, Y + NewHeight);
+        Node.CompSize.ContentRect := Rect(Node.CompSize.MarginRect.Left + Node.CompSize.Margin.Left, Node.CompSize.MarginRect.Top + Node.CompSize.Margin.Top,
+          Node.CompSize.MarginRect.Right - Node.CompSize.Margin.Right, Node.CompSize.MarginRect.Bottom - Node.CompSize.Margin.Bottom
+        );
+      end
+      else begin // baseline now
+        Node.CompSize.MarginRect := Rect(X, Y,  X + NewWidth, Y + Node.CompSize.Margin.Top + Node.CompSize.ContentHeight + Node.CompSize.Margin.Bottom);
+        Node.CompSize.ContentRect := Rect(Node.CompSize.MarginRect.Left + Node.CompSize.Margin.Left, Node.CompSize.MarginRect.Top + Node.CompSize.Margin.Top ,
+          Node.CompSize.MarginRect.Right - Node.CompSize.Margin.Right, Node.CompSize.MarginRect.Bottom - Node.CompSize.Margin.Bottom
+        );
+      end;
       Inc(X, Node.CompSize.MarginRect.Width);
     end;
   end;
-  AParentNode.CompSize.ContentWidth := x;
+  if AParentNode.CompStyle.AlignItems = caiBaseline then begin
+    LayoutDoVerticalAlign(AList, False);
+    MaxSize := 0;
+    for I := 0 to AList.Count -1 do
+      MaxSize := Math.Max(MaxSize, THtmlNode(AList.Items[I]).CompSize.MarginRect.Bottom);
+  end;
+  AParentNode.CompSize.ContentWidth := x;             // set new size for parent node
   AParentNode.CompSize.ContentHeight := Y + MaxSize;
 end;
 
@@ -2223,7 +2258,6 @@ var
   IterationCounter: Integer;
   NeedIteration: Boolean;
   PrefWidth, PrefHeight,
-  nW, nH: Integer;  //new width new height
   Dx, Dy: Integer;
   LeftOffset,
   RightOffset: TPoint; // offsets for float:left and float:right
@@ -2234,24 +2268,21 @@ var
   GapList: TList;
   ParentIsFlex: Boolean;
 begin
+  ForNode := ANode;   // backup node
   ParentIsFlex := (ANode.ParentNode <> nil) and (ANode.ParentNode.FCompStyle.Display = cdtFlex);
   if ParentIsFlex then begin // display mode flex
     INode := ANode;
     GapList := TList.Create;
     while Assigned(INode) do begin
-
-//      LayoutGetNodeSize(INode, TargetWidth, TargetHeight, True);
       GapList.Add(INode);
       INode := INode.GetNext(INode);
     end;
-    LayoutDoFlexAlign(ANode, GapList, TargetWidth, {ANode.CompSize.ContentRect.Height} TargetHeight);
+    LayoutDoFlexAlign(ANode.ParentNode, GapList, TargetWidth, TargetHeight);
     GapList.Free;
-    NewWidth := ANode.CompSize.ContentWidth;
-    NewHeight := ANode.CompSize.ContentHeight;
+    NewWidth := ANode.ParentNode.CompSize.ContentWidth;
+    NewHeight := ANode.ParentNode.CompSize.ContentHeight;
     Exit;
   end;
-
-  ForNode := ANode;   // backup node
 
   GapList := TList.Create;
   IterationCounter := 0;
