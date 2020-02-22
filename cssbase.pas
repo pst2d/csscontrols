@@ -18,6 +18,7 @@
   - delphi support
 
   History:
+  2020.02.22 - baseline align fix, added: display:inline-flex; basic owerflow support
   2019.12.18 - fixed layout, code reorganization
   2019.12.07 - added basic display:flex support, added position (absolute,relative,static) support, fixed bugs
   2019.12.03 - added support for border and border-radius, fixed vertical-align for baseline
@@ -67,6 +68,7 @@ type
   TCSSFlexDirection = (cfdRow, cfdColumn, cfdColumnReverse); // https://developer.mozilla.org/en-US/docs/Web/CSS/flex-direction
   TCSSPosition = (cpStatic, cpRelative, cpAbsolute, cpFixed, cpSticky); // https://developer.mozilla.org/en-US/docs/Web/CSS/position
   TCSSAlignItems = (caiStretch, caiBaseline, caiCenter, caiFlexStart, caiFlexEnd);  // https://developer.mozilla.org/en-US/docs/Web/CSS/CSS_Flexible_Box_Layout/Aligning_Items_in_a_Flex_Container
+  TCSSOverflowType = (cotVisible, cotHidden, cotScroll, cotAuto);          // https://developer.mozilla.org/en-US/docs/Web/CSS/overflow
 
   {$ifndef fpc}
   TStringArray = array of String;
@@ -172,6 +174,7 @@ type
     Margin: array[TCSSSide] of TCSSLength;
     Padding: array[TCSSSide] of TCSSLength;
     Order: TCSSInteger; // default 0
+    Overflow: TCSSOverflowType;
     Position: TCSSPosition;
     RadiusTopLeft,
     RadiusTopRight,
@@ -187,7 +190,7 @@ type
     destructor Destroy; override;
     procedure Reset;
     procedure Parse(const AValue: String);
-    procedure ParseFormStyleSheet(AStyleSheet: TCSSStyleSheet; const APropertyName: String);
+    procedure ParseFromStyleSheet(AStyleSheet: TCSSStyleSheet; const APropertyName: String);
     procedure AddProperty(AName: String; AValue: String);
     procedure AddParsedProperty(AName: String; AValue: String);
     procedure Assign(Source: TPersistent); override;
@@ -293,7 +296,7 @@ type
       TargetHeight: Integer; out NewWidth, NewHeight: Integer);
     procedure LayoutDoFlexAlign(AParentNode: THtmlNode; AList: TList; AWidth,
       AHeight: Integer);
-    procedure LayoutDoVerticalAlign(AList: TList; ClearList: Boolean = True);
+    function LayoutDoVerticalAlign(AList: TList; ClearList: Boolean = True): Integer;
     procedure LayoutGetNodeSize(ANode: THtmlNode; ParentWidth,
       ParentHeight: Integer; InFlex: Boolean = False);
     procedure SetHovered(AValue: Boolean);
@@ -600,6 +603,17 @@ begin
     'c': Result := caiCenter; // center
     's': Result := caiStretch; // stretch
     'b': Result := caiBaseline; // baseline
+  end;
+end;
+
+function CSSToOverflowType(AValue: String): TCSSOverflowType;
+begin
+  if AValue = '' then Exit(cotVisible);
+  case AValue[1] of
+    'v': Result := cotVisible; // visible
+    'h': Result := cotHidden; // hidden
+    'a': Result := cotAuto; // auto
+    's': Result := cotScroll; // scroll
   end;
 end;
 
@@ -1295,7 +1309,7 @@ begin
   PropertyList.Free;
 end;
 
-procedure TCSSItem.ParseFormStyleSheet(AStyleSheet: TCSSStyleSheet; const APropertyName: String);
+procedure TCSSItem.ParseFromStyleSheet(AStyleSheet: TCSSStyleSheet; const APropertyName: String);
 var
   cs: TCSSItem;
 begin
@@ -1443,6 +1457,9 @@ begin
       else
       if AName = 'margin-right' then
         Margin[csRight] := CSSToLength(AValue);
+    'o':
+      if AName = 'overflow' then
+        Overflow := CSSToOverflowType(AValue);
     'p':
       if AName = 'padding-left' then
         Padding[csLeft] := CSSToLength(AValue)
@@ -1853,7 +1870,7 @@ begin
       FCompSize.MarginRect.Top + FCompSize.TopSpace,
       FCompSize.MarginRect.Right - FCompSize.RightSpace,
       FCompSize.MarginRect.Bottom - FCompSize.BottomSpace);
-    Flags := DT_LEFT or  DT_NOPREFIX ;
+    Flags := DT_LEFT or  DT_NOPREFIX or DT_END_ELLIPSIS ;
     case CompStyle.TextAlign of
       ctaCenter: Flags := Flags or DT_CENTER;
       ctaRight: Flags := Flags or DT_RIGHT;
@@ -1903,9 +1920,9 @@ begin
       b.Canvas.Font.Size := Round(FCompStyle.Font.Size.Value);
       b.Canvas.Font.Style := FCompStyle.Font.Weight.Value;
       ts := b.Canvas.TextExtent(Text);
-      FCachedFont.CachedWidth := ts.Width;
+      FCachedFont.CachedWidth := ts.Width + 1; // to prevent "bold" size bug
       FCachedFont.CachedHeight := ts.Height;
-      FCachedFont.CachedBaseLine := Round(ts.Height/5); //TODO: get real baseline from font
+      FCachedFont.CachedBaseLine := Round(ts.Height/5); // TODO: get real baseline from font
       FCachedFont.Size.Value := FCompStyle.Font.Size.Value;
       FCachedFont.Weight.Value := FCompStyle.Font.Weight.Value;
       FCachedFont.CachedText := Text;
@@ -1998,13 +2015,13 @@ begin
   if Assigned(sh) then begin // if we have defined StyleSheet
     for I := 0 to ANode.ClassList.Count -1 do begin
       s := '.' + ANode.ClassList.Item[I];
-      ANode.FCompStyle.ParseFormStyleSheet(sh, s);
-      if ANode.FPrevSibling = nil then ANode.FCompStyle.ParseFormStyleSheet(sh, s+':first-child');
-      if ANode.FNextSibling = nil then ANode.FCompStyle.ParseFormStyleSheet(sh, s+':last-child');
+      ANode.FCompStyle.ParseFromStyleSheet(sh, s);
+      if ANode.FPrevSibling = nil then ANode.FCompStyle.ParseFromStyleSheet(sh, s+':first-child');
+      if ANode.FNextSibling = nil then ANode.FCompStyle.ParseFromStyleSheet(sh, s+':last-child');
       if ANode.Hovered then begin
-        ANode.FCompStyle.ParseFormStyleSheet(sh, s+':hover');
-        if ANode.FPrevSibling = nil then ANode.FCompStyle.ParseFormStyleSheet(sh, s+':first-child:hover');
-        if ANode.FNextSibling = nil then ANode.FCompStyle.ParseFormStyleSheet(sh, s+':last-child:hover');
+        ANode.FCompStyle.ParseFromStyleSheet(sh, s+':hover');
+        if ANode.FPrevSibling = nil then ANode.FCompStyle.ParseFromStyleSheet(sh, s+':first-child:hover');
+        if ANode.FNextSibling = nil then ANode.FCompStyle.ParseFromStyleSheet(sh, s+':last-child:hover');
       end;
     end;
   end;
@@ -2041,22 +2058,29 @@ end;
 
 
 (*
-  Align all nodes on same line based on base line
+  Align all nodes on same line based on base line and return max bottom
   https://developer.mozilla.org/en-US/docs/Web/CSS/vertical-align
   TODO: Add support for various vertical-align
 *)
-procedure THtmlNode.LayoutDoVerticalAlign(AList: TList; ClearList: Boolean = True);
+function THtmlNode.LayoutDoVerticalAlign(AList: TList; ClearList: Boolean = True): Integer;
 var
   Dif,
   mI: Integer;
   Item: THtmlNode;
+  MinMargin,
   MaxBaseLine: Integer;
 begin
   MaxBaseLine := 0;
+  Result := 0;
+  MinMargin := MaxInt;
   for mI := 0 to AList.Count-1 do begin
     Item := THtmlNode(AList.Items[mI]);
-    if Item.CompStyle.Position <> cpAbsolute then  MaxBaseLine := Max(MaxBaseLine, Item.FCompSize.MarginRect.Bottom -  Item.FCompSize.BaseLine - Item.FCompSize.Position.Top);
+    if Item.CompStyle.Position <> cpAbsolute then  begin
+      MaxBaseLine := Max(MaxBaseLine, Item.FCompSize.MarginRect.Bottom -  Item.FCompSize.BaseLine - Item.FCompSize.Position.Top);
+      MinMargin := Math.Min(MinMargin, Item.CompSize.MarginRect.Top);
+    end;
   end;
+  if MinMargin = MaxInt then MinMargin := 0;;
   for mI := 0 to AList.Count-1 do begin                 // realign top and bottom of all controls
     Item := THtmlNode(AList.Items[mI]);
 
@@ -2068,6 +2092,7 @@ begin
       Inc(Item.FCompSize.MarginRect.Top, Dif);
       Inc(Item.FCompSize.MarginRect.Bottom, Dif);
     end;
+    Result := Math.Max(Result, Item.CompSize.MarginRect.Bottom - MinMargin);
   end;
   if ClearList then AList.Clear;
 end;
@@ -2080,6 +2105,7 @@ var
   R: TRect;
   cs: TCSSItem;
 begin
+
   cs := ANode.FCompStyle;
   if (ANode.FCompStyle.Font.Weight.FontType = cfwBold) then
     ANode.FCompStyle.Font.Weight.Value := [fsBold] else
@@ -2150,6 +2176,7 @@ begin
     if (cs.Display in [cdtBlock, cdtFlex]) and (cW = -1) {and (not InFlex)} then
       cW := ParentWidth;
     LayoutCalcPosition(ANode.FFirstChild, cW, cH, childWidth, childHeight);
+    if InFlex then cW := -1;
     if cW = -1 then cW := childWidth;
     if cH = -1 then cH := childHeight;
     cB := cH - ANode.FLastNode.CompSize.MarginRect.Bottom + ANode.FLastNode.CompSize.BaseLine + ANode.CompSize.BottomSpace; // TODO: not LastNode, but bottom right position node
@@ -2162,6 +2189,7 @@ begin
   ANode.FCompSize.BaseLine := cB;
   ANode.FCompSize.ContentWidth := cW;
   ANode.FCompSize.ContentHeight := cH;
+
 end;
 
 
@@ -2184,6 +2212,7 @@ begin
   // calculate used space and try to get sizes
   for I := 0 to AList.Count -1 do begin
    Node := THtmlNode(AList.Items[I]);
+
    LayoutGetNodeSize(Node, AWidth,  AHeight, True);
    if Node.CompStyle.Position = cpAbsolute then Continue;      // skip nodes with absolute position
    if Node.CompStyle.FlexGrow > 0 then begin
@@ -2200,7 +2229,7 @@ begin
     Node := THtmlNode(AList.Items[I]);
     if Node.CompStyle.Position <> cpAbsolute then begin
       if Node.CompStyle.FlexGrow > 0 then
-        LayoutGetNodeSize(Node, Node.CompSize.ContentWidth + Node.CompSize.Margin.Left + Node.CompSize.Margin.Right +  Round(((AWidth - UsedSpace) / SumFlexGrow) * Node.CompStyle.FlexGrow), AHeight, True);
+        LayoutGetNodeSize(Node, Node.CompSize.ContentWidth - Node.CompSize.Padding.Right - Node.CompSize.Padding.Left - Node.CompSize.Border.Left - Node.CompSize.Border.Right { + Node.CompSize.Margin.Left + Node.CompSize.Margin.Right } +  Round(((AWidth - UsedSpace) / SumFlexGrow) * Node.CompStyle.FlexGrow), AHeight, True);
       MaxSize := Math.Max(MaxSize, Node.CompSize.ContentHeight + Node.CompSize.Margin.Top + Node.CompSize.Margin.Bottom);
       if Node.CompStyle.Position <> cpAbsolute then  MaxBaseLine := Max(MaxBaseLine, Node.FCompSize.MarginRect.Bottom -  Node.FCompSize.BaseLine - Node.FCompSize.Position.Top);
     end;
@@ -2221,8 +2250,9 @@ begin
     end else
     begin
       // TODO: fine align node due ROUND
-      if Node.CompStyle.FlexGrow > 0 then
-        NewWidth := Math.Max(Node.CompSize.ContentWidth, Node.CompSize.ContentWidth + Node.CompSize.Margin.Left + Node.CompSize.Margin.Right +  Round(((AWidth - UsedSpace) / SumFlexGrow) * Node.CompStyle.FlexGrow))
+      if Node.CompStyle.FlexGrow > 0 then begin
+        NewWidth := Math.Max(Node.CompSize.ContentWidth , Node.CompSize.ContentWidth + Node.CompSize.Margin.Left + Node.CompSize.Margin.Right +  Round(((AWidth - UsedSpace) / SumFlexGrow) * Node.CompStyle.FlexGrow));
+      end
       else
         NewWidth := Node.CompSize.ContentWidth + Node.CompSize.Margin.Left + Node.CompSize.Margin.Right;
       if AParentNode.CompStyle.AlignItems = caiStretch then begin
@@ -2232,7 +2262,7 @@ begin
           Node.CompSize.MarginRect.Right - Node.CompSize.Margin.Right, Node.CompSize.MarginRect.Bottom - Node.CompSize.Margin.Bottom
         );
       end
-      else begin // baseline now
+      else begin // baseline
         Node.CompSize.MarginRect := Rect(X, Y,  X + NewWidth, Y + Node.CompSize.Margin.Top + Node.CompSize.ContentHeight + Node.CompSize.Margin.Bottom);
         Node.CompSize.ContentRect := Rect(Node.CompSize.MarginRect.Left + Node.CompSize.Margin.Left, Node.CompSize.MarginRect.Top + Node.CompSize.Margin.Top ,
           Node.CompSize.MarginRect.Right - Node.CompSize.Margin.Right, Node.CompSize.MarginRect.Bottom - Node.CompSize.Margin.Bottom
@@ -2242,10 +2272,11 @@ begin
     end;
   end;
   if AParentNode.CompStyle.AlignItems = caiBaseline then begin
-    LayoutDoVerticalAlign(AList, False);
-    MaxSize := 0;
+    MaxSize := LayoutDoVerticalAlign(AList, False);
+{    MaxSize := 0;
     for I := 0 to AList.Count -1 do
       MaxSize := Math.Max(MaxSize, THtmlNode(AList.Items[I]).CompSize.MarginRect.Bottom);
+}
   end;
   AParentNode.CompSize.ContentWidth := x;             // set new size for parent node
   AParentNode.CompSize.ContentHeight := Y + MaxSize;
@@ -2269,7 +2300,7 @@ var
   ParentIsFlex: Boolean;
 begin
   ForNode := ANode;   // backup node
-  ParentIsFlex := (ANode.ParentNode <> nil) and (ANode.ParentNode.FCompStyle.Display = cdtFlex);
+  ParentIsFlex := (ANode.ParentNode <> nil) and (ANode.ParentNode.FCompStyle.Display in [cdtFlex, cdtInlineFlex]);
   if ParentIsFlex then begin // display mode flex
     INode := ANode;
     GapList := TList.Create;
@@ -2277,6 +2308,7 @@ begin
       GapList.Add(INode);
       INode := INode.GetNext(INode);
     end;
+
     LayoutDoFlexAlign(ANode.ParentNode, GapList, TargetWidth, TargetHeight);
     GapList.Free;
     NewWidth := ANode.ParentNode.CompSize.ContentWidth;
@@ -2322,17 +2354,16 @@ begin
         if cs.Position = cpAbsolute then
           ContentBounds := Rect(Dx + RealMargin.Left, Dy + RealMargin.Top, Dx + PrefWidth + RealMargin.Left, Dy + PrefHeight + RealMargin.Top)
         else begin
-          if (cs.Display = cdtInline) or (cs.Float in [cftLeft, cftRight]) then begin
+          if (cs.Display in [cdtInline, cdtInlineFlex]) or (cs.Float in [cftLeft, cftRight]) then begin
             if (TargetWidth =-1) or ((Dx + PrefWidth + RealMargin.Left + RealMargin.Right) <= (TargetWidth - RightOffset.x)) then begin
               ContentBounds := Rect(Dx, Dy, Dx + PrefWidth, Dy + PrefHeight);
               RowHeight := Max(PrefHeight + RealMargin.Top + RealMargin.Bottom, RowHeight);
               Inc(Dx, PrefWidth);
             end else begin // there is no space in current "line" move to next
-              LayoutDoVerticalAlign(GapList);
+              RowHeight :=  LayoutDoVerticalAlign(GapList);
               Inc(Dy, RowHeight);
               RowHeight := PrefHeight + RealMargin.Top + RealMargin.Bottom;
-              if Dy > LeftOffset.y then
-                LeftOffset.x := 0;
+              if Dy > LeftOffset.y then  LeftOffset.x := 0;
               Dx := LeftOffset.x;
               ContentBounds := Rect(Dx, Dy, Dx + PrefWidth, Dy + PrefHeight);
               Inc(Dx, PrefWidth);
@@ -2346,7 +2377,6 @@ begin
             LayoutDoVerticalAlign(GapList);
             if (Dx > 0) and (LeftOffset.x = 0) then Inc(Dy, RowHeight);
             Dx := 0 + RealMargin.Left;
-//            if (TargetWidth <> -1) and (ANode.FCompSize.Margin.Left <> MaxInt) then PrefWidth := TargetWidth - RealMargin.Left - RealMargin.Right;
             ContentBounds := Rect(Dx, Dy, Dx + PrefWidth , Dy + PrefHeight); // new bounds  before margins
             RowHeight := 0;
             Inc(Dy, PrefHeight + RealMargin.Top + RealMargin.Bottom);

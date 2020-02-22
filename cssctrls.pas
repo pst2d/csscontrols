@@ -18,8 +18,6 @@ type
 
   TCSSShape = Class(TGraphicControl, ICSSControl)
   private
-    FCachedWidth,
-    FCachedHeight: Integer;       // width and height layoutet
     FMouseDownNode: THtmlNode;
     FOnPaint: TNotifyEvent;
     FBodyNode: THtmlNode;
@@ -151,7 +149,8 @@ begin
   Text := '';
   FIconSize := AHeight;
   AWidth := FIconSize;
-  ABaseLine :=  Round(FIconSize * 0.14);  // https://stackoverflow.com/questions/32781414/what-is-the-baseline-font-height-of-fontawesome-font
+  ABaseLine := Round( AHeight / 5);
+//  ABaseLine :=  Round(FIconSize * 0.14);  // https://stackoverflow.com/questions/32781414/what-is-the-baseline-font-height-of-fontawesome-font
 end;
 
 constructor THTMLFaNode.Create(AInlineStyle: String);
@@ -326,22 +325,27 @@ var
 begin
   if (Parent = nil) or (not Parent.HandleAllocated) then Exit;
   if WidthIsAnchored then AWidth := Width else AWidth := -1;
-  if HeightIsAnchored then AHeight := Height else AHeight := -1;
+  if (HeightIsAnchored) then AHeight := Height else AHeight := -1;
 
   AWidth := Constraints.MinMaxWidth(AWidth);
   AHeight := Constraints.MinMaxHeight(AHeight);
 
-  FCachedWidth := AWidth;
-  FCachedHeight := AHeight;
 
+  if (not AutoSize) then begin // when control is aligned by LCL children sizing
+    AHeight := -1;
+//    AWidth := -1;
+  end;
   if AWidth = 0 then AWidth :=  -1;
   if AHeight = 0 then AHeight :=  -1;
-
+//  Writeln('w:', AWidth, ' h:',AHeight);
   FBodyNode.LayoutTo( 0, 0, AWidth, AHeight, True);
   if AHeight = -1 then AHeight := FBodyNode.CompSize.MarginRect.Height;
   if AWidth = -1 then AWidth := FBodyNode.CompSize.MarginRect.Width;
   if WidthIsAnchored then PreferredWidth := 0 else  PreferredWidth :=  AWidth;
   if HeightIsAnchored then PreferredHeight := 0 else PreferredHeight := AHeight;
+
+  if not AutoSize then PreferredHeight := AHeight;
+//  Writeln('pw:', PreferredWidth, ' ph:', PreferredHeight);
 end;
 
 constructor TCSSShape.Create(AOwner: TComponent);
@@ -381,10 +385,9 @@ begin
   TopChanged := ATop <> Top;
   inherited DoSetBounds(ALeft, ATop, AWidth, AHeight);
   if WidthChanged or HeightChanged or TopChanged or LeftChanged then begin // this is allways TRUE :)
-    InvalidatePreferredSize; // this is called only when autosize is true
-    if not AutoSize then begin
+    InvalidatePreferredSize;
+    if not AutoSize then
       Body.LayoutTo( ALeft, ATop, AWidth, AHeight, True);
-    end;
     AdjustSize;
   end;
 end;
