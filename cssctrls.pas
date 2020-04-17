@@ -18,6 +18,7 @@ type
 
   TCSSShape = Class(TGraphicControl, ICSSControl)
   private
+    FIsChanged: Boolean;
     FMouseDownNode: THtmlNode;
     FOnPaint: TNotifyEvent;
     FBodyNode: THtmlNode;
@@ -41,6 +42,9 @@ type
     destructor Destroy; override;
     procedure Changed;
     procedure DoSetBounds(ALeft, ATop, AWidth, AHeight: integer); override;
+    function NodeMarginToScreen(ANode: THtmlNode): TRect;
+    function NodeMarginToClient(ANode: THtmlNode): TRect;
+
   published
     property Align;
     property AutoSize;
@@ -100,7 +104,7 @@ type
     FA: TFaIcon;
     FIconSize: Integer;
   protected
-    procedure DrawNode(ACanvas: TCanvas); override;
+    procedure DrawNode(ACanvas: TCanvas; AClipRect: TRect); override;
     procedure CalculateSize(out AWidth, AHeight, ABaseLine: Integer); override;
   public
     Icon: String;
@@ -134,9 +138,9 @@ end;
 
 { THTMLFaNode }
 
-procedure THTMLFaNode.DrawNode(ACanvas: TCanvas);
+procedure THTMLFaNode.DrawNode(ACanvas: TCanvas; AClipRect: TRect);
 begin
-  inherited DrawNode(ACanvas);
+  inherited DrawNode(ACanvas, AClipRect);
   ACanvas.Draw(CompSize.ContentRect.Left + CompSize.Border.Left + CompSize.Padding.Left,
     CompSize.ContentRect.Top + CompSize.Border.Top + CompSize.Padding.Top,
     FA.Icon(Icon, FIconSize, CompStyle.Color.Value));
@@ -232,7 +236,11 @@ end;
 
 procedure TCSSShape.Paint;
 begin
-  GetBodyNode.PaintTo(Self.Canvas);
+  if FIsChanged then begin
+    Body.LayoutTo( 0, 0, Width, Height, False);
+    FIsChanged := False;
+  end;
+  Body.PaintTo(Self.Canvas);
   if Assigned(FOnPaint) then FOnPaint(Self);
 end;
 
@@ -320,44 +328,33 @@ end;
 procedure TCSSShape.CalculatePreferredSize(var PreferredWidth,
   PreferredHeight: Integer; WithThemeSpace: Boolean);
 var
-  AHeight,
-  AWidth: Integer;
+  AWidth, AHeight: Integer;
 begin
   if (Parent = nil) or (not Parent.HandleAllocated) then Exit;
   if WidthIsAnchored then AWidth := Width else AWidth := -1;
-  if (HeightIsAnchored) then AHeight := Height else AHeight := -1;
-
+  if HeightIsAnchored then AHeight := Height else AHeight := -1;
+{
+  if WidthIsAnchored then AWidth := Width else AWidth := -1;
+  if HeightIsAnchored then AHeight := Height else AHeight := -1;
   AWidth := Constraints.MinMaxWidth(AWidth);
   AHeight := Constraints.MinMaxHeight(AHeight);
-
-
-  if (not AutoSize) then begin // when control is aligned by LCL children sizing
-    AHeight := -1;
-//    AWidth := -1;
-  end;
   if AWidth = 0 then AWidth :=  -1;
   if AHeight = 0 then AHeight :=  -1;
-//  Writeln('w:', AWidth, ' h:',AHeight);
-  FBodyNode.LayoutTo( 0, 0, AWidth, AHeight, True);
-  if AHeight = -1 then AHeight := FBodyNode.CompSize.MarginRect.Height;
-  if AWidth = -1 then AWidth := FBodyNode.CompSize.MarginRect.Width;
-  if WidthIsAnchored then PreferredWidth := 0 else  PreferredWidth :=  AWidth;
-  if HeightIsAnchored then PreferredHeight := 0 else PreferredHeight := AHeight;
-
-  if not AutoSize then PreferredHeight := AHeight;
-//  Writeln('pw:', PreferredWidth, ' ph:', PreferredHeight);
+  FBodyNode.LayoutTo( 0, 0, -1, -1, False);
+}
+  FBodyNode.LayoutTo( 0, 0, AWidth, AHeight, False);
+  if WidthIsAnchored then PreferredWidth := 0 else PreferredWidth := FBodyNode.CompSize.MarginRect.Width;
+  if HeightIsAnchored then PreferredHeight := 0 else PreferredHeight := FBodyNode.CompSize.MarginRect.Height;
 end;
 
 constructor TCSSShape.Create(AOwner: TComponent);
 begin
   inherited Create(AOwner);
-{  ControlStyle := [csAcceptsControls, csCaptureMouse, csClickEvents,
-    csSetCaption, csDoubleClicks];
-}
   FBodyNode := THtmlNode.Create;
   FBodyNode.Id := 'body';
   FBodyNode.ParentControl := Self;
-  SetBounds(0,0, 150, 150);
+  FIsChanged := True;
+  SetBounds(0,0, 150, 150);  // default size
 end;
 
 destructor TCSSShape.Destroy;
@@ -368,6 +365,7 @@ end;
 
 procedure TCSSShape.Changed;
 begin
+  FIsChanged := True;
   InvalidatePreferredSize;
   AdjustSize;
   Invalidate;
@@ -384,19 +382,36 @@ begin
   LeftChanged := ALeft <> Left;
   TopChanged := ATop <> Top;
   inherited DoSetBounds(ALeft, ATop, AWidth, AHeight);
-  if WidthChanged or HeightChanged or TopChanged or LeftChanged then begin // this is allways TRUE :)
-    InvalidatePreferredSize;
-    if not AutoSize then
-      Body.LayoutTo( ALeft, ATop, AWidth, AHeight, True);
-    AdjustSize;
+  if WidthChanged or HeightChanged { or LeftChanged or TopChanged} then begin // this is allways TRUE :)
+    FIsChanged := True;
+    if AutoSize then begin
+      InvalidatePreferredSize;
+      AdjustSize;
+      FIsChanged := False;
+    end;
   end;
+end;
+
+function TCSSShape.NodeMarginToScreen(ANode: THtmlNode): TRect;
+var
+  P: TPoint;
+begin
+  P := ClientToScreen(Point(ANode.CompSize.MarginRect.Left, ANode.CompSize.MarginRect.Top));
+  Result := Rect(P.x, P.y, P.x + ANode.CompSize.MarginRect.Width, P.y + ANode.CompSize.MarginRect.Height);
+end;
+
+function TCSSShape.NodeMarginToClient(ANode: THtmlNode): TRect;
+var
+  P: TPoint;
+begin
+  P := ClientToParent(Point(ANode.CompSize.MarginRect.Left, ANode.CompSize.MarginRect.Top), TWinControl(Self.GetTopParent));
+  Result := Rect(P.x, P.y, P.x + ANode.CompSize.MarginRect.Width, P.y + ANode.CompSize.MarginRect.Height);
 end;
 
 initialization
 begin
 	FAFont := TFreeTypeFont.Create;
   // TODO: this is not best way!
-
   if FileExists(Application.Location + 'fontawesome-webfont.ttf') then 	FAFont.Name :=  Application.Location + 'fontawesome-webfont.ttf';
 end;
 

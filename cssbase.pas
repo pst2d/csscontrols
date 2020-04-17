@@ -12,12 +12,12 @@
   - em length support
   - float:right, float:left support
   - image background support
-  - overflow support
   - more display:flex support
   - transition support
   - delphi support
 
   History:
+  2020.04.17 - TCSSShape fixes, "0" length fixed
   2020.02.22 - baseline align fix, added: display:inline-flex; basic owerflow support
   2019.12.18 - fixed layout, code reorganization
   2019.12.07 - added basic display:flex support, added position (absolute,relative,static) support, fixed bugs
@@ -31,6 +31,8 @@ unit cssbase;
 {$ifdef fpc}
   {$mode objfpc}{$H+}
   {$modeswitch advancedrecords}
+{$else}
+  {$define delphi}
 {$endif}
 
 interface
@@ -240,8 +242,8 @@ type
   THtmlSize = class(TPersistent)
   public
     Position,
-    ContentRect,
-    MarginRect: TRect;
+    ContentRect,        // MarginRect - Margin
+    MarginRect: TRect;  // Margin rect (whole region)
     BaseLine: Integer;  // px from bottom of MarginRect
     Border,
     Padding,
@@ -252,7 +254,8 @@ type
     function LeftSpace: Integer; inline;
     function RightSpace: Integer; inline;
     function BottomSpace: Integer; inline;
-    function RealContent: Integer; inline;
+    function RealContentWidth: Integer; inline;
+    function RealContentRect: TRect; inline; // ContentRect - Border - Padding
   end;
 
   THtmlNode = class;  // forward declaration
@@ -304,12 +307,12 @@ type
     procedure SetInlineStyle(AValue: String);
     procedure SetStyleValue(AName: String; AValue: String);
   public
-//    Tag: PtrInt;
+    Tag: LongInt;
     TagStr: String;
     RootNode,
     ParentNode: THtmlNode;
   protected
-    procedure DrawNode(ACanvas: TCanvas); virtual;
+    procedure DrawNode(ACanvas: TCanvas; AClipRect: TRect); virtual;
     procedure CalculateSize(out AWidth, AHeight, ABaseLine: Integer);virtual;
   public
     constructor Create(AInlineStyle: String = '');virtual;
@@ -320,6 +323,7 @@ type
     function ApplyStyles: THtmlNode;
     procedure ApplyStyleForNode(ANode: THtmlNode);
     function AddNode(ANode: THtmlNode): THtmlNode;
+    function AppendTo(AParentNode: THtmlNode): THtmlNode;
     function GetNext(ANode: THtmlNode; GoAboveChildren: Boolean = False): THtmlNode;
     function GetElementsByClassName(AName: String): THtmlNodeArray;
     procedure LayoutTo(ALeft, ATop, AWidth, AHeight: Integer; AAlignControls: Boolean = False);
@@ -360,6 +364,7 @@ type
   ICSSControl = interface
     [HTMLInterface]
     function GetBodyNode: THtmlNode;
+    procedure Changed;
   end;
 
   TColorObject = class
@@ -455,10 +460,9 @@ end;
 function HTMLSpan(AInlineStyle: String; AText: String = ''; AId: String = ''): THtmlNode;
 begin
   Result := THtmlNode.Create;
-  Result.InlineStyle := {'display:inline-block;' + } AInlineStyle;
-  Result.Id := AId;
   Result.FElementName := 'span';
-//  if AText= '' then AText := 'xxx';
+  Result.InlineStyle := AInlineStyle;
+  Result.Id := AId;
   Result.Text := AText;
 end;
 
@@ -561,6 +565,13 @@ begin
   SetLength(Result, Count);
 end;
 
+{$ifdef delphi}
+function RGBToColor(R, G, B: Byte): TColor;
+begin
+  Result := (B shl 16) or (G shl 8) or R;
+end;
+{$endif}
+
 function ForceRange(x, xmin, xmax: Integer): Integer;
 begin
   if x < xmin then
@@ -576,7 +587,7 @@ begin
   // TODO: add another values
   if AValue = 'bold' then begin
     Result.FontType := cfwBold;
-    Result.Value := [fsBold];
+    Result.Value := [{$ifdef delphi}TFontStyle.{$endif}fsBold];
   end
   else begin
     Result.FontType := cfwUndefined;
@@ -641,6 +652,10 @@ var
 begin
   if AValue.Contains('px') then begin
     Result.Value := StrToIntDef(StrBefore(AValue, 'px'), 0);
+    Result.LengthType := cltPx;
+  end else
+  if AValue.Equals('0') then begin
+    Result.Value := 0;
     Result.LengthType := cltPx;
   end else
   if AValue.Contains('%') then begin
@@ -1009,9 +1024,17 @@ begin
   Result := Margin.Bottom + Padding.Bottom + Border.Bottom;
 end;
 
-function THtmlSize.RealContent: Integer;
+function THtmlSize.RealContentWidth: Integer;
 begin
   Result := ContentWidth - Padding.Left - Padding.Right - Border.Left - Border.Right;
+end;
+
+function THtmlSize.RealContentRect: TRect;
+begin
+  Result := Rect( ContentRect.Left + Border.Left + Padding.Left,
+  ContentRect.Top + Border.Top + Padding.Top,
+  ContentRect.Right - Border.Right - Padding.Right,
+  ContentRect.Bottom - Border.Bottom - Padding.Bottom);
 end;
 
 { TMatrixTransform }
@@ -1027,7 +1050,7 @@ begin
 end;
 
 function TMatrixTransform.Setup(M0, M1, M2, M3, M4, M5: Single
-  ): TMatrixTransform;   inline;
+  ): TMatrixTransform;  {$ifdef fpc}inline;{$endif}
 begin
 	FData[0] := M0;
 	FData[1] := M1;
@@ -1166,7 +1189,7 @@ end;
 
 procedure TCSSClassList.SetName(AValue: String);
 begin
-  FreeThenNil(FList);
+  {$ifdef fpc}FreeThenNil(FList);{$else}FList.Free;{$endif}
   FList := DivideToStringList(AValue, ' ', True);
   FList.Delimiter := ' ';
 end;
@@ -1552,6 +1575,7 @@ begin
           + (b shr 2);
 end;
 
+{$ifdef fpc}
 procedure AntiAliaze(Bmp: TBitmap);
 type
   TPair = record
@@ -1599,6 +1623,7 @@ begin
   end;
   Bmp.EndUpdate();
 end;
+{$endif}
 
 (*
   Function to calculate the intersectionpoints of an ellipse (x/a)^2 + (y/b)^2 = 1
@@ -1619,10 +1644,11 @@ begin
   Result.y := m * Result.x + n;
 end;
 
-procedure THtmlNode.DrawNode(ACanvas: TCanvas);
+procedure THtmlNode.DrawNode(ACanvas: TCanvas; AClipRect: TRect);
 var
   OPoly,              // outter poly
   IPoly: array[0..7] of TPointArray; // inner poly
+  DoClip: Boolean;
   procedure RenderPolygon(TargetCanvas: TCanvas; AColor: TColor; Scale: Single; dx, dy: Integer; Points: array of TFloatPoint);
   var
     I: Integer;
@@ -1769,6 +1795,7 @@ begin
   SetLength(BBottomPoly, 0);
   SetLength(BLeftPoly, 0);
 
+
   Matrix := TMatrixTransform.Create;
 
   // build top left border
@@ -1796,6 +1823,15 @@ begin
   FlipArray(OPoly[6]);
   Matrix.Free;
 
+  ACanvas.Clipping := True;
+  ACanvas.ClipRect := AClipRect;
+{
+  ACanvas.Pen.Style := psSolid;
+  ACanvas.Pen.Color := clRed;
+  ACanvas.Brush.Style := bsClear;
+  ACanvas.Rectangle(AClipRect);
+}
+  // rendering part
   if cs.Background.Color.ColorType <> cctUndefined then begin
     AddToArray(BackPoly, OPoly[1]);
     AddToArray(BackPoly, OPoly[2]);
@@ -1870,12 +1906,20 @@ begin
       FCompSize.MarginRect.Top + FCompSize.TopSpace,
       FCompSize.MarginRect.Right - FCompSize.RightSpace,
       FCompSize.MarginRect.Bottom - FCompSize.BottomSpace);
-    Flags := DT_LEFT or  DT_NOPREFIX or DT_END_ELLIPSIS ;
+    Flags := DT_LEFT or  DT_NOPREFIX or DT_END_ELLIPSIS;
     case CompStyle.TextAlign of
       ctaCenter: Flags := Flags or DT_CENTER;
       ctaRight: Flags := Flags or DT_RIGHT;
     end;
+    R.Intersect(AClipRect);
     DrawText(ACanvas.Handle, PChar(Text), Length(Text),  R, Flags);
+{      ACanvas.Pen.Style := psSolid;
+      ACanvas.Pen.Color := clFuchsia;
+      ACanvas.Rectangle(Self.ParentNode.CompSize.ContentRect);
+      ACanvas.Pen.Color := clGreen;
+      ACanvas.Rectangle(R);
+}
+
   end;
   if CSS_DEBUG_MODE then begin
     ACanvas.Pen.Style := psDot;
@@ -2030,15 +2074,21 @@ begin
 end;
 
 procedure THtmlNode.PaintTo(ACanvas: TCanvas);
-var
-  Node: THtmlNode;
-begin
-  // TODO: rewrite to tree painting
-  Node := Self;
-  while Assigned(Node) do begin
-      if Node.FVisible then Node.DrawNode(ACanvas);
-    Node := GetNext(Node, True);
+  procedure RenderNode(Node: THtmlNode; ClipRect: TRect);
+  begin
+    while Assigned(Node) do begin
+      if Node.FVisible then Node.DrawNode(ACanvas, ClipRect);
+      if Node.ChildCount > 0 then begin
+        if Node.CompStyle.Overflow = cotHidden then
+          RenderNode(Node.FirstChild, Node.CompSize.RealContentRect) // Note: this is not CSS standard behavior use Node.CompSize.ContentRect;
+        else
+          RenderNode(Node.FirstChild, ClipRect)
+      end;
+      Node := GetNext(Node, False);
+    end;
   end;
+begin
+  RenderNode(Self, Rect(0,0, {ACanvas.Width} MaxInt, {ACanvas.Height} MaxInt));
 end;
 
 function THtmlNode.SetAlignControl(AValue: TControl): THtmlNode;
@@ -2452,7 +2502,7 @@ var
         Dx := 0;
         Dy := 0;
         if (ANode.CompStyle.Margin[csLeft].LengthType = cltAuto) and (ANode.ParentNode <> Nil) then
-          Dx := (ANode.ParentNode.CompSize.RealContent - ANode.CompSize.ContentWidth) div 2;
+          Dx := (ANode.ParentNode.CompSize.RealContentWidth - ANode.CompSize.ContentWidth) div 2;
         OffsetRect(ANode.FCompSize.ContentRect, StartX + Dx, StartY + Dy);
         OffsetRect(ANode.FCompSize.MarginRect, StartX + Dx, StartY + Dy);
       end;
@@ -2469,6 +2519,8 @@ var
 begin
 //	QueryPerformanceFrequency(iFrequency);
 //	QueryPerformanceCounter(iTimerStart);
+
+//  Writeln(Awidth, ' - ' , AHeight);
 
   //TODO: correct calculation needed here
   Self.CompSize.Margin.Left := CalcCSSLength(Self.CompStyle.Margin[csLeft], AWidth);
@@ -2488,25 +2540,31 @@ begin
 
    // override "body" and ignore set width or height value
   if AWidth = -1 then begin
-{    if Self.CompStyle.Width.LengthType = cltPercentage then
-      Self.CompStyle.Width.LengthType := cltUndefined;}
+{    if Self.CompStyle.Width.LengthType = cltPercentage then}
+      Self.CompStyle.Width.LengthType := cltUndefined;
   end
   else begin
     Self.CompStyle.Width.LengthType := cltPx;
     Self.CompStyle.Width.Value := AWidth - Self.CompSize.LeftSpace - Self.CompSize.RightSpace;
   end;
   if AHeight = -1 then begin
-    //  Self.CompStyle.Height.LengthType := cltUndefined
+    Self.CompStyle.Height.LengthType := cltUndefined;
   end
   else begin
     Self.CompStyle.Height.LengthType := cltPx;
     Self.CompStyle.Height.Value := AHeight - Self.CompSize.TopSpace - Self.CompSize.BottomSpace;
   end;
-  LayoutCalcPosition(Self, AWidth, AHeight, TempWidth, TempHeight);
-  AdjustPosition(Self, ALeft, ATop, True);
+
+  if not AAlignControls then begin
+    LayoutCalcPosition(Self, AWidth, AHeight, TempWidth, TempHeight);
+    AdjustPosition(Self, ALeft, ATop, True);
+    Exit;
+  end;
   //QueryPerformanceCounter(iTimerEnd);
   //  WriteLn( FloatToStr( 1000 * ((iTimerEnd - iTimerStart) / ifrequency)));
-  if not AAlignControls then Exit;
+//  if not AAlignControls then Exit;
+
+  // do this only for aligned controls
   if Self.RootNode.FParentControl <> Nil then begin
     TempWidth := Self.RootNode.FParentControl.Left;
     TempHeight := Self.RootNode.FParentControl.Top;
@@ -2594,6 +2652,12 @@ function THtmlNode.SetOnClick(AValue: TNotifyEvent): THtmlNode;
 begin
   Result := Self;
   FOnClick := AValue;
+end;
+
+function THtmlNode.AppendTo(AParentNode: THtmlNode): THtmlNode;
+begin
+  Result := Self;
+  AParentNode.AddNode(Self);
 end;
 
 
@@ -2719,11 +2783,19 @@ end;
   Setup inline style by user. Same like in html document:   <div style="THIS PART IS AVALUE">
 *)
 procedure THtmlNode.SetInlineStyle(AValue: String);
+var
+  I: ICSSControl;
 begin
   if FInlineStyle = AValue then Exit;
   FInlineStyle := AValue;
   FCompStyle.Reset;
+  if Element = 'span' then FCompStyle.Display := cdtInline; // set default display-inline for span element
   FCompStyle.Parse(FInlineStyle);
+  if (Self = RootNode) and (RootNode.ParentControl <> Nil) and (RootNode.ParentControl is ICSSControl) then begin
+    RootNode.ParentControl.GetInterface(HTMLInterface, I);
+    I.Changed;
+  end;
+
 {  if RootNode.FParentControl <> Nil then begin
     RootNode.FParentControl.InvalidatePreferredSize;
     RootNode.FParentControl.Invalidate;
