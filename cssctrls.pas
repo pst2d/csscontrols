@@ -1,12 +1,15 @@
 unit CSSCtrls;
 
-{$mode objfpc}{$H+}
+{$ifdef fpc}
+  {$mode delphi}{$H+}
+{$endif}
 
 interface
 uses
-  Classes, SysUtils, Controls, Types, Graphics, Forms,
+  Classes, SysUtils,  Types,
   strutils,
   {$ifdef fpc}
+  Controls,  Graphics, Forms,
   LMessages,LCLIntf,
   FPimage, LCLType, LCLProc, IntfGraphics, GraphType, EasyLazFreeType, LazFreeTypeIntfDrawer,      // font rendering
   {$endif}
@@ -18,6 +21,8 @@ type
 
   TCSSShape = Class(TGraphicControl, ICSSControl)
   private
+    FCachedWidth,
+    FCachedHeight: Integer;
     FIsChanged: Boolean;
     FMouseDownNode: THtmlNode;
     FOnPaint: TNotifyEvent;
@@ -25,6 +30,7 @@ type
     function GetBodyNode: THtmlNode;
     function GetStyle: String;
     procedure SetStyle(AValue: String);
+    procedure Relayout(AWidth, AHeight: Integer);
   protected
     procedure CalculatePreferredSize(var PreferredWidth,
       PreferredHeight: Integer; WithThemeSpace: Boolean); override;
@@ -41,6 +47,8 @@ type
     constructor Create(AOwner: TComponent); override;
     destructor Destroy; override;
     procedure Changed;
+    procedure ChangeBounds(ALeft, ATop, AWidth, AHeight: integer;
+      KeepBase: boolean); override;
     procedure DoSetBounds(ALeft, ATop, AWidth, AHeight: integer); override;
     function NodeMarginToScreen(ANode: THtmlNode): TRect;
     function NodeMarginToClient(ANode: THtmlNode): TRect;
@@ -223,23 +231,34 @@ end;
 
 function TCSSShape.GetStyle: String;
 begin
-  Result := GetBodyNode.InlineStyle;
+  Result := Body.InlineStyle;
 end;
 
 procedure TCSSShape.SetStyle(AValue: String);
 begin
-  if GetBodyNode.InlineStyle = AValue then Exit;
-  GetBodyNode.InlineStyle := AValue;
-  GetBodyNode.ApplyStyles;
+  if Body.InlineStyle = AValue then Exit;
+  Body.InlineStyle := AValue;
+  Body.ApplyStyles;
   Changed;
+end;
+
+procedure TCSSShape.Relayout(AWidth, AHeight: Integer);
+begin
+  if (FCachedWidth <> AWidth) or (FCachedHeight <> AHeight) or (FIsChanged) then begin
+//    Writeln(Format('ChangeBounds :%d, %d, %d, %d, - %s',  [ATop, ALeft, AWidth, AHeight, KeepBase.ToString]));
+    Body.LayoutTo(0, 0, AWidth, AHeight);
+    Body.AlignControlsTo(Left, Top);
+  end;
+  FCachedWidth := AWidth;
+  FCachedHeight := AHeight;
+  FIsChanged := False;
 end;
 
 procedure TCSSShape.Paint;
 begin
-  if FIsChanged then begin
-    Body.LayoutTo( 0, 0, Width, Height, False);
+{  if FIsChanged then begin
     FIsChanged := False;
-  end;
+  end;}
   Body.PaintTo(Self.Canvas);
   if Assigned(FOnPaint) then FOnPaint(Self);
 end;
@@ -301,7 +320,7 @@ begin
   end;
   if NewCursor <> crNone then Self.Cursor := NewCursor else Self.Cursor := crDefault;
   if Modified then begin
-    GetBodyNode.ApplyStyles;
+    Body.ApplyStyles;
     Changed;
   end;
 end;
@@ -332,19 +351,10 @@ var
 begin
   if (Parent = nil) or (not Parent.HandleAllocated) then Exit;
   if WidthIsAnchored then AWidth := Width else AWidth := -1;
-  if HeightIsAnchored then AHeight := Height else AHeight := -1;
-{
-  if WidthIsAnchored then AWidth := Width else AWidth := -1;
-  if HeightIsAnchored then AHeight := Height else AHeight := -1;
-  AWidth := Constraints.MinMaxWidth(AWidth);
-  AHeight := Constraints.MinMaxHeight(AHeight);
-  if AWidth = 0 then AWidth :=  -1;
-  if AHeight = 0 then AHeight :=  -1;
-  FBodyNode.LayoutTo( 0, 0, -1, -1, False);
-}
-  FBodyNode.LayoutTo( 0, 0, AWidth, AHeight, False);
+  if (HeightIsAnchored and AutoSize) then AHeight := Height else AHeight := -1;
+  FBodyNode.LayoutTo( 0, 0, AWidth, AHeight);
   if WidthIsAnchored then PreferredWidth := 0 else PreferredWidth := FBodyNode.CompSize.MarginRect.Width;
-  if HeightIsAnchored then PreferredHeight := 0 else PreferredHeight := FBodyNode.CompSize.MarginRect.Height;
+  if (HeightIsAnchored and AutoSize) then PreferredHeight := 0 else PreferredHeight := FBodyNode.CompSize.MarginRect.Height;
 end;
 
 constructor TCSSShape.Create(AOwner: TComponent);
@@ -366,9 +376,19 @@ end;
 procedure TCSSShape.Changed;
 begin
   FIsChanged := True;
+  Relayout(Width, Height);
+
   InvalidatePreferredSize;
   AdjustSize;
   Invalidate;
+end;
+
+procedure TCSSShape.ChangeBounds(ALeft, ATop, AWidth, AHeight: integer;
+  KeepBase: boolean);
+begin
+  inherited ChangeBounds(ALeft, ATop, AWidth, AHeight, KeepBase);
+//  if AutoSize then AWidth :=  -1;
+  Relayout(AWidth, AHeight);
 end;
 
 procedure TCSSShape.DoSetBounds(ALeft, ATop, AWidth, AHeight: integer);
@@ -382,12 +402,13 @@ begin
   LeftChanged := ALeft <> Left;
   TopChanged := ATop <> Top;
   inherited DoSetBounds(ALeft, ATop, AWidth, AHeight);
+  exit;
   if WidthChanged or HeightChanged { or LeftChanged or TopChanged} then begin // this is allways TRUE :)
-    FIsChanged := True;
+//    FIsChanged := True;
     if AutoSize then begin
       InvalidatePreferredSize;
       AdjustSize;
-      FIsChanged := False;
+//      FIsChanged := False;
     end;
   end;
 end;

@@ -17,6 +17,7 @@
   - delphi support
 
   History:
+  2020.05.01 - Align LCL controls working again
   2020.04.17 - TCSSShape fixes, "0" length fixed
   2020.02.22 - baseline align fix, added: display:inline-flex; basic owerflow support
   2019.12.18 - fixed layout, code reorganization
@@ -33,6 +34,10 @@ unit cssbase;
   {$modeswitch advancedrecords}
 {$else}
   {$define delphi}
+  {$if declared(FireMonkeyVersion) AND (FireMonkeyVersion >= 1)}
+    {$define fmx}
+  {$endif}
+  {$define fmx}
 {$endif}
 
 interface
@@ -48,13 +53,11 @@ uses
   FMX.Controls, FMX.Graphics,
   {$endif}
   Math;
-
 const
   CSS_UNIVERSAL_SELECTOR: Char = '*';   //https://developer.mozilla.org/en-US/docs/Web/CSS/Universal_selectors
   CSS_DEBUG_MODE: Boolean = False;
   HTMLInterface = '{DD8167E4-D923-407A-AE4C-14BB93E254E3}';
   CSS_DEG_RAD = Pi / 180;
-
 type
   TCSSBorderStyle = (cbsUndefined, cbsNone, cbsHidden, cbsDotted, cbsDashed, cbsSolid, cbsDouble, cbsGroove, cbsRidge, cbsInset, cbsOutset); // https://developer.mozilla.org/en-US/docs/Web/CSS/border-style
   TCSSFontStyle = (cfsUndefined, cfsNormal, cfsItalic, cfsOblique, cfsInherit, cfsUnset); // https://developer.mozilla.org/en-US/docs/Web/CSS/font-style
@@ -71,7 +74,6 @@ type
   TCSSPosition = (cpStatic, cpRelative, cpAbsolute, cpFixed, cpSticky); // https://developer.mozilla.org/en-US/docs/Web/CSS/position
   TCSSAlignItems = (caiStretch, caiBaseline, caiCenter, caiFlexStart, caiFlexEnd);  // https://developer.mozilla.org/en-US/docs/Web/CSS/CSS_Flexible_Box_Layout/Aligning_Items_in_a_Flex_Container
   TCSSOverflowType = (cotVisible, cotHidden, cotScroll, cotAuto);          // https://developer.mozilla.org/en-US/docs/Web/CSS/overflow
-
   {$ifndef fpc}
   TStringArray = array of String;
   {$endif}
@@ -79,7 +81,6 @@ type
     x,y: Single;
   end;
   TPointArray = array of TFloatPoint;
-
   TCSSLength = record      // https://developer.mozilla.org/en-US/docs/Web/CSS/length
     Value: Single;
     LengthType: TCSSLengthType;
@@ -87,9 +88,7 @@ type
 
   TCSSInteger = Integer;
   TCSSNumber = Single;
-
   TCSSMatrix = array [0..5] of Single;
-
 	{ TMatrixTransform }
     {
 		https://www.w3.org/TR/SVG/coords.html#NestedTransformations
@@ -152,11 +151,9 @@ type
     CachedHeight,
     CachedBaseLine: Integer;
   end;
-
-   TCSSStyleSheet = class;
+  TCSSStyleSheet = class;
 
   { TCSSItem }
-
   TCSSItem = class(TPersistent)
   public
     Attributes: String;
@@ -200,7 +197,6 @@ type
   end;
 
   { TCSSStyleSheet }
-
   TCSSStyleSheet = class(TComponent)
   private
     FList: TStringList;
@@ -217,7 +213,6 @@ type
   end;
 
   { TCSSClassList }
-
   TCSSClassList = class                         // https://developer.mozilla.org/en-US/docs/Web/API/Element/classList
   private
     FList: TStringList;
@@ -238,7 +233,6 @@ type
   end;
 
   { THtmlSize }
-
   THtmlSize = class(TPersistent)
   public
     Position,
@@ -259,11 +253,9 @@ type
   end;
 
   THtmlNode = class;  // forward declaration
-
   THtmlNodeArray = array of THtmlNode;
 
   { THtmlNode }
-
   THtmlNode = class(TPersistent)
   private
     FOnClick: TNotifyEvent;
@@ -292,7 +284,6 @@ type
     FStyleSheet: TCSSStyleSheet;
     FClassList: TCSSClassList;
     FCornerBitmap: array [0..3] of TBitmap;
-
     FVisible: Boolean;
     function GetStyleValue(AName: String): String;
     procedure LayoutCalcPosition(ANode: THtmlNode; TargetWidth,
@@ -302,6 +293,8 @@ type
     function LayoutDoVerticalAlign(AList: TList; ClearList: Boolean = True): Integer;
     procedure LayoutGetNodeSize(ANode: THtmlNode; ParentWidth,
       ParentHeight: Integer; InFlex: Boolean = False);
+
+    procedure IntSetAlignControl(AValue: TControl);
     procedure SetHovered(AValue: Boolean);
     procedure SetHoverStyle(AValue: String);
     procedure SetInlineStyle(AValue: String);
@@ -326,7 +319,8 @@ type
     function AppendTo(AParentNode: THtmlNode): THtmlNode;
     function GetNext(ANode: THtmlNode; GoAboveChildren: Boolean = False): THtmlNode;
     function GetElementsByClassName(AName: String): THtmlNodeArray;
-    procedure LayoutTo(ALeft, ATop, AWidth, AHeight: Integer; AAlignControls: Boolean = False);
+    procedure LayoutTo(ALeft, ATop, AWidth, AHeight: Integer);
+    procedure AlignControlsTo(ALeft, ATop: Integer);
     function NodeAtPosition(APos: TPoint): THtmlNode;
     procedure PaintTo(ACanvas: TCanvas);
     function SetAlignControl(AValue: TControl): THtmlNode;
@@ -337,6 +331,8 @@ type
     function SetOnClick(AValue: TNotifyEvent): THtmlNode;
     function SetTagStr(AValue: String): THtmlNode;
     function Clear: THtmlNode;
+    function Delete(ANode: THtmlNode): THtmlNode;
+    procedure Changed;
 
     property ClassList: TCSSClassList read FClassList;
     property CompStyle: TCSSItem read FCompStyle write FCompStyle;
@@ -349,9 +345,8 @@ type
     property Text: String read FText write FText;
     property Hovered: Boolean read FHovered write SetHovered;
     property ChildCount: Integer read FChildCount;
-
   published
-    property AlignControl: TControl read FAlignControl write FAlignControl;
+    property AlignControl: TControl read FAlignControl write IntSetAlignControl;
     property InlineStyle: String read FInlineStyle write SetInlineStyle;
     property HoverStyle: String read FHoverStyle write SetHoverStyle;
     property OnClick: TNotifyEvent read FOnClick write FOnClick;
@@ -405,7 +400,15 @@ const
   );
 var
   CSSColorList: TStringList;
-
+  
+{$ifdef delphi}
+function CompareRect(R1, R2: PRect): Boolean; // lcl source code
+begin
+  Result := (R1^.Left=R2^.Left) and (R1^.Top=R2^.Top) and
+          (R1^.Bottom=R2^.Bottom) and (R1^.Right=R2^.Right);  
+end;
+{$endif}
+  
 function FPoint(x,y: Single): TFloatPoint; inline;
 begin
   Result.x := x;
@@ -572,16 +575,6 @@ begin
 end;
 {$endif}
 
-function ForceRange(x, xmin, xmax: Integer): Integer;
-begin
-  if x < xmin then
-    Result := xmin
-  else if x > xmax then
-    Result := xmax
-  else
-    Result := x;
-end;
-
 function CSSToFontWeight(AValue: String): TCSSFontWeight;
 begin
   // TODO: add another values
@@ -678,17 +671,22 @@ begin
   if AValue = 'sticky' then Result := cpSticky;
 end;
 
-(*
-  Only two basic types are supported
-*)
 function CSSToDisplay(AValue: String): TCSSDisplayType;
 begin
-  if AValue.Equals('inline') or AValue.Equals('inline-block') then Result := cdtInline else
-  if AValue.Equals('block') then Result := cdtBlock else
-  if AValue.Equals('flex') then Result := cdtFlex else
-  if AValue.Equals('inline-flex') then Result := cdtInlineFlex else
-  if AValue.Equals('none') then Result := cdtNone else
-    Result := cdtBlock;
+  if AValue.IsEmpty then Result := cdtBlock else
+  case AValue[1] of
+    'b':
+      if AValue.Equals('block') then Result := cdtBlock;
+    'f':
+      if AValue.Equals('flex') then Result := cdtFlex;
+    'i':
+      if AValue.Equals('inline') or AValue.Equals('inline-block') then Result := cdtInline else
+      if AValue.Equals('inline-flex') then Result := cdtInlineFlex;
+    'n':
+      if AValue.Equals('none') then Result := cdtNone;
+    else
+      Result := cdtBlock;
+  end;
 end;
 
 function CSSToFloat(AValue: String): TCSSFloatType;
@@ -700,7 +698,7 @@ end;
 
 function CSSToCursor(AValue: String): TCursor;
 begin
-  //TODO: add some basic cursors here
+  //TODO: add more cursors here
   if AValue = 'pointer' then Result := crHandPoint else
   if AValue = 'wait' then Result := crHourGlass else
   if AValue = 'text' then Result := crIBeam else
@@ -836,9 +834,7 @@ begin
   Parts := SplitParameters(AValue);
   case High(Parts) of
     0: // STYLE
-      begin
-        TryCSSToBorderStyle(Parts, Result.Style);
-      end;
+      TryCSSToBorderStyle(Parts, Result.Style);
     1: // STYLE | COLOR in any order
       begin
         TryCSSToBorderStyle(Parts, Result.Style);
@@ -893,7 +889,7 @@ begin
 end;
 
 (*
-    Parse whole CSS file and write it to CSSItems
+  Parse whole CSS source and write it to CSSItems
 *)
 
 procedure ParseCSS(ACSS: String; ATarget: TStringList);
@@ -1306,9 +1302,9 @@ begin
   Font.TextDecoration := ctdUndefined;
   Font.Weight.FontType := cfwUndefined;
   Font.Weight.Value := [];
-  for L := Low(TCSSSide) to High(TCSSSide) do  Margin[L].LengthType := cltUndefined;
-  for L := Low(TCSSSide) to High(TCSSSide) do  Padding[L].LengthType := cltUndefined;
-  for L := Low(TCSSSide) to High(TCSSSide) do  Border[L].Width.LengthType := cltUndefined;
+  for L := Low(TCSSSide) to High(TCSSSide) do Margin[L].LengthType := cltUndefined;
+  for L := Low(TCSSSide) to High(TCSSSide) do Padding[L].LengthType := cltUndefined;
+  for L := Low(TCSSSide) to High(TCSSSide) do Border[L].Width.LengthType := cltUndefined;
 end;
 
 (*
@@ -1648,15 +1644,19 @@ procedure THtmlNode.DrawNode(ACanvas: TCanvas; AClipRect: TRect);
 var
   OPoly,              // outter poly
   IPoly: array[0..7] of TPointArray; // inner poly
-  DoClip: Boolean;
   procedure RenderPolygon(TargetCanvas: TCanvas; AColor: TColor; Scale: Single; dx, dy: Integer; Points: array of TFloatPoint);
   var
     I: Integer;
     TA: array of TPoint;
   begin
     SetLength(TA, Length(Points));
+    {$ifdef fmx}
+      //TODO: add fmx support
+    {$else}
     TargetCanvas.Pen.Style := psClear;
     TargetCanvas.Brush.Color := AColor;
+    TargetCanvas.Brush.Style := bsSolid;
+    {$endif}
     if (dx <> 0) or (dy <> 0) then begin // paint to tbitmap
       for I := 0 to High(Points) do begin
         Ta[I].x := Round((Points[I].x + dx) * Scale)-1;
@@ -1667,11 +1667,11 @@ var
       Ta[I].x := Round((Points[I].x + dx) * Scale);
       Ta[I].y := Round((Points[I].y + dy) * Scale);
     end;
+    {$ifdef fmx}
+    //TODO: add fmx support
+    {$else}
     TargetCanvas.Polygon(Ta);
-{    TargetCanvas.Pen.Style := psSolid;
-    TargetCanvas.Pen.Color := AColor;
-    TargetCanvas.Pen.Width := 2;
-    TargetCanvas.Polyline(Ta);}
+    {$endif}
   end;
 
   // TODO: check if first adding point is same as last and then ignore it
@@ -1729,7 +1729,7 @@ var
     B - border
     R - radius
   *)
-  procedure BuildBorder(First, Second: Integer; B: TFloatPoint; R: TPoint; Matrix: TMatrixTransform); inline;
+  procedure BuildBorder(First, Second: Integer; B: TFloatPoint; R: TPoint; Matrix: TMatrixTransform); {$ifdef fpc}inline;{$endif}
   var
     fp: TFloatPoint;
     Angle: Single;
@@ -1823,8 +1823,11 @@ begin
   FlipArray(OPoly[6]);
   Matrix.Free;
 
+  {$ifdef fmx}
+  {$else}
   ACanvas.Clipping := True;
   ACanvas.ClipRect := AClipRect;
+  {$endif}
 {
   ACanvas.Pen.Style := psSolid;
   ACanvas.Pen.Color := clRed;
@@ -1892,6 +1895,9 @@ begin
     FreeAndNil(FCornerBitmap[0]);
   end;
 }
+
+  {$ifdef fmx}
+  {$else}
   ACanvas.Pen.Style := psClear;
   // Paint Text
   if Text <> '' then begin
@@ -1913,14 +1919,8 @@ begin
     end;
     R.Intersect(AClipRect);
     DrawText(ACanvas.Handle, PChar(Text), Length(Text),  R, Flags);
-{      ACanvas.Pen.Style := psSolid;
-      ACanvas.Pen.Color := clFuchsia;
-      ACanvas.Rectangle(Self.ParentNode.CompSize.ContentRect);
-      ACanvas.Pen.Color := clGreen;
-      ACanvas.Rectangle(R);
-}
-
   end;
+  
   if CSS_DEBUG_MODE then begin
     ACanvas.Pen.Style := psDot;
     ACanvas.Pen.Color := clRed;
@@ -1934,6 +1934,7 @@ begin
     ACanvas.Pen.Color := clFuchsia;
     ACanvas.Rectangle(CRect.Left, FCompSize.MarginRect.Bottom -  CompSize.BaseLine, CRect.Right,  FCompSize.MarginRect.Bottom - CompSize.BaseLine + 2);
    end;
+  {$endif}
 end;
 
 procedure THtmlNode.CalculateSize(out AWidth, AHeight, ABaseLine: Integer);
@@ -1941,12 +1942,14 @@ var
   b: TBitmap;
   ts: TSize;
 begin
+  {$ifdef fpc}
   if (AlignControl <> nil) then begin
     AlignControl.GetPreferredSize(AWidth, AHeight);
     if not AlignControl.AutoSize then AWidth := -1;
     ABaseLine := Round( AHeight / 5);
     Exit;
   end;
+ {$endif}
 
   if (FText = '') and (Element <> 'span')  then begin
     AWidth := -1;
@@ -1963,7 +1966,11 @@ begin
     try
       b.Canvas.Font.Size := Round(FCompStyle.Font.Size.Value);
       b.Canvas.Font.Style := FCompStyle.Font.Weight.Value;
+      {$ifdef fmx}
+      // TODO:       b.Canvas.MeasureText();
+      {$else}
       ts := b.Canvas.TextExtent(Text);
+      {$endif}
       FCachedFont.CachedWidth := ts.Width + 1; // to prevent "bold" size bug
       FCachedFont.CachedHeight := ts.Height;
       FCachedFont.CachedBaseLine := Round(ts.Height/5); // TODO: get real baseline from font
@@ -2070,7 +2077,8 @@ begin
     end;
   end;
   if ANode.InlineStyle <> '' then  ANode.FCompStyle.Parse(ANode.InlineStyle);
-  if (ANode.Hovered) and (ANode.HoverStyle <> '') then ANode.FCompStyle.Parse(HoverStyle);
+  if (ANode.Hovered) and (ANode.HoverStyle <> '') then
+      ANode.FCompStyle.Parse(ANode.HoverStyle);
 end;
 
 procedure THtmlNode.PaintTo(ACanvas: TCanvas);
@@ -2088,13 +2096,13 @@ procedure THtmlNode.PaintTo(ACanvas: TCanvas);
     end;
   end;
 begin
-  RenderNode(Self, Rect(0,0, {ACanvas.Width} MaxInt, {ACanvas.Height} MaxInt));
+  RenderNode(Self, Rect(0, 0, MaxInt, MaxInt));
 end;
 
 function THtmlNode.SetAlignControl(AValue: TControl): THtmlNode;
 begin
   Result := Self;
-  FAlignControl := AValue;
+  AlignControl := AValue;
 end;
 
 (*
@@ -2158,7 +2166,7 @@ begin
 
   cs := ANode.FCompStyle;
   if (ANode.FCompStyle.Font.Weight.FontType = cfwBold) then
-    ANode.FCompStyle.Font.Weight.Value := [fsBold] else
+    ANode.FCompStyle.Font.Weight.Value := [{$ifdef delphi}TFontStyle.{$endif}fsBold] else
   if Assigned(ANode.ParentNode) then
     ANode.FCompStyle.Font.Weight.Value := ANode.ParentNode.FCompStyle.Font.Weight.Value
   else
@@ -2178,7 +2186,7 @@ begin
   if ANode.FCompStyle.Color.ColorType = cctUndefined then begin
     if Assigned(ANode.ParentNode) then
       ANode.FCompStyle.Color.Value := ANode.ParentNode.CompStyle.Color.Value
-    else ANode.FCompStyle.Color.Value := clBlack;
+    else ANode.FCompStyle.Color.Value := {$ifdef fmx}TColorRec.Black{$else}clBlack{$endif};
   end;
   if (Assigned(ANode.ParentNode)) and (ANode.FCompStyle.Font.Size.LengthType = cltUndefined) then
     ANode.FCompStyle.Font.Size.Value := ANode.ParentNode.CompStyle.Font.Size.Value;
@@ -2240,6 +2248,13 @@ begin
   ANode.FCompSize.ContentWidth := cW;
   ANode.FCompSize.ContentHeight := cH;
 
+end;
+
+procedure THtmlNode.IntSetAlignControl(AValue: TControl);
+begin
+  if FAlignControl = AValue then exit;
+  FAlignControl := AValue;
+  Changed;
 end;
 
 
@@ -2349,8 +2364,12 @@ var
   GapList: TList;
   ParentIsFlex: Boolean;
 begin
+  if not Assigned(ANode) then begin
+    Exit;
+
+  end;
   ForNode := ANode;   // backup node
-  ParentIsFlex := (ANode.ParentNode <> nil) and (ANode.ParentNode.FCompStyle.Display in [cdtFlex, cdtInlineFlex]);
+  ParentIsFlex := Assigned(ANode.ParentNode) and (ANode.ParentNode.FCompStyle.Display in [cdtFlex, cdtInlineFlex]);
   if ParentIsFlex then begin // display mode flex
     INode := ANode;
     GapList := TList.Create;
@@ -2484,7 +2503,7 @@ end;
   - last is Controls alignment if AAlignControls is set
 *)
 
-procedure THtmlNode.LayoutTo(ALeft, ATop, AWidth, AHeight: Integer; AAlignControls: Boolean = False);
+procedure THtmlNode.LayoutTo(ALeft, ATop, AWidth, AHeight: Integer);
 var
   TempWidth, TempHeight: Integer;
   CtrlNode: THtmlNode; // for align controls
@@ -2555,27 +2574,37 @@ begin
     Self.CompStyle.Height.Value := AHeight - Self.CompSize.TopSpace - Self.CompSize.BottomSpace;
   end;
 
-  if not AAlignControls then begin
-    LayoutCalcPosition(Self, AWidth, AHeight, TempWidth, TempHeight);
-    AdjustPosition(Self, ALeft, ATop, True);
-    Exit;
-  end;
+//  if not AAlignControls then begin
+  LayoutCalcPosition(Self, AWidth, AHeight, TempWidth, TempHeight);
+  AdjustPosition(Self, ALeft, ATop, True);
   //QueryPerformanceCounter(iTimerEnd);
   //  WriteLn( FloatToStr( 1000 * ((iTimerEnd - iTimerStart) / ifrequency)));
 //  if not AAlignControls then Exit;
+end;
 
-  // do this only for aligned controls
+(*
+  Align controls inside nodes
+*)
+
+procedure THtmlNode.AlignControlsTo(ALeft, ATop: Integer);
+var
+  DifX, DifY: Integer;
+  CtrlNode: THtmlNode;
+  CtrlNewBounds,
+  CtrlOldBounds: TRect;
+begin
+  {$ifdef fpc}
   if Self.RootNode.FParentControl <> Nil then begin
-    TempWidth := Self.RootNode.FParentControl.Left;
-    TempHeight := Self.RootNode.FParentControl.Top;
-  end else begin
-    TempWidth := 0;
-    TempHeight := 0;
+    DifX := Self.RootNode.FParentControl.Left;
+    DifY := Self.RootNode.FParentControl.Top;
+  end else{$endif} begin
+    DifX := 0;
+    DifY := 0;
   end;
   CtrlNode := Self;
   while Assigned(CtrlNode) do begin
-    CtrlNode.CompStyle.Changed := False;
-    if CtrlNode.AlignControl <> Nil then begin
+//    CtrlNode.CompStyle.Changed := False;
+    if Assigned(CtrlNode.AlignControl) then begin
       if not CtrlNode.FVisible then begin    // hide assigned control if owner node is invisible
         if CtrlNode.AlignControl.Visible then begin
           CtrlNode.FAlignControlWasHidden := True;
@@ -2588,14 +2617,17 @@ begin
         end;
       end;
       CtrlNode.AlignControl.BringToFront;
+      {$ifdef fpc}
       CtrlOldBounds := CtrlNode.AlignControl.BoundsRect;
+      {$endif}
       CtrlNewBounds := Rect(
         CtrlNode.FCompSize.ContentRect.Left + CtrlNode.FCompSize.Border.Left + CtrlNode.FCompSize.Padding.Left,
         CtrlNode.FCompSize.ContentRect.Top  + CtrlNode.FCompSize.Padding.Top + CtrlNode.FCompSize.Border.Top,
         CtrlNode.FCompSize.ContentRect.Right - CtrlNode.FCompSize.Border.Right - CtrlNode.FCompSize.Padding.Right,
         CtrlNode.FCompSize.ContentRect.Bottom - CtrlNode.FCompSize.Border.Bottom - CtrlNode.FCompSize.Padding.Bottom
       );
-      OffsetRect(CtrlNewBounds, TempWidth, TempHeight);
+      OffsetRect(CtrlNewBounds, DifX, DifY);
+
       if (CtrlNode.AlignControl.Parent <> nil) and (not CompareRect(@CtrlNewBounds,@CtrlOldBounds)) then begin
 			  CtrlNode.AlignControl.SetBounds(
 				  CtrlNewBounds.Left,
@@ -2620,7 +2652,7 @@ begin
   Result := Nil;
   while Assigned(Node) do begin
     if PtInRect(Node.CompSize.ContentRect, APos) then begin
-      if Node.FOnClick <> Nil then Result := Node;
+      if Assigned(Node.FOnClick) then Result := Node;
       if Node.ChildCount > 0 then begin
         Node := Node.FFirstChild; // go inside
         Continue;
@@ -2690,6 +2722,30 @@ begin
   Self.FChildCount := 0;
   Self.FLastNode := Nil;
   Self.FFirstNode := Nil;
+end;
+
+function THtmlNode.Delete(ANode: THtmlNode): THtmlNode;
+begin
+  Result := Self;
+  if (not Assigned(ANode)) or (ANode = Self) or (ANode = RootNode) then Exit;
+  if Assigned(ANode.FPrevSibling) then ANode.FPrevSibling.FNextSibling := ANode.FNextSibling;
+  if Assigned(ANode.FNextSibling) then ANode.FNextSibling.FPrevSibling := ANode.FPrevSibling;
+  if Assigned(ANode.ParentNode) and (ANode.ParentNode.FFirstChild = ANode) then ANode.ParentNode.FFirstChild := ANode.FNextSibling;
+  if Assigned(ANode.ParentNode) and (ANode.ParentNode.FLastNode = ANode) then ANode.ParentNode.FLastNode := ANode.FPrevSibling;
+  Dec(ANode.ParentNode.FChildCount);
+  ANode.Clear; // remove all childrens
+  FreeAndNil(ANode);
+  Changed;
+end;
+
+procedure THtmlNode.Changed;
+var
+  I: ICSSControl;
+begin
+  if (Assigned(RootNode.ParentControl)) and (Assigned(RootNode)) then begin
+    if RootNode.ParentControl.GetInterface(StringToGUID(HTMLInterface), I) then
+      I.Changed;
+  end;
 end;
 
 function THtmlNode.AddNode(ANode: THtmlNode): THtmlNode;
@@ -2783,18 +2839,13 @@ end;
   Setup inline style by user. Same like in html document:   <div style="THIS PART IS AVALUE">
 *)
 procedure THtmlNode.SetInlineStyle(AValue: String);
-var
-  I: ICSSControl;
 begin
   if FInlineStyle = AValue then Exit;
   FInlineStyle := AValue;
   FCompStyle.Reset;
   if Element = 'span' then FCompStyle.Display := cdtInline; // set default display-inline for span element
   FCompStyle.Parse(FInlineStyle);
-  if (Self = RootNode) and (RootNode.ParentControl <> Nil) and (RootNode.ParentControl is ICSSControl) then begin
-    RootNode.ParentControl.GetInterface(HTMLInterface, I);
-    I.Changed;
-  end;
+  Changed;
 
 {  if RootNode.FParentControl <> Nil then begin
     RootNode.FParentControl.InvalidatePreferredSize;
