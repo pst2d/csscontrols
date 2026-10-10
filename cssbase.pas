@@ -9,10 +9,10 @@
 
   TODO (in random order):
   - transform property support
-  - image background support
   - transition support
   - opacity, box-shadow, line-height
-  - dashed/dotted border painting, antialiasing
+  - dashed/dotted border painting
+  - radial gradients, multiple backgrounds
   - display:grid
   - delphi support
 
@@ -21,6 +21,9 @@
                justify-content, align-items/self, auto margins, order), box-sizing, min/max sizes, em/rem units,
                high dpi pixel ratio, float:right, font properties, text wrapping, full color table,
                utility classes support (csstailwind.pas), tests and demo
+             - antialiased painting of rounded corners and border joins (cached corner bitmaps),
+               linear-gradient, background images (url, size, position, repeat), colors with alpha,
+               custom properties and var()
   2020.05.01 - Align LCL controls working again
   2020.04.17 - TCSSShape fixes, "0" length fixed
   2020.02.22 - baseline align fix, added: display:inline-flex; basic owerflow support
@@ -49,7 +52,7 @@ interface
 uses
   Classes, SysUtils, Types,
   {$ifdef fpc}
-  Controls,  Graphics, Forms,
+  Controls,  Graphics, Forms, GraphType, IntfGraphics, FPImage,
   LCLIntf, LCLProc, LMessages, LCLType,  contnrs, LazCanvas,
   {$else}
   // delphi
@@ -131,6 +134,7 @@ type
   TCSSColor = record
     Value: TColor;
     ColorType: TCSSColorType;
+    Alpha: Byte;              // 255 = opaque
   end;
 
   TCSSBorder = record         // https://developer.mozilla.org/en-US/docs/Web/CSS/border
@@ -141,6 +145,10 @@ type
 
   TCSSBackground = record        // https://developer.mozilla.org/en-US/docs/Web/CSS/background
     Color: TCSSColor;
+    Image: String;              // background-image: url(...) or linear-gradient(...), can contain var()
+    Size: String;               // background-size: auto, cover, contain, <length> [<length>]
+    Position: String;           // background-position
+    RepeatMode: String;         // background-repeat: repeat (default), no-repeat
   end;
 
   TCSSBorderRadius = record       // https://developer.mozilla.org/en-US/docs/Web/CSS/border-radius
@@ -167,6 +175,12 @@ type
     CachedPixelRatio: Single;
   end;
   TCSSStyleSheet = class;
+
+  TCSSPaintShape = record
+    L, T, R, B: Single;                 // border box
+    BW: array[TCSSSide] of Single;      // border widths
+    RX, RY: array[0..3] of Single;      // corner radii: top-left, top-right, bottom-right, bottom-left
+  end;
 
   TCSSCombinator = (ccNone, ccDescendant, ccChild);
   { TCSSCompoundSelector - one part of selector eg. "div.button:hover" }
@@ -230,6 +244,7 @@ type
     Selector: TCSSCompoundSelectors;  // parsed SelectorText (see CompileSelector)
     SelectorCompiled,
     SelectorValid: Boolean;
+    CustomProps: TStringList;         // custom properties (--name: value)
     procedure CompileSelector;
     constructor Create;
     destructor Destroy; override;
@@ -337,7 +352,8 @@ type
     FCachedFont: TCSSFont;
     FStyleSheet: TCSSStyleSheet;
     FClassList: TCSSClassList;
-    FCornerBitmap: array [0..3] of TBitmap;
+    FBgLayer: TBitmap;            // cached background with gradient or image
+    FBgLayerKey: String;
     FVisible: Boolean;
     FPixelRatio: Single;          // root node only: scale factor for high dpi
     FLayoutRoot: Boolean;         // LayoutTo was called for this node
@@ -373,6 +389,10 @@ type
     function MeasureLongestWord: Integer;
     function MinContentWidth(AAutoMinimum: Boolean = False): Integer;
     procedure CalcRadius(AWidth, AHeight: Integer; out ATopLeft, ATopRight, ABottomRight, ABottomLeft: TPoint);
+    procedure PaintBackgroundAndBorder(ACanvas: TCanvas);
+    procedure BackgroundImageRect(AImage: TLazIntfImage; AWidth, AHeight: Integer; out ARect: TRectF);
+    function BackgroundLayer(const S: TCSSPaintShape; AWidth, AHeight: Integer; const AImage: String;
+      const ACornerW, ACornerH: array of Integer): TBitmap;
   public
     constructor Create(AInlineStyle: String = '');virtual;
     destructor Destroy; override;
@@ -398,6 +418,8 @@ type
     function NodeAtPosition(APos: TPoint): THtmlNode;
     procedure PaintTo(ACanvas: TCanvas);
     function CalcLength(const AValue: TCSSLength; AParentLength: Integer): Integer;
+    function ResolveVars(const AValue: String; ADepth: Integer = 0): String;
+    function EffectiveColor(const AColor: TCSSColor): TColor;
     function BorderWidth(ASide: TCSSSide): Integer;
     function SetAlignControl(AValue: TControl): THtmlNode;
     function SetClass(AValues: String): THtmlNode;
@@ -455,6 +477,7 @@ type
 var
   CSSRootFontSize: Single = CSS_DEFAULT_FONT_SIZE;   // px, base for "rem" units
   CSSDefaultBoxSizing: TCSSBoxSizing = cbxContentBox; // initial box-sizing value (Tailwind like styles use border-box)
+  CSSAntialiasing: Boolean = True;                   // antialiasing of rounded corners and border joins
 
   CSSUtilityResolver: TCSSUtilityResolver = nil;  // resolve unknown classes to CSS declarations
 
@@ -464,6 +487,8 @@ var
   function CSSToLength(AValue: String): TCSSLength;
   function CSSResolveUtility(const AClassName: String; out ADeclarations: String; out AOrder: Integer): Boolean;
   procedure CSSClearUtilityCache;
+  procedure CSSClearPaintCache;
+  procedure CSSRegisterImage(const AName: String; AGraphic: TGraphic);
   function StrBefore(const AValue: String; const ASubstr: String): String;
   function StrAfter(const AValue: String; const ASubstr: String): String;
   function StrBetween(const AValue: String; const AStart, AEnd: String): String;
@@ -1047,6 +1072,7 @@ var
 begin
   Result.ColorType := cctUndefined;
   Result.Value := 0;
+  Result.Alpha := 255;
   AValue := LowerCase(Trim(AValue));
   if AValue = '' then
     Exit;
@@ -1087,12 +1113,12 @@ begin
     Exit;
   end;
   if Ok then begin
+    Result.Value := RGBToColor(R, G, B);
+    Result.Alpha := A;
     if A = 0 then
       Result.ColorType := cctTransparent
-    else begin
-      Result.Value := RGBToColor(R, G, B);
+    else
       Result.ColorType := cctNormal;
-    end;
   end;
 end;
 
@@ -1249,6 +1275,7 @@ begin
   Result.Style := cbsNone;
   Result.Color.ColorType := cctCurrentColor;
   Result.Color.Value := 0;
+  Result.Color.Alpha := 255;
   Parts := SplitParameters(LowerCase(AValue));
   TryCSSToBorderStyle(Parts, Result.Style);
   TryCSSToBorderWidth(Parts, Result.Width);
@@ -1603,47 +1630,6 @@ begin
   end;
 end;
 
-procedure SinCos(const Theta, RadiusX, RadiusY: Single; out Sin, Cos: Single);
-var
-	S, C: Extended;
-begin
-	Math.SinCos(Theta, S, C);
-	Sin := S * RadiusY;
-	Cos := C * RadiusX;
-end;
-
-procedure _BuildArc(var APoly: TPointArray; const P: TPoint ; a1, a2, rX, rY: Single; Steps: Integer);
-var
-	StartI,
-	I, N: Integer;
-	a, da, dx, dy: Single;
-begin
-	StartI := Length(APoly);
-	SetLength( APoly, Length(APoly) + Steps);
-
-	N := Steps - 1;
-	da := (a2 - a1) / N;
-	a := a1;
-	for I := 0 to N do begin
-		SinCos(a, rX, rY, dy, dx);
-		APoly[StartI + I].X := (P.X + dx);
-		APoly[StartI + I].Y := (P.Y + dy);
-		a := a + da;
-	end;
-end;
-
-procedure BuildArc(var APoly: TPointArray; const P: TPoint; StartAngle, EndAngle, Width, Height: Single);
-const
-	MINSTEPS = 6;
-var
-	Steps: Integer;
-begin
-	StartAngle := StartAngle * CSS_DEG_RAD;
-	EndAngle := EndAngle * CSS_DEG_RAD;
-	Steps := Max(MINSTEPS, 1 * System.Round(Sqrt(Abs( Max(Width, Height))) * Abs(EndAngle - StartAngle)));
-	_BuildArc(APoly, P, StartAngle, EndAngle, Width, Height, Steps);
-end;
-
 { THtmlSize }
 
 function THtmlSize.TopSpace: Integer;
@@ -1956,6 +1942,7 @@ end;
 
 destructor TCSSItem.Destroy;
 begin
+  CustomProps.Free;
   inherited Destroy;
 end;
 
@@ -1977,9 +1964,16 @@ begin
   AlignSelf := caiAuto;
   Background.Color.ColorType := cctUndefined;
   Background.Color.Value := 0;
+  Background.Color.Alpha := 255;
+  Background.Image := '';
+  Background.Size := '';
+  Background.Position := '';
+  Background.RepeatMode := '';
   BoxSizing := CSSDefaultBoxSizing;
   Color.ColorType := cctUndefined;
   Color.Value := 0;
+  Color.Alpha := 255;
+  if Assigned(CustomProps) then CustomProps.Clear;
   Cursor := crDefault;
   Display := cdtBlock;
   Float := cftNone;
@@ -2023,6 +2017,7 @@ begin
     Border[L].Style := cbsNone;
     Border[L].Color.ColorType := cctCurrentColor;
     Border[L].Color.Value := 0;
+    Border[L].Color.Alpha := 255;
     ResetLength(Border[L].Width, cltPx);
     Border[L].Width.Value := 3;  // medium
   end;
@@ -2079,6 +2074,7 @@ var
   T, R, B, L: String;
   I: Integer;
   F: Single;
+  L1: TCSSLength;
 begin
   AName := Trim(AName);
   AValue := Trim(AValue);
@@ -2160,9 +2156,36 @@ begin
       if Parts[I].StartsWith('wrap') or (Parts[I] = 'nowrap') then AddParsedProperty('flex-wrap', Parts[I])
         else AddParsedProperty('flex-direction', Parts[I]);
   end else
-  if (AName = 'background') then begin   // only color is supported
-    for I := 0 to High(Parts) do
-      if CSSToColor(Parts[I]).ColorType <> cctUndefined then AddParsedProperty('background-color', Parts[I]);
+  if (AName = 'background') then begin   // [image] [position[/size]] [repeat] [color]
+    Background.Image := 'none';
+    Background.Color.ColorType := cctUndefined;
+    Background.Size := '';
+    Background.Position := '';
+    Background.RepeatMode := '';
+    F := 0;    // 1 = after "/" (size)
+    for I := 0 to High(Parts) do begin
+      T := LowerCase(Parts[I]);
+      if T = '/' then begin
+        F := 1;
+        Background.Size := '';
+      end else
+      if (F = 1) and (TryCSSToLengthValue(T, L1) or (T = 'cover') or (T = 'contain')) then
+        Background.Size := Trim(Background.Size + ' ' + T)
+      else
+      if T.StartsWith('url(') or T.StartsWith('linear-gradient(') or T.StartsWith('var(') then
+        Background.Image := Parts[I]
+      else if (T = 'repeat') or (T = 'no-repeat') or (T = 'repeat-x') or (T = 'repeat-y') then
+        Background.RepeatMode := T
+      else if CSSToColor(T).ColorType <> cctUndefined then
+        Background.Color := CSSToColor(T)
+      else if Pos('/', T) > 0 then begin
+        Background.Position := Trim(Background.Position + ' ' + StrBefore(T, '/'));
+        Background.Size := StrAfter(T, '/');
+      end else if (T = 'cover') or (T = 'contain') then
+        Background.Size := T
+      else
+        Background.Position := Trim(Background.Position + ' ' + T);
+    end;
   end else
   if (AName = 'overflow') then
     AddParsedProperty(AName, Parts[0])
@@ -2215,6 +2238,11 @@ var
   S: String;
 begin
   if AValue = '' then Exit;
+  if (Length(AName) > 2) and (AName[1] = '-') and (AName[2] = '-') then begin   // custom property
+    if CustomProps = nil then CustomProps := TStringList.Create;
+    CustomProps.Values[AName] := AValue;
+    Exit;
+  end;
   if AName = 'text-decoration-line' then AName := 'text-decoration';
   if InheritedPropOf(AName, Prop) then begin
     if (AValue = 'inherit') or (AValue = 'unset') or ((Prop = cipColor) and SameText(AValue, 'currentcolor')) then begin
@@ -2233,6 +2261,18 @@ begin
     'b':
       if AName = 'background-color' then
         Background.Color := CSSToColor(AValue)
+      else
+      if AName = 'background-image' then
+        Background.Image := AValue
+      else
+      if AName = 'background-size' then
+        Background.Size := AValue
+      else
+      if AName = 'background-position' then
+        Background.Position := AValue
+      else
+      if AName = 'background-repeat' then
+        Background.RepeatMode := AValue
       else
       if AName = 'box-sizing' then begin
         if AValue = 'border-box' then BoxSizing := cbxBorderBox else BoxSizing := cbxContentBox;
@@ -2437,6 +2477,11 @@ begin
     Weight := Src.Weight;
     Specificity := Src.Specificity;
     SelectorText := Src.SelectorText;
+    if Assigned(Src.CustomProps) then begin
+      if CustomProps = nil then CustomProps := TStringList.Create;
+      CustomProps.Assign(Src.CustomProps);
+    end else
+    if Assigned(CustomProps) then CustomProps.Clear;
 	end else
 		inherited Assign(Source);
 end;
@@ -2519,345 +2564,837 @@ begin
   end;
 end;
 
-function Merge(c1, c2, c3, c4: Cardinal): Cardinal; inline;
-var
-  r, g, b, a: Cardinal;
-begin
-  a := (c1 shr 24) and $ff + (c2 shr 24) and $ff + (c3 shr 24) and $ff + (c4 shr 24) and $ff;
-  r := (c1 shr 16) and $ff + (c2 shr 16) and $ff + (c3 shr 16) and $ff + (c4 shr 16) and $ff;
-  g := (c1 shr  8) and $ff + (c2 shr  8) and $ff + (c3 shr  8) and $ff + (c4 shr  8) and $ff;
-  b := (c1       ) and $ff + (c2       ) and $ff + (c3       ) and $ff + (c4       ) and $ff;
-  Result := (a shr 2) shl 24
-          + (r shr 2) shl 16
-          + (g shr 2) shl  8
-          + (b shr 2);
-end;
+(*
+  Painting of backgrounds and borders
 
-{$ifdef fpc}
-procedure AntiAliaze(Bmp: TBitmap);
+  Straight parts (background, border sides) are painted by FillRect, corners (border-radius, joins of
+  borders) are rasterized with antialiasing into small bitmaps with alpha channel. Corner bitmaps are
+  cached globally (same corners of different nodes share bitmap). Backgrounds with gradient, image or
+  alpha color are rendered to one cached bitmap per node.
+*)
 type
-  TPair = record
-    c1, c2 : Cardinal;
+  TCSSSampleKind = (cskOutside, cskBackground, cskTop, cskLeft, cskBottom, cskRight);
+  TCSSRGBA = record
+    R, G, B, A: Single;                 // 0..1, not premultiplied
   end;
+
 var
-  w,h:Integer;
-  x,y: Integer;
-  p1 : PCardinal;
-  p2 : ^TPair;
-  p3 : ^TPair;
+  CSSCornerCache: TStringList;          // key -> TBitmap
+  CSSImageCache: TStringList;           // url -> TLazIntfImage
+
+const
+  CSS_CORNER_CACHE_LIMIT = 2000;
+
+function InRoundRect(L, T, R, B: Single; const RX, RY: array of Single; X, Y: Single): Boolean;
 begin
-  w := Bmp.Width div 2;
-  h := Bmp.Height div 2;
-  for y := 0 to h - 1 do  begin
-    p1 := Bmp.ScanLine[y];
-    p2 := Bmp.ScanLine[2 * y];
-    p3 := Bmp.ScanLine[2 * y + 1];
-    for x:= 0 to w - 1 do begin
-      p1^ := Merge(p2^.c1, p2^.c2, p3^.c1, p3^.c2);
-      Inc(p1);
-      Inc(p2);
-      Inc(p3);
-    end;
-  end;
-  Bmp.SetSize(w, h);
+  Result := False;
+  if (X < L) or (X >= R) or (Y < T) or (Y >= B) then Exit;
+  if (RX[0] > 0) and (RY[0] > 0) and (X < L + RX[0]) and (Y < T + RY[0]) then
+    Exit(Sqr((X - L - RX[0]) / RX[0]) + Sqr((Y - T - RY[0]) / RY[0]) <= 1);
+  if (RX[1] > 0) and (RY[1] > 0) and (X > R - RX[1]) and (Y < T + RY[1]) then
+    Exit(Sqr((X - R + RX[1]) / RX[1]) + Sqr((Y - T - RY[1]) / RY[1]) <= 1);
+  if (RX[2] > 0) and (RY[2] > 0) and (X > R - RX[2]) and (Y > B - RY[2]) then
+    Exit(Sqr((X - R + RX[2]) / RX[2]) + Sqr((Y - B + RY[2]) / RY[2]) <= 1);
+  if (RX[3] > 0) and (RY[3] > 0) and (X < L + RX[3]) and (Y > B - RY[3]) then
+    Exit(Sqr((X - L - RX[3]) / RX[3]) + Sqr((Y - B + RY[3]) / RY[3]) <= 1);
+  Result := True;
 end;
 
-procedure ClearBitmap(Bmp: TBitmap);
-var
-  w,h:Integer;
-  x,y: Integer;
-  p1 : PCardinal;
+function InOuterShape(const S: TCSSPaintShape; X, Y: Single): Boolean; inline;
 begin
-  w := Bmp.Width;
-  h := Bmp.Height;
-  Bmp.BeginUpdate();
-  for y := 0 to h - 1 do  begin
-    p1 := PCardinal(Bmp.RawImage.GetLineStart(y));  //Bmp.ScanLine[y];
-    for x:= 0 to w - 1 do begin
-//      if p1^ = 0 then
-        p1^ := $a0 shl 24 OR $ff shl 16;
-      Inc(p1);
-    end;
-  end;
-  Bmp.EndUpdate();
+  Result := InRoundRect(S.L, S.T, S.R, S.B, S.RX, S.RY, X, Y);
 end;
-{$endif}
 
 (*
-  Function to calculate the intersectionpoints of an ellipse (x/a)^2 + (y/b)^2 = 1
-  and the line y = m*x + n.
+  Inner shape (padding box): inner radius = outer radius - border width, https://www.w3.org/TR/css-backgrounds-3/#corner-shaping
 *)
-function CalcIntersection(a, b, m, n: Single) : TFloatPoint; inline;
+function InInnerShape(const S: TCSSPaintShape; X, Y: Single): Boolean;
 var
-  D : Single;
-  p, q : Single;
+  IRX, IRY: array[0..3] of Single;
 begin
-  Result := FPoint(0,0);
-  D := sqr(a * b) * (sqr(b) - sqr(n) + sqr(a * m));
-  if D < 0 then exit;
-  D := sqrt(D);
-  p := -a * a * m * n;
-  q := sqr(b) + sqr(a * m);
-  Result.x := (p + D) / q;
-  Result.y := m * Result.x + n;
+  IRX[0] := Max(0, S.RX[0] - S.BW[csLeft]);   IRY[0] := Max(0, S.RY[0] - S.BW[csTop]);
+  IRX[1] := Max(0, S.RX[1] - S.BW[csRight]);  IRY[1] := Max(0, S.RY[1] - S.BW[csTop]);
+  IRX[2] := Max(0, S.RX[2] - S.BW[csRight]);  IRY[2] := Max(0, S.RY[2] - S.BW[csBottom]);
+  IRX[3] := Max(0, S.RX[3] - S.BW[csLeft]);   IRY[3] := Max(0, S.RY[3] - S.BW[csBottom]);
+  Result := InRoundRect(S.L + S.BW[csLeft], S.T + S.BW[csTop], S.R - S.BW[csRight], S.B - S.BW[csBottom], IRX, IRY, X, Y);
+end;
+
+(*
+  Classify point of shape. Point in border area belongs to side with smaller distance / border width,
+  so join of two borders goes from outer corner to inner corner and side with zero width takes nothing.
+  ACorner: candidates sides (0 top-left, 1 top-right, 2 bottom-right, 3 bottom-left), -1 = by quadrant
+*)
+function SampleShape(const S: TCSSPaintShape; ACorner: Integer; X, Y: Single): TCSSSampleKind;
+var
+  HSide, VSide: TCSSSide;
+  DH, DV: Single;
+begin
+  if not InOuterShape(S, X, Y) then Exit(cskOutside);
+  if InInnerShape(S, X, Y) then Exit(cskBackground);
+  if ACorner < 0 then begin
+    if X < (S.L + S.R) / 2 then ACorner := 0 else ACorner := 1;
+    if Y >= (S.T + S.B) / 2 then ACorner := 3 - ACorner;
+  end;
+  if ACorner in [0, 3] then HSide := csLeft else HSide := csRight;
+  if ACorner in [0, 1] then VSide := csTop else VSide := csBottom;
+  if S.BW[HSide] > 0 then begin
+    if HSide = csLeft then DH := (X - S.L) / S.BW[HSide] else DH := (S.R - X) / S.BW[HSide];
+  end else
+    DH := MaxSingle;
+  if S.BW[VSide] > 0 then begin
+    if VSide = csTop then DV := (Y - S.T) / S.BW[VSide] else DV := (S.B - Y) / S.BW[VSide];
+  end else
+    DV := MaxSingle;
+  if (DH = MaxSingle) and (DV = MaxSingle) then Exit(cskBackground);
+  if DV <= DH then begin
+    if VSide = csTop then Result := cskTop else Result := cskBottom;
+  end else begin
+    if HSide = csLeft then Result := cskLeft else Result := cskRight;
+  end;
+end;
+
+function IntfImageToBitmap(AImage: TLazIntfImage): TBitmap;
+begin
+  Result := TBitmap.Create;
+  Result.LoadFromIntfImage(AImage);
+end;
+
+function NewAlphaImage(AWidth, AHeight: Integer): TLazIntfImage;
+begin
+  Result := TLazIntfImage.Create(0, 0, [riqfRGB, riqfAlpha]);
+  Result.SetSize(AWidth, AHeight);
+end;
+
+function SamplesPerAxis: Integer; inline;
+begin
+  if CSSAntialiasing then Result := 4 else Result := 1;
+end;
+
+(*
+  Rasterize part of shape (background and borders) to bitmap with alpha
+  AColors: background, top, left, bottom, right (alpha 0 = not painted)
+*)
+function RasterizeShape(const S: TCSSPaintShape; ACorner: Integer; X0, Y0, AWidth, AHeight: Integer;
+  const AColors: array of TCSSRGBA): TBitmap;
+var
+  Img: TLazIntfImage;
+  X, Y, SX, SY, N: Integer;
+  SR, SG, SB, SA, Step: Single;
+  Kind: TCSSSampleKind;
+  C: TCSSRGBA;
+begin
+  N := SamplesPerAxis;
+  Step := 1 / N;
+  Img := NewAlphaImage(AWidth, AHeight);
+  try
+    for Y := 0 to AHeight - 1 do
+      for X := 0 to AWidth - 1 do begin
+        SR := 0; SG := 0; SB := 0; SA := 0;
+        for SY := 0 to N - 1 do
+          for SX := 0 to N - 1 do begin
+            Kind := SampleShape(S, ACorner, X0 + X + (SX + 0.5) * Step, Y0 + Y + (SY + 0.5) * Step);
+            if Kind = cskOutside then Continue;
+            C := AColors[Ord(Kind) - 1];
+            if (C.A < 1) and (Kind <> cskBackground) then begin   // transparent border shows background
+              SR := SR + AColors[0].R * AColors[0].A * (1 - C.A);
+              SG := SG + AColors[0].G * AColors[0].A * (1 - C.A);
+              SB := SB + AColors[0].B * AColors[0].A * (1 - C.A);
+              SA := SA + AColors[0].A * (1 - C.A);
+            end;
+            SR := SR + C.R * C.A;
+            SG := SG + C.G * C.A;
+            SB := SB + C.B * C.A;
+            SA := SA + C.A;
+          end;
+        if SA > 0 then
+          Img.Colors[X, Y] := FPColor(Round(SR / SA * $FFFF), Round(SG / SA * $FFFF), Round(SB / SA * $FFFF), Round(SA / (N * N) * $FFFF))
+        else
+          Img.Colors[X, Y] := colTransparent;
+      end;
+    Result := IntfImageToBitmap(Img);
+  finally
+    Img.Free;
+  end;
+end;
+
+function RGBAFromColor(AColor: TColor; AAlpha: Single = 1): TCSSRGBA;
+begin
+  AColor := ColorToRGB(AColor);
+  Result.R := Red(AColor) / 255;
+  Result.G := Green(AColor) / 255;
+  Result.B := Blue(AColor) / 255;
+  Result.A := AAlpha;
+end;
+
+function RGBAKey(const C: TCSSRGBA): String;
+begin
+  Result := IntToHex(Round(C.R * 255), 2) + IntToHex(Round(C.G * 255), 2) + IntToHex(Round(C.B * 255), 2) + IntToHex(Round(C.A * 255), 2);
+end;
+
+(*
+  Get cached rasterized corner
+*)
+function CornerBitmap(const AKey: String; const S: TCSSPaintShape; ACorner: Integer; const ARect: TRect;
+  const AColors: array of TCSSRGBA): TBitmap;
+var
+  X: Integer;
+begin
+  if CSSCornerCache = nil then begin
+    CSSCornerCache := TStringList.Create;
+    CSSCornerCache.Sorted := True;
+    CSSCornerCache.CaseSensitive := True;
+    CSSCornerCache.OwnsObjects := True;
+  end;
+  if CSSCornerCache.Find(AKey, X) then Exit(TBitmap(CSSCornerCache.Objects[X]));
+  if CSSCornerCache.Count > CSS_CORNER_CACHE_LIMIT then CSSCornerCache.Clear;
+  Result := RasterizeShape(S, ACorner, ARect.Left, ARect.Top, ARect.Width, ARect.Height, AColors);
+  CSSCornerCache.AddObject(AKey, Result);
+end;
+
+procedure CSSClearPaintCache;
+begin
+  if Assigned(CSSCornerCache) then CSSCornerCache.Clear;
+  if Assigned(CSSImageCache) then CSSImageCache.Clear;
+end;
+
+{ background images }
+
+(*
+  Register image for url(AName) in background-image (eg. image from resources)
+*)
+procedure CSSRegisterImage(const AName: String; AGraphic: TGraphic);
+var
+  X: Integer;
+  Bmp: TBitmap;
+  Img: TLazIntfImage;
+begin
+  if CSSImageCache = nil then begin
+    CSSImageCache := TStringList.Create;
+    CSSImageCache.Sorted := True;
+    CSSImageCache.OwnsObjects := True;
+  end;
+  if CSSImageCache.Find(AName, X) then CSSImageCache.Delete(X);
+  if AGraphic = nil then Exit;
+  if AGraphic is TRasterImage then
+    Img := TRasterImage(AGraphic).CreateIntfImage
+  else begin
+    Bmp := TBitmap.Create;
+    try
+      Bmp.SetSize(AGraphic.Width, AGraphic.Height);
+      Bmp.Canvas.Draw(0, 0, AGraphic);
+      Img := Bmp.CreateIntfImage;
+    finally
+      Bmp.Free;
+    end;
+  end;
+  CSSImageCache.AddObject(AName, Img);
+end;
+
+(*
+  Load image for background-image: registered name, absolute path or path relative to application
+*)
+function CSSLoadImage(const AName: String): TLazIntfImage;
+var
+  X: Integer;
+  Pic: TPicture;
+  FileName: String;
+begin
+  Result := nil;
+  if AName = '' then Exit;
+  if Assigned(CSSImageCache) and CSSImageCache.Find(AName, X) then Exit(TLazIntfImage(CSSImageCache.Objects[X]));
+  FileName := AName;
+  {$ifdef fpc}
+  if not FileExists(FileName) then FileName := Application.Location + AName;
+  {$endif}
+  if not FileExists(FileName) then Exit;
+  Pic := TPicture.Create;
+  try
+    try
+      Pic.LoadFromFile(FileName);
+      CSSRegisterImage(AName, Pic.Graphic);
+    except
+      Exit;   // not supported image
+    end;
+  finally
+    Pic.Free;
+  end;
+  if CSSImageCache.Find(AName, X) then Result := TLazIntfImage(CSSImageCache.Objects[X]);
+end;
+
+{ gradients }
+
+type
+  TCSSGradientStop = record
+    Color: TCSSRGBA;
+    Pos: Single;              // 0..1, -1 = not set
+  end;
+  TCSSGradient = record
+    DirX, DirY: Single;       // direction of gradient line
+    Stops: array of TCSSGradientStop;
+  end;
+
+function CSSColorToRGBA(const AColor: TCSSColor): TCSSRGBA;
+begin
+  if AColor.ColorType = cctNormal then
+    Result := RGBAFromColor(AColor.Value, AColor.Alpha / 255)
+  else
+    Result := RGBAFromColor(0, 0);
+end;
+
+(*
+  Parse linear-gradient(...) https://developer.mozilla.org/en-US/docs/Web/CSS/gradient/linear-gradient
+*)
+function ParseLinearGradient(const AValue: String; AWidth, AHeight: Integer; out AGradient: TCSSGradient): Boolean;
+var
+  Args, Parts: TStringArray;
+  I, First, J, K: Integer;
+  S, Dir: String;
+  Angle, F: Single;
+  C: TCSSColor;
+  L: TCSSLength;
+  Len: Single;
+begin
+  Result := False;
+  AGradient.Stops := nil;
+  S := Trim(AValue);
+  if not SameText(Copy(S, 1, 16), 'linear-gradient(') or (S[Length(S)] <> ')') then Exit;
+  Args := SplitParameters(Copy(S, 17, Length(S) - 17), ',');
+  if Length(Args) = 0 then Exit;
+  // direction
+  Angle := Pi;   // to bottom
+  First := 0;
+  Dir := LowerCase(Trim(Args[0]));
+  AGradient.DirX := 0;
+  AGradient.DirY := 1;
+  if Dir.StartsWith('to ') then begin
+    First := 1;
+    Dir := Trim(Copy(Dir, 4, MaxInt));
+    AGradient.DirX := 0; AGradient.DirY := 0;
+    // corners: 50% line goes through other two corners
+    if Pos('top', Dir) > 0 then AGradient.DirY := -1;
+    if Pos('bottom', Dir) > 0 then AGradient.DirY := 1;
+    if Pos('left', Dir) > 0 then AGradient.DirX := -1;
+    if Pos('right', Dir) > 0 then AGradient.DirX := 1;
+    if (AGradient.DirX <> 0) and (AGradient.DirY <> 0) then begin
+      AGradient.DirX := AGradient.DirX * AHeight;
+      AGradient.DirY := AGradient.DirY * AWidth;
+    end;
+  end else
+  if Dir.EndsWith('deg') or Dir.EndsWith('turn') or Dir.EndsWith('rad') then begin
+    First := 1;
+    if Dir.EndsWith('deg') then Angle := CSSStrToFloatDef(Copy(Dir, 1, Length(Dir) - 3), 180) * CSS_DEG_RAD
+    else if Dir.EndsWith('turn') then Angle := CSSStrToFloatDef(Copy(Dir, 1, Length(Dir) - 4), 0.5) * 2 * Pi
+    else Angle := CSSStrToFloatDef(Copy(Dir, 1, Length(Dir) - 3), Pi);
+    AGradient.DirX := Sin(Angle);
+    AGradient.DirY := -Cos(Angle);
+  end;
+  F := Sqrt(Sqr(AGradient.DirX) + Sqr(AGradient.DirY));
+  if F = 0 then Exit;
+  AGradient.DirX := AGradient.DirX / F;
+  AGradient.DirY := AGradient.DirY / F;
+  Len := Abs(AWidth * AGradient.DirX) + Abs(AHeight * AGradient.DirY);
+  // color stops
+  for I := First to High(Args) do begin
+    Parts := SplitParameters(Trim(Args[I]));
+    if Length(Parts) = 0 then Continue;    // empty stop (eg. unset variable)
+    C := CSSToColor(Parts[0]);
+    if C.ColorType = cctTransparent then begin
+      C.ColorType := cctNormal;
+      C.Alpha := 0;
+    end;
+    if C.ColorType <> cctNormal then Continue;
+    for J := 0 to Max(0, High(Parts) - 1) do begin      // "color pos1 pos2" creates two stops
+      SetLength(AGradient.Stops, Length(AGradient.Stops) + 1);
+      K := High(AGradient.Stops);
+      AGradient.Stops[K].Color := CSSColorToRGBA(C);
+      AGradient.Stops[K].Pos := -1;
+      if (Length(Parts) > J + 1) and TryCSSToLengthValue(Parts[J + 1], L) then begin
+        if L.LengthType = cltPercentage then AGradient.Stops[K].Pos := L.Value / 100
+        else if (L.LengthType = cltPx) and (Len > 0) then AGradient.Stops[K].Pos := L.Value / Len;
+      end;
+    end;
+  end;
+  if Length(AGradient.Stops) = 0 then Exit;
+  // missing positions: first 0, last 1, others evenly distributed, positions are not decreasing
+  if AGradient.Stops[0].Pos < 0 then AGradient.Stops[0].Pos := 0;
+  if AGradient.Stops[High(AGradient.Stops)].Pos < 0 then AGradient.Stops[High(AGradient.Stops)].Pos := 1;
+  I := 1;
+  while I < High(AGradient.Stops) do begin
+    if AGradient.Stops[I].Pos < 0 then begin
+      J := I;
+      while AGradient.Stops[J].Pos < 0 do Inc(J);
+      for K := I to J - 1 do
+        AGradient.Stops[K].Pos := AGradient.Stops[I - 1].Pos + (AGradient.Stops[J].Pos - AGradient.Stops[I - 1].Pos) * (K - I + 1) / (J - I + 1);
+      I := J;
+    end;
+    Inc(I);
+  end;
+  for I := 1 to High(AGradient.Stops) do
+    AGradient.Stops[I].Pos := Max(AGradient.Stops[I].Pos, AGradient.Stops[I - 1].Pos);
+  Result := True;
+end;
+
+function GradientColorAt(const AGradient: TCSSGradient; T: Single): TCSSRGBA;
+var
+  I: Integer;
+  F, A1, A2: Single;
+  C1, C2: TCSSRGBA;
+begin
+  with AGradient do begin
+    if T <= Stops[0].Pos then Exit(Stops[0].Color);
+    if T >= Stops[High(Stops)].Pos then Exit(Stops[High(Stops)].Color);
+    I := 1;
+    while (I < High(Stops)) and (Stops[I].Pos < T) do Inc(I);
+    C1 := Stops[I - 1].Color;
+    C2 := Stops[I].Color;
+    if Stops[I].Pos > Stops[I - 1].Pos then F := (T - Stops[I - 1].Pos) / (Stops[I].Pos - Stops[I - 1].Pos) else F := 1;
+  end;
+  // interpolation in premultiplied space
+  A1 := C1.A * (1 - F);
+  A2 := C2.A * F;
+  Result.A := A1 + A2;
+  if Result.A > 0 then begin
+    Result.R := (C1.R * A1 + C2.R * A2) / Result.A;
+    Result.G := (C1.G * A1 + C2.G * A2) / Result.A;
+    Result.B := (C1.B * A1 + C2.B * A2) / Result.A;
+  end else begin
+    Result.R := 0; Result.G := 0; Result.B := 0;
+  end;
+end;
+
+(*
+  Source over: AColor over ADest
+*)
+function BlendOver(const ADest, AColor: TCSSRGBA): TCSSRGBA;
+var
+  A: Single;
+begin
+  A := AColor.A + ADest.A * (1 - AColor.A);
+  Result.A := A;
+  if A > 0 then begin
+    Result.R := (AColor.R * AColor.A + ADest.R * ADest.A * (1 - AColor.A)) / A;
+    Result.G := (AColor.G * AColor.A + ADest.G * ADest.A * (1 - AColor.A)) / A;
+    Result.B := (AColor.B * AColor.A + ADest.B * ADest.A * (1 - AColor.A)) / A;
+  end else begin
+    Result.R := 0; Result.G := 0; Result.B := 0;
+  end;
+end;
+
+function ImageColorAt(AImage: TLazIntfImage; U, V: Single): TCSSRGBA;   // bilinear sampling, U, V in source pixels
+var
+  X0, Y0, X1, Y1: Integer;
+  FX, FY: Single;
+  function Px(X, Y: Integer): TCSSRGBA;
+  var
+    C: TFPColor;
+  begin
+    C := AImage.Colors[X, Y];
+    Result.R := C.Red / $FFFF; Result.G := C.Green / $FFFF; Result.B := C.Blue / $FFFF; Result.A := C.Alpha / $FFFF;
+  end;
+  function Mix(const A, B: TCSSRGBA; F: Single): TCSSRGBA;
+  begin
+    Result.R := A.R + (B.R - A.R) * F; Result.G := A.G + (B.G - A.G) * F;
+    Result.B := A.B + (B.B - A.B) * F; Result.A := A.A + (B.A - A.A) * F;
+  end;
+begin
+  U := U - 0.5; V := V - 0.5;
+  X0 := EnsureRange(Floor(U), 0, AImage.Width - 1);
+  Y0 := EnsureRange(Floor(V), 0, AImage.Height - 1);
+  X1 := Min(X0 + 1, AImage.Width - 1);
+  Y1 := Min(Y0 + 1, AImage.Height - 1);
+  FX := EnsureRange(U - X0, 0, 1);
+  FY := EnsureRange(V - Y0, 0, 1);
+  Result := Mix(Mix(Px(X0, Y0), Px(X1, Y0), FX), Mix(Px(X0, Y1), Px(X1, Y1), FX), FY);
+end;
+
+(*
+  Replace var(--name, fallback) with custom property value of node or its parents
+*)
+function THtmlNode.ResolveVars(const AValue: String; ADepth: Integer = 0): String;
+var
+  P, I, Level, Comma: Integer;
+  Inner, Name, Fallback, Value: String;
+  N: THtmlNode;
+  Found: Boolean;
+begin
+  Result := AValue;
+  if ADepth > 8 then Exit;      // recursion limit
+  P := Pos('var(', Result);
+  while P > 0 do begin
+    // find matching parenthesis
+    Level := 0;
+    Comma := 0;
+    I := P + 3;
+    repeat
+      if Result[I] = '(' then Inc(Level)
+      else if Result[I] = ')' then Dec(Level)
+      else if (Result[I] = ',') and (Level = 1) and (Comma = 0) then Comma := I;
+      Inc(I);
+    until (Level = 0) or (I > Length(Result));
+    if Level <> 0 then Exit;
+    Inner := Copy(Result, P + 4, I - P - 5);
+    if Comma > 0 then begin
+      Name := Trim(Copy(Result, P + 4, Comma - P - 4));
+      Fallback := Trim(Copy(Result, Comma + 1, I - Comma - 2));
+    end else begin
+      Name := Trim(Inner);
+      Fallback := '';
+    end;
+    Found := False;
+    Value := '';
+    N := Self;
+    while Assigned(N) and not Found do begin
+      if Assigned(N.FCompStyle.CustomProps) and (N.FCompStyle.CustomProps.IndexOfName(Name) >= 0) then begin
+        Value := N.FCompStyle.CustomProps.Values[Name];
+        Found := True;
+      end;
+      N := N.ParentNode;
+    end;
+    if not Found then Value := Fallback;
+    Value := ResolveVars(Value, ADepth + 1);
+    Result := Copy(Result, 1, P - 1) + Value + Copy(Result, I, MaxInt);
+    P := Pos('var(', Result);
+  end;
+end;
+
+(*
+  Color with alpha is blended with background of node or nearest parent (borders and text are painted
+  without alpha channel)
+*)
+function THtmlNode.EffectiveColor(const AColor: TCSSColor): TColor;
+var
+  N: THtmlNode;
+  Back: TColor;
+  A: Single;
+begin
+  Result := AColor.Value;
+  if AColor.Alpha >= 255 then Exit;
+  Back := clWhite;
+  N := Self;
+  while Assigned(N) do begin
+    if (N.FCompStyle.Background.Color.ColorType = cctNormal) and (N.FCompStyle.Background.Color.Alpha = 255) then begin
+      Back := N.FCompStyle.Background.Color.Value;
+      Break;
+    end;
+    N := N.ParentNode;
+  end;
+  A := AColor.Alpha / 255;
+  Back := ColorToRGB(Back);
+  Result := ColorToRGB(AColor.Value);
+  Result := RGBToColor(Round(Red(Result) * A + Red(Back) * (1 - A)), Round(Green(Result) * A + Green(Back) * (1 - A)),
+    Round(Blue(Result) * A + Blue(Back) * (1 - A)));
+end;
+
+(*
+  Destination rectangle of background image (background-size, background-position)
+*)
+procedure THtmlNode.BackgroundImageRect(AImage: TLazIntfImage; AWidth, AHeight: Integer; out ARect: TRectF);
+var
+  Parts: TStringArray;
+  IW, IH, W, H, Scale: Single;
+  L: TCSSLength;
+  S: String;
+  function PosValue(const AValue: String; AFree: Single; out AResult: Single): Boolean;
+  begin
+    Result := True;
+    if (AValue = 'left') or (AValue = 'top') then AResult := 0
+    else if AValue = 'center' then AResult := AFree / 2
+    else if (AValue = 'right') or (AValue = 'bottom') then AResult := AFree
+    else if TryCSSToLengthValue(AValue, L) then begin
+      if L.LengthType = cltPercentage then AResult := AFree * L.Value / 100
+      else AResult := CalcLength(L, Round(AFree));
+    end else
+      Result := False;
+  end;
+var
+  X, Y: Single;
+begin
+  IW := AImage.Width * RootNode.FPixelRatio;
+  IH := AImage.Height * RootNode.FPixelRatio;
+  W := IW;
+  H := IH;
+  S := LowerCase(Trim(FCompStyle.Background.Size));
+  if (S = 'cover') or (S = 'contain') then begin
+    if S = 'cover' then Scale := Max(AWidth / IW, AHeight / IH) else Scale := Min(AWidth / IW, AHeight / IH);
+    W := IW * Scale;
+    H := IH * Scale;
+  end else
+  if (S <> '') and (S <> 'auto') then begin
+    Parts := SplitParameters(S);
+    if (Length(Parts) > 0) and TryCSSToLengthValue(Parts[0], L) and (L.LengthType <> cltAuto) then
+      W := CalcLength(L, AWidth);
+    if (Length(Parts) > 1) and TryCSSToLengthValue(Parts[1], L) and (L.LengthType <> cltAuto) then
+      H := CalcLength(L, AHeight)
+    else
+      H := IH * W / IW;     // keep aspect ratio
+    if (Length(Parts) > 1) and (Parts[0] = 'auto') then W := IW * H / IH;
+  end;
+  W := Max(1, W);
+  H := Max(1, H);
+  X := 0;
+  Y := 0;
+  Parts := SplitParameters(LowerCase(Trim(FCompStyle.Background.Position)));
+  if Length(Parts) = 1 then begin
+    if (Parts[0] = 'top') or (Parts[0] = 'bottom') then begin
+      PosValue('center', AWidth - W, X);
+      PosValue(Parts[0], AHeight - H, Y);
+    end else begin
+      PosValue(Parts[0], AWidth - W, X);
+      PosValue('center', AHeight - H, Y);
+    end;
+  end else
+  if Length(Parts) >= 2 then begin
+    if (Parts[0] = 'top') or (Parts[0] = 'bottom') then begin   // "top left"
+      PosValue(Parts[1], AWidth - W, X);
+      PosValue(Parts[0], AHeight - H, Y);
+    end else begin
+      PosValue(Parts[0], AWidth - W, X);
+      PosValue(Parts[1], AHeight - H, Y);
+    end;
+  end;
+  ARect := RectF(X, Y, X + W, Y + H);
+end;
+
+(*
+  Background with gradient, image or color with alpha is rendered to one bitmap (with rounded corners)
+*)
+function THtmlNode.BackgroundLayer(const S: TCSSPaintShape; AWidth, AHeight: Integer; const AImage: String;
+  const ACornerW, ACornerH: array of Integer): TBitmap;
+var
+  Key, Url: String;
+  Img: TLazIntfImage;
+  Src: TLazIntfImage;
+  Grad: TCSSGradient;
+  HasGrad, Repeating: Boolean;
+  Base, C: TCSSRGBA;
+  X, Y, SX, SY, N, I: Integer;
+  T, Cov, U, V, Step: Single;
+  Dst: TRectF;
+  Local: TCSSPaintShape;
+  InCorner: Boolean;
+begin
+  Key := Format('%d,%d,%s,%s,%s,%s,%s,%d,%d', [AWidth, AHeight, AImage, RGBAKey(CSSColorToRGBA(FCompStyle.Background.Color)),
+    FCompStyle.Background.Size, FCompStyle.Background.Position, FCompStyle.Background.RepeatMode, Ord(CSSAntialiasing), Round(RootNode.FPixelRatio * 100)]);
+  for I := 0 to 3 do Key := Key + Format(',%f,%f', [S.RX[I], S.RY[I]]);
+  if Assigned(FBgLayer) and (FBgLayerKey = Key) then Exit(FBgLayer);
+  FreeAndNil(FBgLayer);
+  FBgLayerKey := Key;
+
+  Local := S;   // shape relative to layer
+  Local.L := 0; Local.T := 0; Local.R := AWidth; Local.B := AHeight;
+  Base := CSSColorToRGBA(FCompStyle.Background.Color);
+  HasGrad := ParseLinearGradient(AImage, AWidth, AHeight, Grad);
+  Src := nil;
+  if not HasGrad and SameText(Copy(Trim(AImage), 1, 4), 'url(') then begin
+    Url := Trim(StrBetween(Trim(AImage), '(', ')'));
+    Url := StringReplace(StringReplace(Url, '"', '', [rfReplaceAll]), '''', '', [rfReplaceAll]);
+    Src := CSSLoadImage(Url);
+  end;
+  if Assigned(Src) then BackgroundImageRect(Src, AWidth, AHeight, Dst);
+  Repeating := not SameText(Trim(FCompStyle.Background.RepeatMode), 'no-repeat');
+  N := SamplesPerAxis;
+  Step := 1 / N;
+
+  Img := NewAlphaImage(AWidth, AHeight);
+  try
+    for Y := 0 to AHeight - 1 do
+      for X := 0 to AWidth - 1 do begin
+        C := Base;
+        if HasGrad then begin
+          T := ((X + 0.5 - AWidth / 2) * Grad.DirX + (Y + 0.5 - AHeight / 2) * Grad.DirY) /
+            (Abs(AWidth * Grad.DirX) + Abs(AHeight * Grad.DirY)) + 0.5;
+          C := BlendOver(C, GradientColorAt(Grad, T));
+        end else
+        if Assigned(Src) then begin
+          U := (X + 0.5 - Dst.Left) / Dst.Width;
+          V := (Y + 0.5 - Dst.Top) / Dst.Height;
+          if Repeating then begin
+            U := U - Floor(U);
+            V := V - Floor(V);
+          end;
+          if (U >= 0) and (U < 1) and (V >= 0) and (V < 1) then
+            C := BlendOver(C, ImageColorAt(Src, U * Src.Width, V * Src.Height));
+        end;
+        // rounded corners
+        InCorner := ((X < ACornerW[0]) and (Y < ACornerH[0])) or ((X >= AWidth - ACornerW[1]) and (Y < ACornerH[1])) or
+          ((X >= AWidth - ACornerW[2]) and (Y >= AHeight - ACornerH[2])) or ((X < ACornerW[3]) and (Y >= AHeight - ACornerH[3]));
+        if InCorner then begin
+          Cov := 0;
+          for SY := 0 to N - 1 do
+            for SX := 0 to N - 1 do
+              if InOuterShape(Local, X + (SX + 0.5) * Step, Y + (SY + 0.5) * Step) then Cov := Cov + 1;
+          C.A := C.A * Cov / (N * N);
+        end;
+        if C.A > 0 then
+          Img.Colors[X, Y] := FPColor(Round(C.R * $FFFF), Round(C.G * $FFFF), Round(C.B * $FFFF), Round(C.A * $FFFF))
+        else
+          Img.Colors[X, Y] := colTransparent;
+      end;
+    FBgLayer := IntfImageToBitmap(Img);
+  finally
+    Img.Free;
+  end;
+  Result := FBgLayer;
+end;
+
+(*
+  Paint background and borders of node
+*)
+procedure THtmlNode.PaintBackgroundAndBorder(ACanvas: TCanvas);
+const
+  KIND_SIDE: array[0..3] of TCSSSide = (csTop, csLeft, csBottom, csRight);   // order of colors in RasterizeShape
+var
+  cs: TCSSItem;
+  Box, R: TRect;
+  W, H, I, Y0, Y1, LI, RI: Integer;
+  P: array[0..3] of TPoint;
+  CW, CH: array[0..3] of Integer;
+  S: TCSSPaintShape;
+  BW: array[TCSSSide] of Integer;
+  Side: TCSSSide;
+  SideColor: array[TCSSSide] of TColor;
+  SideVisible: array[TCSSSide] of Boolean;
+  Colors: array[0..4] of TCSSRGBA;
+  BgImage, Key: String;
+  LayerMode, HasBg, Full: Boolean;
+  Ys: array[0..5] of Integer;
+  procedure SortYs;
+  var
+    A, B, T: Integer;
+  begin
+    for A := 0 to High(Ys) - 1 do
+      for B := A + 1 to High(Ys) do
+        if Ys[B] < Ys[A] then begin T := Ys[A]; Ys[A] := Ys[B]; Ys[B] := T; end;
+  end;
+  procedure FillSide(ASide: TCSSSide; const ARect: TRect);
+  begin
+    if not SideVisible[ASide] or (ARect.Right <= ARect.Left) or (ARect.Bottom <= ARect.Top) then Exit;
+    ACanvas.Brush.Color := SideColor[ASide];
+    ACanvas.FillRect(ARect);
+  end;
+begin
+  {$ifndef fmx}
+  cs := FCompStyle;
+  Box := FCompSize.ContentRect;
+  W := Box.Width;
+  H := Box.Height;
+  if (W <= 0) or (H <= 0) then Exit;
+  CalcRadius(W, H, P[0], P[1], P[2], P[3]);
+  BW[csTop] := FCompSize.Border.Top;
+  BW[csLeft] := FCompSize.Border.Left;
+  BW[csBottom] := FCompSize.Border.Bottom;
+  BW[csRight] := FCompSize.Border.Right;
+  for Side := Low(TCSSSide) to High(TCSSSide) do begin
+    SideVisible[Side] := (BW[Side] > 0) and (cs.Border[Side].Color.ColorType <> cctTransparent);
+    if cs.Border[Side].Color.ColorType = cctNormal then SideColor[Side] := EffectiveColor(cs.Border[Side].Color)
+      else SideColor[Side] := EffectiveColor(cs.Color);      // currentcolor
+  end;
+  BgImage := '';
+  if cs.Background.Image <> '' then BgImage := Trim(ResolveVars(cs.Background.Image));
+  if SameText(BgImage, 'none') then BgImage := '';
+  LayerMode := (BgImage <> '') or ((cs.Background.Color.ColorType = cctNormal) and (cs.Background.Color.Alpha < 255));
+  HasBg := (cs.Background.Color.ColorType = cctNormal) and not LayerMode;
+
+  // shape
+  S.L := Box.Left; S.T := Box.Top; S.R := Box.Right; S.B := Box.Bottom;
+  for Side := Low(TCSSSide) to High(TCSSSide) do S.BW[Side] := BW[Side];
+  for I := 0 to 3 do begin
+    S.RX[I] := P[I].x;
+    S.RY[I] := P[I].y;
+  end;
+  // corner areas, these are rasterized
+  CW[0] := Max(P[0].x, BW[csLeft]);  CH[0] := Max(P[0].y, BW[csTop]);
+  CW[1] := Max(P[1].x, BW[csRight]); CH[1] := Max(P[1].y, BW[csTop]);
+  CW[2] := Max(P[2].x, BW[csRight]); CH[2] := Max(P[2].y, BW[csBottom]);
+  CW[3] := Max(P[3].x, BW[csLeft]);  CH[3] := Max(P[3].y, BW[csBottom]);
+  for I := 0 to 3 do
+    if (P[I].x = 0) and (BW[csTop] = 0) and (BW[csBottom] = 0) and (BW[csLeft] = 0) and (BW[csRight] = 0) then begin
+      CW[I] := 0;
+      CH[I] := 0;
+    end;
+  // corners overlap (small node, big borders), whole node is rasterized
+  Full := (CW[0] + CW[1] > W) or (CW[3] + CW[2] > W) or (CH[0] + CH[3] > H) or (CH[1] + CH[2] > H) or
+    (BW[csTop] + BW[csBottom] > H) or (BW[csLeft] + BW[csRight] > W);
+
+  if LayerMode then begin
+    if Full then for I := 0 to 3 do begin CW[I] := W; CH[I] := H; end;
+    ACanvas.Draw(Box.Left, Box.Top, BackgroundLayer(S, W, H, BgImage, CW, CH));
+  end;
+
+  // colors for rasterized parts: background, top, left, bottom, right
+  if HasBg then Colors[0] := RGBAFromColor(cs.Background.Color.Value) else Colors[0] := RGBAFromColor(0, 0);
+  for I := 0 to 3 do
+    if SideVisible[KIND_SIDE[I]] then Colors[I + 1] := RGBAFromColor(SideColor[KIND_SIDE[I]])
+      else Colors[I + 1] := RGBAFromColor(0, 0);
+
+  if Full then begin
+    if HasBg or SideVisible[csTop] or SideVisible[csLeft] or SideVisible[csBottom] or SideVisible[csRight] then begin
+      Key := Format('F%d,%d,%d,%d,%d,%d,%d', [W, H, BW[csTop], BW[csLeft], BW[csBottom], BW[csRight], Ord(CSSAntialiasing)]);
+      for I := 0 to 3 do Key := Key + Format(',%d,%d', [P[I].x, P[I].y]);
+      for I := 0 to 4 do Key := Key + ',' + RGBAKey(Colors[I]);
+      ACanvas.Draw(Box.Left, Box.Top, CornerBitmap(Key, S, -1, Box, Colors));
+    end;
+    Exit;
+  end;
+
+  ACanvas.Brush.Style := bsSolid;
+  ACanvas.Pen.Style := psClear;
+  // background without corners: horizontal slabs
+  if HasBg then begin
+    ACanvas.Brush.Color := cs.Background.Color.Value;
+    Ys[0] := 0; Ys[1] := CH[0]; Ys[2] := CH[1]; Ys[3] := H - CH[3]; Ys[4] := H - CH[2]; Ys[5] := H;
+    SortYs;
+    for I := 0 to High(Ys) - 1 do begin
+      Y0 := Ys[I];
+      Y1 := Ys[I + 1];
+      if Y1 <= Y0 then Continue;
+      if Y0 < CH[0] then LI := CW[0] else if Y0 >= H - CH[3] then LI := CW[3] else LI := 0;
+      if Y0 < CH[1] then RI := CW[1] else if Y0 >= H - CH[2] then RI := CW[2] else RI := 0;
+      R := Rect(Box.Left + LI, Box.Top + Y0, Box.Right - RI, Box.Top + Y1);
+      if R.Right > R.Left then ACanvas.FillRect(R);
+    end;
+  end;
+  // straight parts of borders
+  FillSide(csTop, Rect(Box.Left + CW[0], Box.Top, Box.Right - CW[1], Box.Top + BW[csTop]));
+  FillSide(csBottom, Rect(Box.Left + CW[3], Box.Bottom - BW[csBottom], Box.Right - CW[2], Box.Bottom));
+  FillSide(csLeft, Rect(Box.Left, Box.Top + CH[0], Box.Left + BW[csLeft], Box.Bottom - CH[3]));
+  FillSide(csRight, Rect(Box.Right - BW[csRight], Box.Top + CH[1], Box.Right, Box.Bottom - CH[2]));
+  // corners
+  for I := 0 to 3 do begin
+    if (CW[I] <= 0) or (CH[I] <= 0) then Continue;
+    case I of
+      0: R := Rect(Box.Left, Box.Top, Box.Left + CW[0], Box.Top + CH[0]);
+      1: R := Rect(Box.Right - CW[1], Box.Top, Box.Right, Box.Top + CH[1]);
+      2: R := Rect(Box.Right - CW[2], Box.Bottom - CH[2], Box.Right, Box.Bottom);
+      3: R := Rect(Box.Left, Box.Bottom - CH[3], Box.Left + CW[3], Box.Bottom);
+    end;
+    if not (HasBg or SideVisible[csTop] or SideVisible[csLeft] or SideVisible[csBottom] or SideVisible[csRight]) then Continue;
+    // key: corner geometry and colors of background and both adjacent sides
+    Key := Format('%d,%d,%d,%d,%d,%d', [I, CW[I], CH[I], P[I].x, P[I].y, Ord(CSSAntialiasing)]);
+    case I of
+      0: Key := Key + Format(',%d,%d,%s,%s', [BW[csLeft], BW[csTop], RGBAKey(Colors[2]), RGBAKey(Colors[1])]);
+      1: Key := Key + Format(',%d,%d,%s,%s', [BW[csRight], BW[csTop], RGBAKey(Colors[4]), RGBAKey(Colors[1])]);
+      2: Key := Key + Format(',%d,%d,%s,%s', [BW[csRight], BW[csBottom], RGBAKey(Colors[4]), RGBAKey(Colors[3])]);
+      3: Key := Key + Format(',%d,%d,%s,%s', [BW[csLeft], BW[csBottom], RGBAKey(Colors[2]), RGBAKey(Colors[3])]);
+    end;
+    Key := Key + ',' + RGBAKey(Colors[0]);
+    ACanvas.Draw(R.Left, R.Top, CornerBitmap(Key, S, I, R, Colors));
+  end;
+  {$endif}
 end;
 
 procedure THtmlNode.DrawNode(ACanvas: TCanvas; AClipRect: TRect);
 var
-  OPoly,              // outter poly
-  IPoly: array[0..7] of TPointArray; // inner poly
-  procedure RenderPolygon(TargetCanvas: TCanvas; AColor: TColor; Scale: Single; dx, dy: Integer; Points: array of TFloatPoint);
-  var
-    I: Integer;
-    TA: array of TPoint;
-  begin
-    SetLength(TA, Length(Points));
-    {$ifdef fmx}
-      //TODO: add fmx support
-    {$else}
-    TargetCanvas.Pen.Style := psClear;
-    TargetCanvas.Brush.Color := AColor;
-    TargetCanvas.Brush.Style := bsSolid;
-    {$endif}
-    if (dx <> 0) or (dy <> 0) then begin // paint to tbitmap
-      for I := 0 to High(Points) do begin
-        Ta[I].x := Round((Points[I].x + dx) * Scale)-1;
-        Ta[I].y := Round((Points[I].y + dy) * Scale)-1;
-      end;
-    end else
-    for I := 0 to High(Points) do begin
-      Ta[I].x := Round((Points[I].x + dx) * Scale);
-      Ta[I].y := Round((Points[I].y + dy) * Scale);
-    end;
-    {$ifdef fmx}
-    //TODO: add fmx support
-    {$else}
-    TargetCanvas.Polygon(Ta);
-    {$endif}
-  end;
-
-  // TODO: check if first adding point is same as last and then ignore it
-  procedure AddToArray(var ATargetArray: TPointArray; const AValues: array of TFloatPoint);
-  var
-    Start: Integer;
-    I: Integer;
-  begin
-    Start := Length(ATargetArray);
-    SetLength(ATargetArray, Length(ATargetArray) + Length(AValues));
-    for I := 0 to High(AValues) do ATargetArray[I+Start] := AValues[I];
-  end;
-  procedure FlipArray(var ATargetArray: TPointArray); inline;
-  var
-    I,L: Integer;
-    T: TFloatPoint;
-  begin
-    L := High(ATargetArray);
-    for I := 0 to High(ATargetArray) div 2 do begin
-      T := ATargetArray[I];
-      ATargetArray[I] := ATargetArray[L - I];
-      ATargetArray[L - I] := T;
-    end;
-  end;
-
-  procedure TransformArray(var ATargetArray: TPointArray; Matrix: TMatrixTransform); inline;
-  var
-    I: Integer;
-  begin
-    for I := 0 to High(ATargetArray) do  Matrix.Transform( ATargetArray[I]);
-  end;
-
-  (*
-
-  //               ___---* - outer points
-  //           __--      |
-  //         _-          |
-  //       /         ----|----- SECOND poly
-  //     /*              |
-  //    |  *             |
-  //   |    *        __--* - inner points
-  //  |      *     _-
-  //  |       *   /
-  // |         * /
-  // |          *  - divider angle
-  // |          |
-  // |         |
-  // |      ---|------ FIRST poly
-  // |         |
-  // *---------*
-  *)
-
-  (*
-    Build corners for one border left top and right top
-    B - border
-    R - radius
-  *)
-  procedure BuildBorder(First, Second: Integer; B: TFloatPoint; R: TPoint; Matrix: TMatrixTransform); {$ifdef fpc}inline;{$endif}
-  var
-    fp: TFloatPoint;
-    Angle: Single;
-  begin
-    // outter points
-    if (R.x > 0) and (R.y > 0) then begin    // outter
-      if B.x = 0 then Angle := 0 else begin
-        fp := CalcIntersection(R.x, R.y, B.y / B.x ,  -(((R.x / B.x) * B.y) - R.y));
-        Angle :=  radtodeg( arctan2(fp.y / R.y, fp.x  / R.x));
-      end;
-      BuildArc(OPoly[First], Point(R.x, R.y), 180,  180 + Angle, R.x, R.y);
-      BuildArc(OPoly[Second], Point(R.x, R.y), 180 + Angle, 180 + 90, R.x, R.y);
-    end else begin
-      AddToArray(OPoly[First], FPoint( 0, 0));
-      AddToArray(OPoly[Second], FPoint( 0, 0));
-    end;
-
-    // inner points
-    if (R.x > B.x) and (R.y > B.y) then begin   // inner
-      if B.x = 0 then Angle := 0 else begin
-         fp := CalcIntersection(R.x - B.x, R.y - B.y, B.y / B.x,  -((((R.x- B.x) / B.x) * B.y) - (R.y - B.y)));
-         Angle :=  radtodeg( arctan2(fp.y / R.y, fp.x  / R.x));
-      end;
-      BuildArc(IPoly[First], Point(R.x , R.y), 180, 180 + Angle, R.x - B.x, R.y - B.y);
-      BuildArc(IPoly[Second], Point(R.x , R.y), 180 + Angle, 180 + 90, R.x - B.x, R.y - B.y);
-    end else begin
-      AddToArray(IPoly[First], FPoint(B.x, B.y));
-      AddToArray(IPoly[Second], FPoint(B.x, B.y));
-    end;
-    TransformArray(OPoly[First], Matrix);
-    TransformArray(OPoly[Second], Matrix);
-    TransformArray(IPoly[First], Matrix);
-    TransformArray(IPoly[Second], Matrix);
-  end;
-  var
-    cs: TCSSItem;
-    Flags: Cardinal;
-    R,               // temp rect
-    CRect,           // content rect
-    BSize: TRect;    // border rect
-    RadiusTopLeft,
-    RadiusTopRight,
-    RadiusBottomRight,
-    RadiusBottomLeft: TPoint;
-    Matrix: TMatrixTransform;
-    BackPoly: TPointArray;     // background poly
-    BTopPoly,
-    BBottomPoly,
-    BLeftPoly,
-    BRightPoly: TPointArray;   // border right poly
+  Flags: Cardinal;
+  R,               // temp rect
+  CRect: TRect;    // border box
 begin
-  cs := FCompStyle;
   CRect := CompSize.ContentRect;
-  BSize := CompSize.Border;
-  CalcRadius(CRect.Width, CRect.Height, RadiusTopLeft, RadiusTopRight, RadiusBottomRight, RadiusBottomLeft);
-
-  SetLength(BackPoly, 0);
-  SetLength(BRightPoly, 0);
-  SetLength(BTopPoly, 0);
-  SetLength(BBottomPoly, 0);
-  SetLength(BLeftPoly, 0);
-
-
-  Matrix := TMatrixTransform.Create;
-
-  // build top left border
-  Matrix.Reset.Translate(CRect.Left, CRect.Top);
-  BuildBorder(0, 1, FPoint(BSize.Left, BSize.Top), Point(RadiusTopLeft.x, RadiusTopLeft.y),  Matrix);
-  FlipArray(IPoly[0]);
-  FlipArray(IPoly[1]);
-
-  // build top right border
-  Matrix.Reset.FlipHorizontal.Translate(CRect.Right, CRect.Top);
-  BuildBorder(3, 2, FPoint(BSize.Right, BSize.Top), Point(RadiusTopRight.x, RadiusTopRight.y), Matrix);
-  FlipArray(OPoly[2]);
-  FlipArray(OPoly[3]);
-
-  // build bottom right border
-  Matrix.Reset.FlipHorizontal.FlipVertical.Translate(CRect.Right, CRect.Bottom);
-  BuildBorder(4, 5, FPoint(BSize.Right, BSize.Bottom), Point(RadiusBottomRight.x, RadiusBottomRight.y), Matrix);
-  FlipArray(IPoly[4]);
-  FlipArray(IPoly[5]);
-
-  // build bottom left border
-  Matrix.Reset.FlipVertical.Translate(CRect.Left, CRect.Bottom);
-  BuildBorder(7, 6, FPoint(BSize.Left, BSize.Bottom), Point(RadiusBottomLeft.x, RadiusBottomLeft.y), Matrix);
-  FlipArray(OPoly[7]);
-  FlipArray(OPoly[6]);
-  Matrix.Free;
-
-  {$ifdef fmx}
-  {$else}
+  {$ifndef fmx}
   ACanvas.Clipping := True;
   ACanvas.ClipRect := AClipRect;
   {$endif}
-{
-  ACanvas.Pen.Style := psSolid;
-  ACanvas.Pen.Color := clRed;
-  ACanvas.Brush.Style := bsClear;
-  ACanvas.Rectangle(AClipRect);
-}
-  // rendering part
-  if cs.Background.Color.ColorType = cctNormal then begin
-    AddToArray(BackPoly, OPoly[1]);
-    AddToArray(BackPoly, OPoly[2]);
-    AddToArray(BackPoly, OPoly[3]);
-    AddToArray(BackPoly, OPoly[4]);
-    AddToArray(BackPoly, OPoly[5]);
-    AddToArray(BackPoly, OPoly[6]);
-    AddToArray(BackPoly, OPoly[7]);
-    AddToArray(BackPoly, OPoly[0]);
-    RenderPolygon(ACanvas, cs.Background.Color.Value, 1, 0,0, BackPoly);
-  end;
-
-  if BSize.Top > 0 then begin
-    AddToArray(BTopPoly, OPoly[1]);
-    AddToArray(BTopPoly, OPoly[2]);
-    AddToArray(BTopPoly, IPoly[2]);
-    AddToArray(BTopPoly, IPoly[1]);
-    if cs.Border[csTop].Color.ColorType <> cctTransparent then
-      RenderPolygon(ACanvas, BorderColor(csTop), 1, 0, 0, BTopPoly);
-  end;
-  if BSize.Right > 0 then begin
-    AddToArray(BRightPoly, OPoly[3]);
-    AddToArray(BRightPoly, OPoly[4]);
-    AddToArray(BRightPoly, IPoly[4]);
-    AddToArray(BRightPoly, IPoly[3]);
-    if cs.Border[csRight].Color.ColorType <> cctTransparent then
-      RenderPolygon(ACanvas, BorderColor(csRight), 1, 0, 0, BRightPoly);
-  end;
-  if BSize.Bottom > 0 then begin
-    AddToArray(BBottomPoly, OPoly[5]);
-    AddToArray(BBottomPoly, OPoly[6]);
-    AddToArray(BBottomPoly, IPoly[6]);
-    AddToArray(BBottomPoly, IPoly[5]);
-    if cs.Border[csBottom].Color.ColorType <> cctTransparent then
-      RenderPolygon(ACanvas, BorderColor(csBottom), 1, 0, 0, BBottomPoly);
-  end;
-
-  if BSize.Left > 0 then begin
-    AddToArray(BLeftPoly, OPoly[7]);
-    AddToArray(BLeftPoly, OPoly[0]);
-    AddToArray(BLeftPoly, IPoly[0]);
-    AddToArray(BLeftPoly, IPoly[7]);
-    if cs.Border[csLeft].Color.ColorType <> cctTransparent then
-      RenderPolygon(ACanvas, BorderColor(csLeft), 1, 0, 0, BLeftPoly);
-  end;
-  // fine tunning with antialiasing example
-{  for I := 0 to 3 do Corner[I].Req := False;
-  if ((RadiusTopLeft.x > 0) and (RadiusTopLeft.y > 0)) or ((BSize.Top > 0) and (BSize.Left > 0) and (BSize.Left <> BSize.Top)) then begin
-    Corner[0].Req := True;
-    Corner[0].Width := Math.Max(RadiusTopLeft.x, BSize.Left) * 4;
-    Corner[0].Height := Math.Max(RadiusTopLeft.y, BSize.Top) * 4;
-    Corner[0].Pos := Point( CRect.Left, CRect.Top);
-    FCornerBitmap[0] := TBitmap.Create;
-    FCornerBitmap[0].PixelFormat :=  pf32bit;
-    FCornerBitmap[0].Transparent := False;
-    FCornerBitmap[0].SetSize(Corner[0].Width, Corner[0].Height);
-    FCornerBitmap[0].Canvas.Brush.Color := cs.Background.Color.Value;
-    RenderPolygon(FCornerBitmap[0].Canvas, 4, -CRect.Left, -CRect.Top, BackPoly);
-    AntiAliaze(FCornerBitmap[0]);
-    AntiAliaze(FCornerBitmap[0]);
-    ACanvas.Draw(CRect.Left, CRect.Top, FCornerBitmap[0]);
-    FreeAndNil(FCornerBitmap[0]);
-  end;
-}
+  PaintBackgroundAndBorder(ACanvas);
 
   {$ifdef fmx}
   {$else}
@@ -3062,7 +3599,7 @@ begin
   else
     AFont.Size := 0;
   AFont.Style := St;
-  AFont.Color := FCompStyle.Color.Value;
+  AFont.Color := EffectiveColor(FCompStyle.Color);
   {$endif}
 end;
 
@@ -3167,7 +3704,6 @@ begin
   FCompSize := THtmlSize.Create;
   FClassList := TCSSClassList.Create;
   FCachedFont.Size.Value := -1;
-  for I := 0 to 3 do FCornerBitmap[I] := Nil;
   RootNode := Self;
   FPixelRatio := 1;
   FViewportWidth := -1;
@@ -3184,8 +3720,7 @@ var
 begin
   Clear;
   Detach;
-  for I := 3 downto 0 do
-    if FCornerBitmap[I] <> Nil then FCornerBitmap[I].Free;
+  FBgLayer.Free;
   FClassList.Free;
   FCompSize.Free;
   FCompStyle.Free;
@@ -3282,7 +3817,7 @@ const
     (Name: 'sm'; Width: 640), (Name: 'md'; Width: 768), (Name: 'lg'; Width: 1024), (Name: 'xl'; Width: 1280), (Name: '2xl'; Width: 1536));
 var
   Name, Variant: String;
-  I, P, VW, BpIndex: Integer;
+  I, P, VW, BpIndex, Depth: Integer;
 begin
   Result := False;
   ADeclarations := '';
@@ -3291,7 +3826,17 @@ begin
   BpIndex := -1;
   Name := AClassName;
   repeat
-    P := Pos(':', Name);
+    // variant separator ":" outside of arbitrary value [...]
+    P := 0;
+    Depth := 0;
+    for I := 1 to Length(Name) do begin
+      if Name[I] = '[' then Inc(Depth)
+      else if Name[I] = ']' then Dec(Depth)
+      else if (Name[I] = ':') and (Depth = 0) then begin
+        P := I;
+        Break;
+      end;
+    end;
     if P = 0 then Break;
     Variant := Copy(Name, 1, P - 1);
     Name := Copy(Name, P + 1, MaxInt);
@@ -3533,6 +4078,7 @@ begin
     else begin
       cs.Color.Value := {$ifdef fmx}TColorRec.Black{$else}clBlack{$endif};
       cs.Color.ColorType := cctNormal;
+      cs.Color.Alpha := 255;
     end;
   end;
   if not (cipFontFamily in cs.Specified) then
@@ -4719,6 +5265,8 @@ end;
 finalization
 begin
   CSSColorList.Free;
+  CSSCornerCache.Free;
+  CSSImageCache.Free;
   CSSUtilityCache.Free;
   CSSFontFamilyCache.Free;
   {$ifndef fmx}

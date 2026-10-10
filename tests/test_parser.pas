@@ -40,6 +40,9 @@ type
     procedure TestImportantIsIgnored;
     procedure TestResetRestoresDefaults;
     procedure TestStyleSheetKeepsSelectorWithSpaces;
+    procedure TestColorAlpha;
+    procedure TestBackgroundProperties;
+    procedure TestCustomProperties;
   end;
 
 implementation
@@ -296,6 +299,40 @@ begin
   finally
     Sheet.Free;
   end;
+end;
+
+procedure TTestParser.TestColorAlpha;
+begin
+  FItem.Parse('color: rgba(1,2,3,0.5)');
+  AssertEquals(128, FItem.Color.Alpha);
+  FItem.Parse('color: #11223380');
+  AssertEquals($80, FItem.Color.Alpha);
+  FItem.Parse('color: red');
+  AssertEquals(255, FItem.Color.Alpha);
+end;
+
+procedure TTestParser.TestBackgroundProperties;
+begin
+  FItem.Parse('background: url(a.png) no-repeat center / cover #fff');
+  AssertEquals('url(a.png)', FItem.Background.Image);
+  AssertEquals('no-repeat', FItem.Background.RepeatMode);
+  AssertEquals('center', FItem.Background.Position);
+  AssertEquals('cover', FItem.Background.Size);
+  AssertEquals(clWhite, FItem.Background.Color.Value);
+  FItem.Parse('background: red');
+  AssertEquals('none', FItem.Background.Image);
+  FItem.Parse('background-image: linear-gradient(to right, red, blue); background-size: 10px 20px');
+  AssertEquals('linear-gradient(to right, red, blue)', FItem.Background.Image);
+  AssertEquals('10px 20px', FItem.Background.Size);
+end;
+
+procedure TTestParser.TestCustomProperties;
+begin
+  FItem.Parse('--tw-gradient-from: #fff; --x: rgba(1, 2, 3, 0)');
+  AssertEquals('#fff', FItem.CustomProps.Values['--tw-gradient-from']);
+  AssertEquals('rgba(1, 2, 3, 0)', FItem.CustomProps.Values['--x']);
+  FItem.Reset;
+  AssertEquals(0, FItem.CustomProps.Count);
 end;
 
 initialization

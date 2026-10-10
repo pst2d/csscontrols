@@ -26,11 +26,14 @@ type
     procedure TestTypography;
     procedure TestBorders;
     procedure TestArbitraryValues;
+    procedure TestGradientsAndImages;
+    procedure TestOpacityModifiers;
     procedure TestUnknownClasses;
     procedure TestLonghandWinsOverShorthand;
     procedure TestHoverVariant;
     procedure TestResponsiveVariants;
     procedure TestFirstLastVariants;
+    procedure TestArbitraryValueWithColon;
     procedure TestGroupHover;
     procedure TestStyleSheetAndUtilities;
     procedure TestCardLayout;
@@ -98,7 +101,7 @@ begin
   CheckResolve('text-slate-950', 'color:#020617');
   CheckResolve('bg-white', 'background-color:#ffffff');
   CheckResolve('bg-transparent', 'background-color:transparent');
-  CheckResolve('text-red-500/50', 'color:#ef4444');
+  CheckResolve('text-red-500/50', 'color:rgba(239,68,68,0.5)');
   CheckUnknown('bg-blue-550');
 end;
 
@@ -128,6 +131,27 @@ begin
   CheckResolve('text-[13px]', 'font-size:13px');
   CheckResolve('text-[#123456]', 'color:#123456');
   CheckUnknown('grid-cols-[1fr_2fr]');
+end;
+
+procedure TTestTailwind.TestGradientsAndImages;
+begin
+  CheckResolve('bg-gradient-to-br', 'background-image:linear-gradient(to bottom right, var(--tw-gradient-stops))');
+  CheckResolve('from-red-500', '--tw-gradient-from:#ef4444;--tw-gradient-to:rgba(239,68,68,0);--tw-gradient-stops:var(--tw-gradient-from), var(--tw-gradient-to)');
+  CheckResolve('via-white', '--tw-gradient-to:rgba(255,255,255,0);--tw-gradient-stops:var(--tw-gradient-from), #ffffff, var(--tw-gradient-to)');
+  CheckResolve('to-blue-500', '--tw-gradient-to:#3b82f6');
+  CheckResolve('bg-[url(img/a.png)]', 'background-image:url(img/a.png)');
+  CheckResolve('bg-cover', 'background-size:cover');
+  CheckResolve('bg-no-repeat', 'background-repeat:no-repeat');
+  CheckResolve('bg-center', 'background-position:center');
+end;
+
+procedure TTestTailwind.TestOpacityModifiers;
+begin
+  CheckResolve('bg-black/50', 'background-color:rgba(0,0,0,0.5)');
+  CheckResolve('text-white/[0.35]', 'color:rgba(255,255,255,0.35)');
+  CheckResolve('border-slate-900/10', 'border-color:rgba(15,23,42,0.1)');
+  CheckResolve('bg-[#ff0000]/25', 'background-color:rgba(255,0,0,0.25)');
+  CheckUnknown('bg-black/abc');
 end;
 
 procedure TTestTailwind.TestUnknownClasses;
@@ -173,6 +197,18 @@ begin
   FRoot.ViewportWidth := 1200;
   A.ApplyStyle;
   AssertEquals(0.75, A.CompStyle.Width.Value, 0.001);
+end;
+
+procedure TTestTailwind.TestArbitraryValueWithColon;
+var
+  A: THtmlNode;
+begin
+  A := HTMLDiv('').AppendTo(FRoot);
+  A.SetClass('bg-[length:60px_40px] hover:bg-[position:center]');
+  AssertEquals('60px 40px', A.CompStyle.Background.Size);
+  A.Hovered := True;
+  A.ApplyStyle;
+  AssertEquals('center', A.CompStyle.Background.Position);
 end;
 
 procedure TTestTailwind.TestFirstLastVariants;

@@ -8,7 +8,7 @@ unit demoscenes;
 interface
 
 uses
-  Classes, SysUtils, cssbase;
+  Classes, SysUtils, Math, Graphics, cssbase;
 
 type
   TBuildSceneProc = procedure(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
@@ -24,16 +24,20 @@ procedure BuildResponsive(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
 procedure BuildTypography(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
 procedure BuildDashboard(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
 procedure BuildStyleSheet(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
+procedure BuildBorders(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
+procedure BuildBackgrounds(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
 
 const
-  DEMO_SCENES: array[0..6] of TDemoScene = (
+  DEMO_SCENES: array[0..8] of TDemoScene = (
     (Name: 'Card'; Build: @BuildCard),
     (Name: 'Buttons'; Build: @BuildButtons),
     (Name: 'Flexbox'; Build: @BuildFlex),
     (Name: 'Responsive'; Build: @BuildResponsive),
     (Name: 'Typography'; Build: @BuildTypography),
     (Name: 'Dashboard'; Build: @BuildDashboard),
-    (Name: 'Stylesheet'; Build: @BuildStyleSheet)
+    (Name: 'Stylesheet'; Build: @BuildStyleSheet),
+    (Name: 'Borders'; Build: @BuildBorders),
+    (Name: 'Backgrounds'; Build: @BuildBackgrounds)
   );
 
 implementation
@@ -212,6 +216,91 @@ begin
   N(Menu, 'item', '.menu > .item:hover');
   N(Menu, 'item', '.panel .item');
   N(Menu, 'item', '.panel .item:last-child');
+end;
+
+procedure BuildBorders(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
+const
+  STYLES: array[0..15] of String = (
+    'border-radius: 20px; border-top: 10px solid #ef4444',
+    'border-radius: 20px; border-top: 10px solid #ef4444; border-left: 4px solid #22c55e',
+    'border-radius: 24px; border: 6px solid; border-color: #ef4444 #22c55e #3b82f6 #eab308',
+    'border-radius: 30px 4px; border: 3px solid #0f172a',
+    'border-radius: 0 20px 40px 10px; border: 8px solid #6366f1',
+    'border-radius: 6px; border: 12px solid #0ea5e9',
+    'border-top-left-radius: 50px 15px; border-bottom-right-radius: 15px 50px; border: 2px solid #f97316',
+    'border-radius: 9999px; border: 4px solid #a855f7',
+    'border-radius: 50%; border: 10px solid #14b8a6',
+    'border: 10px solid; border-color: #ef4444 #22c55e #3b82f6 #eab308',
+    'border-left: 16px solid #ec4899; border-radius: 12px',
+    'border-bottom: 6px solid #64748b; border-radius: 0 0 16px 16px',
+    'border-radius: 16px; background-image: linear-gradient(to right, #6366f1, #ec4899)',
+    'border-radius: 16px; background-image: linear-gradient(135deg, #22c55e, #3b82f6 60%, #a855f7); border: 3px solid #1e293b',
+    'border-radius: 16px; background-color: rgba(99, 102, 241, 0.25); border: 2px solid rgba(99, 102, 241, 0.6)',
+    'border-radius: 16px; background-image: linear-gradient(to bottom, #f59e0b, transparent)'
+  );
+var
+  I: Integer;
+  Grid: THtmlNode;
+begin
+  ABody.SetClass('p-6 bg-slate-50');
+  Grid := N(ABody, 'flex flex-wrap gap-6');
+  for I := 0 to High(STYLES) do
+    HTMLDiv('width: 140px; height: 90px; background-color: #e2e8f0; ' + STYLES[I]).AppendTo(Grid);
+end;
+
+(*
+  Generated image for background demo (no image files are needed)
+*)
+procedure RegisterDemoImage;
+var
+  Bmp: TBitmap;
+  X, Y: Integer;
+  F: Double;
+begin
+  Bmp := TBitmap.Create;
+  try
+    Bmp.SetSize(160, 100);
+    for Y := 0 to Bmp.Height - 1 do
+      for X := 0 to Bmp.Width - 1 do begin
+        F := 0.5 + 0.5 * Sin(X / 9) * Cos(Y / 7);
+        if Y > 60 + 10 * Sin(X / 15) then         // hills
+          Bmp.Canvas.Pixels[X, Y] := RGBToColor(30 + Round(40 * F), 120 + Round(60 * F), 60)
+        else                                       // sky
+          Bmp.Canvas.Pixels[X, Y] := RGBToColor(120 + Y, 170 + Y div 2, 250);
+      end;
+    Bmp.Canvas.Brush.Color := RGBToColor(253, 224, 71);
+    Bmp.Canvas.Pen.Color := RGBToColor(253, 224, 71);
+    Bmp.Canvas.Ellipse(115, 12, 141, 38);          // sun
+    CSSRegisterImage('demo-landscape', Bmp);
+  finally
+    Bmp.Free;
+  end;
+end;
+
+procedure BuildBackgrounds(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
+var
+  Row, Hero, Glass, Card: THtmlNode;
+begin
+  RegisterDemoImage;
+  ABody.SetClass('p-6 bg-white flex flex-col gap-6');
+  Row := N(ABody, 'flex flex-wrap gap-4');
+  N(Row, 'grow basis-32 h-24 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-500 text-white font-bold flex items-center justify-center', 'to-r');
+  N(Row, 'grow basis-32 h-24 rounded-xl bg-gradient-to-br from-fuchsia-500 via-purple-500 to-indigo-500 text-white font-bold flex items-center justify-center', 'to-br via');
+  N(Row, 'grow basis-32 h-24 rounded-xl bg-gradient-to-t from-amber-500 text-amber-950 font-bold flex items-center justify-center border border-amber-200', 'from only');
+  N(Row, 'grow basis-32 h-24 rounded-full bg-gradient-to-r from-emerald-400 to-lime-300 text-emerald-950 font-bold flex items-center justify-center', 'rounded-full');
+
+  Hero := N(ABody, 'relative h-56 rounded-2xl bg-[url(demo-landscape)] bg-cover bg-center flex items-end p-6');
+  Glass := N(Hero, 'max-w-sm p-4 rounded-xl bg-white/30 border border-white/50 flex flex-col gap-1');
+  N(Glass, 'text-lg font-semibold text-slate-900', 'bg-cover bg-center');
+  N(Glass, 'text-sm text-slate-900/80', 'Glass card: bg-white/30 border-white/50 over background image');
+
+  Row := N(ABody, 'flex flex-wrap gap-4');
+  Card := N(Row, 'w-48 h-32 rounded-lg border border-slate-200 bg-slate-100 bg-[url(demo-landscape)] bg-contain bg-center bg-no-repeat');
+  N(Card, 'text-xs text-slate-500 p-1', 'bg-contain no-repeat');
+  Card := N(Row, 'w-48 h-32 rounded-lg border border-slate-200 bg-[url(demo-landscape)] bg-[length:60px_40px]');
+  N(Card, 'text-xs text-white p-1 font-bold', 'repeat 60x40');
+  Card := N(Row, 'w-48 h-32 rounded-lg bg-slate-900 flex items-center justify-center');
+  N(Card, 'px-3 py-1 rounded-full bg-white/10 text-white/80 border border-white/20 text-sm', 'bg-white/10');
 end;
 
 end.

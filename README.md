@@ -31,7 +31,11 @@ CSSShape1.Changed;
   `align-items`, `align-self`, auto margins, `order`
 - Text: font size, family, weight, style, decoration, alignment, wrapping
 - Colors: all CSS named colors, `#rgb`, `#rrggbb`, `rgb()`, `rgba()`, `transparent`, `currentcolor`
-- Rounded borders, per-side border width, color and style
+- Rounded borders, per-side border width and color, painted with antialiasing (same result on every
+  platform, corners are cached, so repainting is fast)
+- Backgrounds: colors with alpha, `linear-gradient(...)`, images (`url(...)`, `background-size`,
+  `background-position`, `background-repeat`)
+- Custom properties (`--name: value`) and `var()` in background images
 - Stylesheets with selectors: element, `*`, `.class`, `#id`, `:hover`, `:active`, `:first-child`,
   `:last-child`, descendant and child (`>`) combinators, cascade by specificity and order
 - Utility classes (`csstailwind.pas`), see below
@@ -50,19 +54,29 @@ don't need a generated stylesheet. It covers a subset of Tailwind CSS v3:
 | Spacing | `p-*` `px-*` `py-*` `pt-*` ... `m-*` `mx-auto` `-mt-2` ... |
 | Sizing | `w-*` `h-*` `size-*` `min-w-*` `max-w-md` ... (spacing scale, fractions `w-1/2`, `full`, `screen`) |
 | Typography | `text-xs` ... `text-9xl`, `text-center`, `text-{color}`, `font-bold` ..., `font-mono`, `italic`, `underline`, `line-through`, `truncate` |
-| Backgrounds | `bg-{color}` |
+| Backgrounds | `bg-{color}` `bg-gradient-to-r` `from-*` `via-*` `to-*` `bg-[url(file.png)]` `bg-cover` `bg-contain` `bg-center` `bg-no-repeat` ... |
 | Borders | `border` `border-2` `border-t` ... `border-{color}` `border-dashed` `rounded` `rounded-lg` `rounded-full` `rounded-t-xl` ... |
 | Other | `cursor-*` |
 
 - Full Tailwind color palette (`slate` ... `rose`, shades `50` to `950`)
-- Arbitrary values: `w-[200px]`, `bg-[#ff8800]`, `text-[13px]`
+- Arbitrary values: `w-[200px]`, `bg-[#ff8800]`, `text-[13px]`, `bg-[length:60px_40px]`
+- Opacity modifiers: `bg-black/50`, `text-white/70`, `border-slate-900/10`
 - Variants: `hover:`, `active:`, `first:`, `last:`, `odd:`, `even:`, `group-hover:`
 - Responsive variants `sm:` `md:` `lg:` `xl:` `2xl:` use the width of the `TCSSShape` control, so they act
   like container queries
 - Utility classes can be mixed with a regular stylesheet. Utilities are applied after stylesheet rules.
 
-Not supported yet: opacity modifiers (`bg-black/50` ignores the opacity), shadows, transitions,
-transforms, grid, `space-x-*`, dark mode.
+Not supported yet: shadows, transitions, transforms, grid, `space-x-*`, dark mode.
+
+## Background images
+
+`url(...)` takes a file name, either absolute or relative to the application folder. It can also take a
+name registered from code, for example an image from resources:
+
+```pascal
+CSSRegisterImage('logo', MyPicture.Graphic);
+Node.SetClass('h-32 bg-[url(logo)] bg-contain bg-center bg-no-repeat');
+```
 
 ## Stylesheets
 
@@ -80,8 +94,9 @@ Open `csspckg_lazarus.lpk` in Lazarus, compile it and install it (*Use > Install
 ## Demo and tests
 
 - `demo/csscontrols_demo.lpi`: demo application with several scenes (cards, buttons, flexbox, responsive
-  layout, typography, dashboard, stylesheet, LCL controls)
+  layout, typography, dashboard, stylesheet, borders, backgrounds, LCL controls)
 - `demo/renderdemo.lpi`: renders the demo scenes to PNG files, which is handy for checking changes visually
+  (`renderdemo out 720 Borders 4` renders one scene zoomed 4x, `renderdemo bench` measures paint time)
 - `tests/csstests.lpi`: fpcunit tests (console runner)
 
 ```sh
@@ -92,7 +107,9 @@ lazbuild demo/renderdemo.lpi && demo/renderdemo demo/out 720
 ## Limitations
 
 - Delphi/FMX is not supported yet. Some code paths exist, but they are incomplete.
-- Borders are always painted solid, and edges are not antialiased.
+- Borders are always painted solid (`dashed` and `dotted` are drawn as `solid`).
+- Colors with alpha are blended with the nearest background color for text and borders. Backgrounds
+  use a real alpha channel.
 - Text inside a node is laid out as one block (no inline formatting across nodes).
 
 ## License

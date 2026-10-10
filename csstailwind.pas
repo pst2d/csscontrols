@@ -16,15 +16,18 @@
     typography: text-xs..text-9xl text-left/center/right/justify text-{color} font-thin..font-black
                 font-sans/serif/mono italic not-italic underline line-through no-underline
                 whitespace-nowrap whitespace-normal truncate
-    background: bg-{color}
+    background: bg-{color} (see gradients and images below)
     borders:    border(-x,-y,-t,-r,-b,-l)(-0,-2,-4,-8) border-{color} border-solid/dashed/dotted/none
                 rounded(-t,-r,-b,-l,-tl,-tr,-br,-bl)(-none,-sm,-md,-lg,-xl,-2xl,-3xl,-full)
     other:      cursor-*
     values:     arbitrary values eg. w-[200px] bg-[#ff8800] p-[3px] text-[13px]
     variants:   hover: active: first: last: odd: even: group-hover: sm: md: lg: xl: 2xl: (see cssbase.pas)
 
-  Not supported: opacity modifiers (bg-red-500/50 uses color without opacity), shadows, transitions,
-  transforms, grid, space-x/y, dark mode.
+    gradients:  bg-gradient-to-{t,tr,r,br,b,bl,l,tl} from-{color} via-{color} to-{color}
+    images:     bg-[url(file.png)] bg-none bg-cover bg-contain bg-auto bg-center bg-top ... bg-no-repeat bg-repeat
+    opacity:    color modifiers eg. bg-black/50 text-white/70 border-slate-900/10
+
+  Not supported: shadows, transitions, transforms, grid, space-x/y, dark mode.
 *)
 unit csstailwind;
 
@@ -35,7 +38,7 @@ unit csstailwind;
 interface
 
 uses
-  Classes, SysUtils, cssbase;
+  Classes, SysUtils, Math, Graphics, cssbase;
 
 procedure CSSTailwindEnable(ABorderBox: Boolean = True);
 procedure CSSTailwindDisable;
@@ -300,12 +303,42 @@ const
   O_PADDING_SIDE = 112; O_SIZE = 120; O_WIDTH = 121; O_MIN_W = 122; O_MAX_W = 123; O_HEIGHT = 124;
   O_MIN_H = 125; O_MAX_H = 126; O_FONT_FAMILY = 200; O_FONT_SIZE = 201; O_FONT_WEIGHT = 202;
   O_FONT_STYLE = 203; O_TEXT_ALIGN = 204; O_TEXT_COLOR = 205; O_DECORATION = 206; O_WHITESPACE = 207;
-  O_BG = 300; O_BORDER_W = 310; O_BORDER_W_AXIS = 311; O_BORDER_W_SIDE = 312; O_BORDER_STYLE = 313;
+  O_BG = 300; O_GRADIENT_FROM = 301; O_GRADIENT_VIA = 302; O_GRADIENT_TO = 303; O_BG_IMAGE = 304;
+  O_BG_SIZE = 305; O_BG_POSITION = 306; O_BG_REPEAT = 307; O_BORDER_W = 310; O_BORDER_W_AXIS = 311; O_BORDER_W_SIDE = 312; O_BORDER_STYLE = 313;
   O_BORDER_COLOR = 314; O_ROUNDED = 320; O_ROUNDED_SIDE = 321; O_ROUNDED_CORNER = 322; O_CURSOR = 400;
 
   TW_DEFAULT_BORDER_COLOR = '#e5e7eb';  // gray-200
 
-  TW_STATIC: array[0..74] of record N, D: String; O: Integer; end = (
+  TW_STATIC: array[0..103] of record N, D: String; O: Integer; end = (
+    (N: 'bg-none'; D: 'background-image:none'; O: O_BG_IMAGE),
+    (N: 'bg-gradient-to-t'; D: 'background-image:linear-gradient(to top, var(--tw-gradient-stops))'; O: O_BG_IMAGE),
+    (N: 'bg-gradient-to-tr'; D: 'background-image:linear-gradient(to top right, var(--tw-gradient-stops))'; O: O_BG_IMAGE),
+    (N: 'bg-gradient-to-r'; D: 'background-image:linear-gradient(to right, var(--tw-gradient-stops))'; O: O_BG_IMAGE),
+    (N: 'bg-gradient-to-br'; D: 'background-image:linear-gradient(to bottom right, var(--tw-gradient-stops))'; O: O_BG_IMAGE),
+    (N: 'bg-gradient-to-b'; D: 'background-image:linear-gradient(to bottom, var(--tw-gradient-stops))'; O: O_BG_IMAGE),
+    (N: 'bg-gradient-to-bl'; D: 'background-image:linear-gradient(to bottom left, var(--tw-gradient-stops))'; O: O_BG_IMAGE),
+    (N: 'bg-gradient-to-l'; D: 'background-image:linear-gradient(to left, var(--tw-gradient-stops))'; O: O_BG_IMAGE),
+    (N: 'bg-gradient-to-tl'; D: 'background-image:linear-gradient(to top left, var(--tw-gradient-stops))'; O: O_BG_IMAGE),
+    (N: 'bg-auto'; D: 'background-size:auto'; O: O_BG_SIZE),
+    (N: 'bg-cover'; D: 'background-size:cover'; O: O_BG_SIZE),
+    (N: 'bg-contain'; D: 'background-size:contain'; O: O_BG_SIZE),
+    (N: 'bg-center'; D: 'background-position:center'; O: O_BG_POSITION),
+    (N: 'bg-top'; D: 'background-position:top'; O: O_BG_POSITION),
+    (N: 'bg-bottom'; D: 'background-position:bottom'; O: O_BG_POSITION),
+    (N: 'bg-left'; D: 'background-position:left'; O: O_BG_POSITION),
+    (N: 'bg-right'; D: 'background-position:right'; O: O_BG_POSITION),
+    (N: 'bg-left-top'; D: 'background-position:left top'; O: O_BG_POSITION),
+    (N: 'bg-left-bottom'; D: 'background-position:left bottom'; O: O_BG_POSITION),
+    (N: 'bg-right-top'; D: 'background-position:right top'; O: O_BG_POSITION),
+    (N: 'bg-right-bottom'; D: 'background-position:right bottom'; O: O_BG_POSITION),
+    (N: 'bg-repeat'; D: 'background-repeat:repeat'; O: O_BG_REPEAT),
+    (N: 'bg-no-repeat'; D: 'background-repeat:no-repeat'; O: O_BG_REPEAT),
+    (N: 'border-transparent'; D: 'border-color:transparent'; O: O_BORDER_COLOR),
+    (N: 'from-transparent'; D: '--tw-gradient-from:transparent;--tw-gradient-to:transparent;--tw-gradient-stops:var(--tw-gradient-from), var(--tw-gradient-to)'; O: O_GRADIENT_FROM),
+    (N: 'via-transparent'; D: '--tw-gradient-to:transparent;--tw-gradient-stops:var(--tw-gradient-from), transparent, var(--tw-gradient-to)'; O: O_GRADIENT_VIA),
+    (N: 'to-transparent'; D: '--tw-gradient-to:transparent'; O: O_GRADIENT_TO),
+    (N: 'bg-current'; D: 'background-color:currentcolor'; O: O_BG),
+    (N: 'text-current'; D: 'color:currentcolor'; O: O_TEXT_COLOR),
     (N: 'block'; D: 'display:block'; O: O_DISPLAY),
     (N: 'inline-block'; D: 'display:inline-block'; O: O_DISPLAY),
     (N: 'inline'; D: 'display:inline'; O: O_DISPLAY),
@@ -455,15 +488,52 @@ begin
   end;
 end;
 
+(*
+  Color with alpha (0..1) in CSS format
+*)
+function ColorWithAlpha(const AColor: String; AAlpha: Double): String;
+var
+  C: TCSSColor;
+begin
+  C := CSSToColor(AColor);
+  if C.ColorType <> cctNormal then Exit(AColor);
+  C.Value := ColorToRGB(C.Value);
+  Result := Format('rgba(%d,%d,%d,%s)', [Red(C.Value), Green(C.Value), Blue(C.Value), FloatToCSS(AAlpha * C.Alpha / 255)]);
+end;
+
 function TailwindColor(const AName: String; out AColor: String): Boolean;
 var
-  V: String;
-  X: Integer;
+  V, Opacity, Inner: String;
+  X, Depth: Integer;
+  A: Double;
 begin
   Result := True;
   V := AName;
-  X := Pos('/', V);                         // opacity modifier is not supported, color is used without opacity
-  if (X > 0) and (Pos('[', V) = 0) then V := Copy(V, 1, X - 1);
+  Opacity := '';
+  // opacity modifier: red-500/50, red-500/[0.35], [#ff0000]/50 (last "/" outside of [])
+  Depth := 0;
+  X := Length(V);
+  while X > 0 do begin
+    if V[X] = ']' then Inc(Depth)
+    else if V[X] = '[' then Dec(Depth)
+    else if (V[X] = '/') and (Depth = 0) then Break;
+    Dec(X);
+  end;
+  if X > 0 then begin
+    Opacity := Copy(V, X + 1, MaxInt);
+    V := Copy(V, 1, X - 1);
+  end;
+  if Opacity <> '' then begin
+    if IsArbitrary(Opacity, Inner) then begin
+      if not StrToCSSFloat(Inner, A) then Exit(False);
+    end else begin
+      if not StrToCSSFloat(Opacity, A) then Exit(False);
+      A := A / 100;
+    end;
+    Result := TailwindColor(V, AColor);
+    if Result then AColor := ColorWithAlpha(AColor, EnsureRange(A, 0, 1));
+    Exit;
+  end;
   if IsArbitrary(V, AColor) then begin
     if CSSToColor(AColor).ColorType = cctUndefined then Result := False;
     Exit;
@@ -626,7 +696,24 @@ begin
   end;
 
   // backgrounds
-  if HasPrefix(Name, 'bg-', V) and TailwindColor(V, C) then Exit(Done('background-color:' + C, O_BG));
+  if HasPrefix(Name, 'bg-', V) then begin
+    if IsArbitrary(V, R) then begin
+      if SameText(Copy(R, 1, 4), 'url(') or SameText(Copy(R, 1, 16), 'linear-gradient(') then
+        Exit(Done('background-image:' + R, O_BG_IMAGE));
+      if HasPrefix(R, 'length:', C) then Exit(Done('background-size:' + C, O_BG_SIZE));        // bg-[length:20px_10px]
+      if HasPrefix(R, 'position:', C) then Exit(Done('background-position:' + C, O_BG_POSITION));
+    end;
+    if TailwindColor(V, C) then Exit(Done('background-color:' + C, O_BG));
+  end;
+  // gradient color stops (custom properties like Tailwind)
+  if HasPrefix(Name, 'from-', V) and TailwindColor(V, C) then
+    Exit(Done('--tw-gradient-from:' + C + ';--tw-gradient-to:' + ColorWithAlpha(C, 0) +
+      ';--tw-gradient-stops:var(--tw-gradient-from), var(--tw-gradient-to)', O_GRADIENT_FROM));
+  if HasPrefix(Name, 'via-', V) and TailwindColor(V, C) then
+    Exit(Done('--tw-gradient-to:' + ColorWithAlpha(C, 0) +
+      ';--tw-gradient-stops:var(--tw-gradient-from), ' + C + ', var(--tw-gradient-to)', O_GRADIENT_VIA));
+  if HasPrefix(Name, 'to-', V) and TailwindColor(V, C) then
+    Exit(Done('--tw-gradient-to:' + C, O_GRADIENT_TO));
 
   // borders (Tailwind preflight sets border-style: solid and default border color for all elements)
   if Name = 'border' then Exit(Done('border-width:1px;border-style:solid;border-color:' + TW_DEFAULT_BORDER_COLOR, O_BORDER_W));
