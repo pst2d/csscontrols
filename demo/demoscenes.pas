@@ -228,7 +228,7 @@ end;
 
 procedure BuildBorders(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
 const
-  STYLES: array[0..21] of String = (
+  STYLES: array[0..23] of String = (
     'border: 2px dashed #94a3b8; border-radius: 12px; background-color: #f8fafc',
     'border: 1px dashed #64748b',
     'border: 4px dashed #6366f1; border-radius: 20px',
@@ -250,7 +250,9 @@ const
     'border-radius: 16px; background-image: linear-gradient(to right, #6366f1, #ec4899)',
     'border-radius: 16px; background-image: linear-gradient(135deg, #22c55e, #3b82f6 60%, #a855f7); border: 3px solid #1e293b',
     'border-radius: 16px; background-color: rgba(99, 102, 241, 0.25); border: 2px solid rgba(99, 102, 241, 0.6)',
-    'border-radius: 16px; background-image: linear-gradient(to bottom, #f59e0b, transparent)'
+    'border-radius: 16px; background-image: linear-gradient(to bottom, #f59e0b, transparent)',
+    'border-radius: 8px; border-top-left-radius: 24px; border-top-right-radius: 30px; border: 6px solid; border-color: #ef4444 #22c55e #3b82f6 #eab308; border-top: 20px dotted red; border-right:34px dotted blue;',
+    'border-radius: 20px; border: 10px dotted #8b5cf6; border-left: 4px dashed #f97316; border-bottom: 12px solid #0ea5e9'
   );
 var
   I: Integer;

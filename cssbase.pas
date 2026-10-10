@@ -2869,6 +2869,7 @@ type
     SMid, EMid: Single;         // middle radius of corner arcs
     Origin: Single;             // local X of pattern position A0 (start of straight part)
     A0, Total: Single;          // pattern length in start corner, total length of path
+    Ls: Single;                 // length of straight part
     Dash, Gap: Single;
     DotCount: Integer;
     DotStep: Single;
@@ -2939,6 +2940,7 @@ begin
     if AStyle = cbsDotted then EOrigin := P.Len - Max(S.BW[END_ADJ[ASide]], P.W) / 2;
   end;
   Ls := Max(0, EOrigin - P.Origin);
+  P.Ls := Ls;
   P.Total := P.A0 + Ls + A1;
   if P.W <= 0 then Exit(P);
   if AStyle = cbsDashed then begin
@@ -3014,6 +3016,29 @@ begin
   Result := PatternOnAt(P, T, V);
 end;
 
+(*
+  Center of dot at path position T (canvas coordinates): dots are circles on middle line of border
+*)
+function DotCenter(const S: TCSSPaintShape; ASide: TCSSSide; const P: TCSSSidePattern; T: Single): TPointF;
+var
+  LX, LY, Phi: Single;
+begin
+  if (T < P.A0) and (P.SA > 0) and (P.SB > 0) then begin
+    Phi := -Pi / 2 - (P.A0 - T) / P.SMid;
+    LX := P.SA + P.SMid * Cos(Phi);
+    LY := P.SB + P.SMid * Sin(Phi);
+  end else
+  if (T > P.A0 + P.Ls) and (P.EA > 0) and (P.EB > 0) then begin
+    Phi := -Pi / 2 + (T - P.A0 - P.Ls) / P.EMid;
+    LX := P.Len - P.EA + P.EMid * Cos(Phi);
+    LY := P.EB + P.EMid * Sin(Phi);
+  end else begin
+    LX := P.Origin + T - P.A0;
+    LY := P.W / 2;
+  end;
+  SideToCanvas(S, ASide, LX, LY, Result.x, Result.y);
+end;
+
 function PatternKey(const P: TCSSSidePattern): String;
 begin
   if P.Style in [cbsDashed, cbsDotted] then
@@ -3031,6 +3056,7 @@ function RasterizeShape(const S: TCSSPaintShape; ACorner: Integer; X0, Y0, AWidt
 const
   KIND_TO_SIDE: array[TCSSSampleKind] of TCSSSide = (csTop, csTop, csTop, csLeft, csBottom, csRight);
 var
+  PX, PY: Single;
   Img: TLazIntfImage;
   X, Y, SX, SY, N: Integer;
   SR, SG, SB, SA, Step: Single;
@@ -3049,12 +3075,16 @@ begin
         SR := 0; SG := 0; SB := 0; SA := 0;
         for SY := 0 to N - 1 do
           for SX := 0 to N - 1 do begin
-            Kind := SampleShape(S, ACorner, X0 + X + (SX + 0.5) * Step, Y0 + Y + (SY + 0.5) * Step);
+            PX := X0 + X + (SX + 0.5) * Step;
+            PY := Y0 + Y + (SY + 0.5) * Step;
+            Kind := SampleShape(S, ACorner, PX, PY);
             if Kind = cskOutside then Continue;
-            // dashed or dotted border: gap shows background
-            if (Kind in [cskTop, cskLeft, cskBottom, cskRight]) and
-              not PatternOn(S, KIND_TO_SIDE[Kind], APatterns[KIND_TO_SIDE[Kind]], X0 + X + (SX + 0.5) * Step, Y0 + Y + (SY + 0.5) * Step) then
-              Kind := cskBackground;
+            // dashed border: gap shows background, dotted side is background (dots are painted as whole circles later)
+            if Kind in [cskTop, cskLeft, cskBottom, cskRight] then
+              case APatterns[KIND_TO_SIDE[Kind]].Style of
+                cbsDotted: Kind := cskBackground;
+                cbsDashed: if not PatternOn(S, KIND_TO_SIDE[Kind], APatterns[KIND_TO_SIDE[Kind]], PX, PY) then Kind := cskBackground;
+              end;
             C := AColors[Ord(Kind) - 1];
             if (C.A < 1) and (Kind <> cskBackground) then begin   // transparent border shows background
               SR := SR + AColors[0].R * AColors[0].A * (1 - C.A);
@@ -4123,7 +4153,7 @@ var
   procedure FillSide(ASide: TCSSSide; const ARect: TRect);
   var
     P: TCSSSidePattern;
-    B0, B1, T0, T1, LX0, LX1, CX, CY: Single;
+    B0, B1, T0, T1, LX0, LX1: Single;
     K: Integer;
     RR: TRect;
     function LocalRect(AX0, AX1: Single): TRect;    // part of band from local X0 to X1
@@ -4165,15 +4195,30 @@ var
             end;
           end;
       end;
-      cbsDotted:
-        for K := 0 to P.DotCount do begin
-          LX0 := P.Origin + K * P.DotStep - P.A0;     // dot center
-          if (LX0 < B0) or (LX0 > B1) then Continue;
-          SideToCanvas(S, ASide, LX0, P.W / 2, CX, CY);
-          DrawDot(CX, CY, Round(P.W), SideColor[ASide]);
-        end;
+      cbsDotted: ;    // dots are painted by PaintDots
       else
         ACanvas.FillRect(ARect);
+    end;
+  end;
+  // dotted sides: whole antialiased dots on middle line of border (also in corners)
+  procedure PaintDots;
+  var
+    Side: TCSSSide;
+    K: Integer;
+    C: TPointF;
+    Saved: TRect;
+  begin
+    Saved := ACanvas.ClipRect;
+    ACanvas.ClipRect := TRect.Intersect(Box, Saved);
+    try
+      for Side := Low(TCSSSide) to High(TCSSSide) do
+        if SideVisible[Side] and (Pat[Side].Style = cbsDotted) then
+          for K := 0 to Pat[Side].DotCount do begin
+            C := DotCenter(S, Side, Pat[Side], K * Pat[Side].DotStep);
+            DrawDot(C.x, C.y, BW[Side], SideColor[Side]);
+          end;
+    finally
+      ACanvas.ClipRect := Saved;
     end;
   end;
   function CornerRect(AIndex: Integer): TRect;
@@ -4321,6 +4366,7 @@ begin
       for Side := Low(TCSSSide) to High(TCSSSide) do Key := Key + ',' + PatternKey(PatD[Side]);
       DrawBitmap(Box, CornerBitmap(Key, SS, -1, ScaleRect(Box), Colors, PatD));
     end;
+    PaintDots;
     Exit;
   end;
 
@@ -4437,6 +4483,7 @@ begin
       end;
       DrawBitmap(R, CornerBitmap(Key, SS, I, ScaleRect(R), Colors, PatD));
     end;
+  PaintDots;
   {$endif}
 end;
 
