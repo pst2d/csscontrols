@@ -106,6 +106,10 @@ begin
   if APlace = 'right' then begin
     Pos := 'left-full top-1/2 -translate-y-1/2 ml-2';
     Arrow := 'right-full top-1/2 -translate-y-1/2 -mr-1';
+  end else
+  if APlace = 'left' then begin
+    Pos := 'right-full top-1/2 -translate-y-1/2 mr-2';
+    Arrow := 'left-full top-1/2 -translate-y-1/2 -ml-1';
   end else begin
     Pos := 'bottom-full left-1/2 -translate-x-1/2 mb-2';
     Arrow := 'top-full left-1/2 -translate-x-1/2 -mt-1';
@@ -625,10 +629,12 @@ begin
     '</div>' +
     // chat list
     '<div class="w-72 shrink-0 flex flex-col min-h-0 border-r border-slate-200">' +
-    '  <div class="flex items-center justify-between px-4 h-16 shrink-0">' +
-    '    <div class="size-10 rounded-full border border-slate-200 shadow-sm flex items-center justify-center font-bold text-slate-600 hover:bg-slate-50 cursor-pointer">&middot;&middot;&middot;</div>' +
+    '  <div class="relative z-10 flex items-center justify-between px-4 h-16 shrink-0">' +
+         Tooltip('<div class="size-10 rounded-full border border-slate-200 shadow-sm flex items-center justify-center font-bold text-slate-600 hover:bg-slate-50 cursor-pointer">&middot;&middot;&middot;</div>',
+           'Menu', 'bottom') +
     '    <span class="text-lg font-semibold">Chats</span>' +
-    '    <div class="size-11 rounded-full bg-green-600 hover:bg-green-700 shadow-md shadow-green-600/40 text-white text-2xl flex items-center justify-center cursor-pointer">+</div>' +
+         Tooltip('<div class="size-11 rounded-full bg-green-600 hover:bg-green-700 shadow-md shadow-green-600/40 text-white text-2xl flex items-center justify-center cursor-pointer">+</div>',
+           'New chat', 'bottom') +
     '  </div>' +
     '  <div class="mx-4 mb-3 flex items-center gap-3 px-4 py-2.5 rounded-full border border-slate-200 bg-slate-50">' +
     '    <div class="relative size-4"><div class="size-3 rounded-full border-2 border-slate-400"></div>' +
@@ -653,12 +659,12 @@ begin
     '</div>' +
     // conversation
     '<div class="grow min-w-0 flex flex-col bg-[url(demo-chat-pattern)]">' +
-    '  <div class="flex items-center gap-3 px-4 h-16 shrink-0 bg-white/90 border-b border-slate-200">' +
+    '  <div class="relative z-10 flex items-center gap-3 px-4 h-16 shrink-0 bg-white/90 border-b border-slate-200">' +
          Avatar('DT', 'from-violet-400 to-indigo-500', 'size-10') +
     '    <div class="grow min-w-0 flex flex-col"><span class="font-semibold truncate">Design Team 2026</span><span class="text-xs text-slate-500">3 online</span></div>' +
-    '    <div class="flex items-center gap-1 px-3 py-1.5 rounded-full border border-slate-200 bg-white hover:bg-slate-50 cursor-pointer">' +
-    '      <div class="w-5 h-3.5 rounded border-2 border-slate-600"></div><span class="text-xs text-slate-600">&#9662;</span></div>' +
-    '    <div class="px-2 font-bold text-slate-600 cursor-pointer">&middot;&middot;&middot;</div>' +
+         Tooltip('<div class="flex items-center gap-1 px-3 py-1.5 rounded-full border border-slate-200 bg-white hover:bg-slate-50 cursor-pointer">' +
+           '<div class="w-5 h-3.5 rounded border-2 border-slate-600"></div><span class="text-xs text-slate-600">&#9662;</span></div>', 'Video call', 'bottom') +
+         Tooltip('<div class="px-2 font-bold text-slate-600 cursor-pointer">&middot;&middot;&middot;</div>', 'Group info', 'left') +
     '  </div>' +
     '  <div class="grow min-h-0 overflow-y-auto flex flex-col justify-end gap-3 px-6 py-4">' +
     '    <div class="self-center px-3 py-1 rounded-lg bg-white/80 text-xs text-slate-500 shadow-sm">YESTERDAY</div>' +
@@ -712,12 +718,14 @@ begin
     '  </div>' +
     // composer
     '  <div class="flex items-center gap-3 px-4 py-3 shrink-0 bg-slate-50 border-t border-slate-200">' +
-    '    <div class="size-11 shrink-0 rounded-full border border-slate-200 bg-white text-2xl text-slate-600 flex items-center justify-center hover:bg-slate-100 cursor-pointer">+</div>' +
+         Tooltip('<div class="size-11 shrink-0 rounded-full border border-slate-200 bg-white text-2xl text-slate-600 flex items-center justify-center hover:bg-slate-100 cursor-pointer">+</div>',
+           'Attach photo or file', 'top') +
     '    <div class="grow flex items-center px-4 h-11 rounded-full bg-white border border-slate-200">' +
     '      <span class="grow text-slate-400">Type a message</span><span class="text-xl text-slate-500">&#9786;</span></div>' +
-    '    <div class="size-11 shrink-0 rounded-full bg-green-600 hover:bg-green-700 shadow-md text-white flex items-center justify-center cursor-pointer">' +
-    '      <div class="flex flex-col items-center"><div class="w-2.5 h-3.5 rounded-full bg-white"></div>' +
-    '        <div class="w-4 h-2 -mt-1 rounded-b-full border-2 border-t-0 border-white"></div><div class="w-0.5 h-1 bg-white"></div></div></div>' +
+         Tooltip('<div class="size-11 shrink-0 rounded-full bg-green-600 hover:bg-green-700 shadow-md text-white flex items-center justify-center cursor-pointer">' +
+           '<div class="flex flex-col items-center"><div class="w-2.5 h-3.5 rounded-full bg-white"></div>' +
+           '<div class="w-4 h-2 -mt-1 rounded-b-full border-2 border-t-0 border-white"></div><div class="w-0.5 h-1 bg-white"></div></div></div>',
+           'Voice message', 'left') +
     '  </div>' +
     '</div>' +
     '</div>');
@@ -751,15 +759,22 @@ begin
   Result := '<div class="grow text-slate-400" data-lcl="edit" placeholder="' + APlaceholder + '"' + AExtra + '>' + APlaceholder + '</div>';
 end;
 
+(*
+  Animated switch: class is-on (toggled by demo application) moves the knob with translate and transition.
+  Scene must add SWITCH_CSS to its stylesheet (rule for knob depends on class of parent).
+*)
+const
+  SWITCH_CSS = '.switch.is-on { background-color: #4f46e5 } .switch.is-on > .knob { translate: 20px 0 } ';
+
 function Switch(AOn: Boolean): String;
 const
-  ON_CLS = 'bg-indigo-600 justify-end';
+  CLS = 'switch w-11 h-6 shrink-0 p-0.5 rounded-full bg-slate-300 transition-colors duration-200 cursor-pointer';
 begin
   if AOn then
-    Result := '<div class="w-11 h-6 shrink-0 p-0.5 rounded-full flex cursor-pointer bg-slate-300 ' + ON_CLS + '" data-active="' + ON_CLS + '" data-checked="1">'
+    Result := '<div class="' + CLS + ' is-on" data-active="is-on" data-checked="1">'
   else
-    Result := '<div class="w-11 h-6 shrink-0 p-0.5 rounded-full flex cursor-pointer bg-slate-300" data-active="' + ON_CLS + '">';
-  Result := Result + '<div class="size-5 rounded-full bg-white shadow"></div></div>';
+    Result := '<div class="' + CLS + '" data-active="is-on">';
+  Result := Result + '<div class="knob size-5 rounded-full bg-white shadow transition-transform duration-200 ease-out"></div></div>';
 end;
 
 function Checkbox(const AText: String; AChecked: Boolean): String;
@@ -781,6 +796,7 @@ end;
 *)
 procedure BuildForms(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
 begin
+  AStyleSheet.Style := AStyleSheet.Style + SWITCH_CSS;
   ABody.SetClass('p-8 bg-slate-50');
   ABody.AppendHTML(
     '<div class="max-w-2xl mx-auto flex flex-col gap-6">' +
@@ -859,6 +875,7 @@ const
   end;
 begin
   RegisterCoverImage;
+  AStyleSheet.Style := AStyleSheet.Style + SWITCH_CSS;
   ABody.SetClass('bg-slate-50');
   ABody.AppendHTML(
     '<div class="flex h-full min-h-[420px]">' +
@@ -873,10 +890,13 @@ begin
     '      <div class="p-6 bg-white rounded-2xl shadow-sm border border-slate-200 flex flex-col gap-5">' +
     '        <div class="flex flex-col"><span class="text-lg font-semibold text-slate-900">Profile</span>' +
     '          <span class="text-sm text-slate-500">This information is visible to your team.</span></div>' +
-    '        <div class="flex items-center gap-4">' +
+    // relative z-10: tooltips below buttons are painted over next rows
+    '        <div class="relative z-10 flex items-center gap-4">' +
     '          <img class="size-16 rounded-full object-cover ring-4 ring-slate-100" src="/img/cover.png">' +
-    '          <div class="px-3 py-1.5 rounded-lg border border-slate-300 text-sm font-medium text-slate-700 hover:bg-slate-50 cursor-pointer">Change</div>' +
-    '          <div class="px-3 py-1.5 rounded-lg text-sm font-medium text-rose-600 hover:bg-rose-50 cursor-pointer">Remove</div>' +
+             Tooltip('<div class="px-3 py-1.5 rounded-lg border border-slate-300 text-sm font-medium text-slate-700 hover:bg-slate-50 cursor-pointer">Change</div>',
+               'Upload a photo &middot; JPG or PNG, max. 2 MB', 'bottom') +
+             Tooltip('<div class="px-3 py-1.5 rounded-lg text-sm font-medium text-rose-600 hover:bg-rose-50 cursor-pointer">Remove</div>',
+               'Use initials instead of photo', 'bottom') +
     '        </div>' +
     '        <div class="flex flex-wrap gap-4">' +
     '          <div class="grow basis-56">' + Field('Name', '<div class="h-10 ' + INPUT_WRAP + '">' + Edit('Jane Doe') + '</div>', '', True) + '</div>' +
@@ -1154,8 +1174,7 @@ procedure BuildAnimations(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
   end;
 begin
   // animated switch: knob is moved by translate (stylesheet rule for parent class)
-  AStyleSheet.Style := AStyleSheet.Style +
-    '.switch.is-on { background-color: #4f46e5 } .switch.is-on > .knob { translate: 20px 0 }';
+  AStyleSheet.Style := AStyleSheet.Style + SWITCH_CSS;
   ABody.SetClass('p-8 bg-white');
   ABody.AppendHTML(
     '<div class="max-w-3xl flex flex-col gap-5">' +
@@ -1167,8 +1186,7 @@ begin
     '    <div class="px-4 py-2 rounded-lg border-2 border-slate-300 hover:border-indigo-500 text-slate-700 hover:text-indigo-600 transition-colors duration-300 cursor-pointer">Outline</div>' +
     '    <div class="size-12 rounded-xl bg-amber-400 hover:scale-125 hover:rotate-12 transition-transform duration-300 ease-out cursor-pointer"></div>' +
     '    <div class="px-4 py-2 rounded-lg bg-slate-900 text-white opacity-50 hover:opacity-100 transition-opacity duration-500 cursor-pointer">Fade in</div>' +
-    '    <div class="switch w-11 h-6 p-0.5 rounded-full bg-slate-300 transition-colors duration-200 cursor-pointer" data-active="is-on">' +
-    '      <div class="knob size-5 rounded-full bg-white shadow transition-transform duration-200 ease-out"></div></div>' +
+         Switch(False) +
     '  </div>' +
     '  <div class="flex flex-wrap gap-4">' +
     '    <div class="w-52 flex flex-col gap-2 p-4 rounded-xl bg-white border border-slate-200 shadow-sm hover:shadow-lg hover:-translate-y-1.5 transition duration-300 cursor-pointer">' +

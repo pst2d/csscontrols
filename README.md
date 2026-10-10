@@ -247,7 +247,9 @@ lazbuild demo/renderdemo.lpi && demo/renderdemo demo/out 720
   higher `z-index` than siblings which overlap it.
 - Colors with alpha are blended with the nearest background color for text and borders. Backgrounds
   use a real alpha channel.
-- A shadow is also painted under the node itself, so it can be seen through a transparent background.
+- Under a node with a transparent or semi-transparent background the shadow can be seen through the
+  background (browsers paint outer shadows only outside of the node). Under an opaque background the
+  shadow is not painted at all.
 
 ## Performance
 
