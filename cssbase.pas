@@ -664,6 +664,23 @@ var
 
 implementation
 
+(*
+  PointF and RectF functions are not in unit Types of FPC 3.2.2 (only in newer versions)
+*)
+function PointF(AX, AY: Single): TPointF; inline;
+begin
+  Result.x := AX;
+  Result.y := AY;
+end;
+
+function RectF(ALeft, ATop, ARight, ABottom: Single): TRectF; inline;
+begin
+  Result.Left := ALeft;
+  Result.Top := ATop;
+  Result.Right := ARight;
+  Result.Bottom := ABottom;
+end;
+
 const
   CSS_COLOR_KEYWORDS : array[0..147] of record         // https://developer.mozilla.org/en-US/docs/Web/CSS/named-color
     k: String;                                        // key
