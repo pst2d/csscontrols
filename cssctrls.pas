@@ -24,13 +24,19 @@ type
     FCachedWidth,
     FCachedHeight: Integer;
     FIsChanged: Boolean;
+    FLayoutValid: Boolean;          // layout of body is for current size (CalculatePreferredSize can change it)
     FMouseDownNode: THtmlNode;
     FOnPaint: TNotifyEvent;
     FBodyNode: THtmlNode;
+    FScaleByDPI: Boolean;
     function GetBodyNode: THtmlNode;
     function GetStyle: String;
+    procedure SetScaleByDPI(AValue: Boolean);
     procedure SetStyle(AValue: String);
     procedure Relayout(AWidth, AHeight: Integer);
+    procedure UpdatePixelRatio;
+    procedure UpdateViewport(AWidth: Integer);
+    procedure SetActiveNodes(X, Y: Integer; AActive: Boolean);
   protected
     procedure CalculatePreferredSize(var PreferredWidth,
       PreferredHeight: Integer; WithThemeSpace: Boolean); override;
@@ -49,7 +55,6 @@ type
     procedure Changed;
     procedure ChangeBounds(ALeft, ATop, AWidth, AHeight: integer;
       KeepBase: boolean); override;
-    procedure DoSetBounds(ALeft, ATop, AWidth, AHeight: integer); override;
     function NodeMarginToScreen(ANode: THtmlNode): TRect;
     function NodeMarginToClient(ANode: THtmlNode): TRect;
 
@@ -65,6 +70,7 @@ type
     property DragMode;
     property Enabled;
     property ParentShowHint;
+    property ScaleByDPI: Boolean read FScaleByDPI write SetScaleByDPI default True;  // scale CSS px by screen DPI (Windows, Linux)
     property OnChangeBounds;
     property OnDragDrop;
     property OnDragOver;
@@ -121,6 +127,7 @@ type
   end;
 
   function HTMLFa(AInlineStyle: String; AIcon: String = ''; AId: String = ''): THTMLFaNode;
+  procedure SetFontAwesomeFile(const AFileName: String);
   procedure Register;
 
 implementation
@@ -234,6 +241,13 @@ begin
   Result := Body.InlineStyle;
 end;
 
+procedure TCSSShape.SetScaleByDPI(AValue: Boolean);
+begin
+  if FScaleByDPI = AValue then Exit;
+  FScaleByDPI := AValue;
+  Changed;
+end;
+
 procedure TCSSShape.SetStyle(AValue: String);
 begin
   if Body.InlineStyle = AValue then Exit;
@@ -242,12 +256,54 @@ begin
   Changed;
 end;
 
+(*
+  CSS px are scaled by screen DPI on Windows and Linux (macOS uses points, scaling is done by system)
+*)
+procedure TCSSShape.UpdatePixelRatio;
+var
+  Ratio: Single;
+begin
+  Ratio := 1;
+  {$ifndef darwin}
+  if FScaleByDPI and (Screen.PixelsPerInch > 96) then Ratio := Screen.PixelsPerInch / 96;
+  {$endif}
+  Body.PixelRatio := Ratio;
+end;
+
+(*
+  Responsive utility variants (sm:, md: ...) are based on control width in CSS px
+*)
+procedure TCSSShape.UpdateViewport(AWidth: Integer);
+  function Breakpoint(AValue: Integer): Integer;
+  begin
+    if AValue < 0 then Result := -1 else
+    if AValue >= 1536 then Result := 5 else
+    if AValue >= 1280 then Result := 4 else
+    if AValue >= 1024 then Result := 3 else
+    if AValue >= 768 then Result := 2 else
+    if AValue >= 640 then Result := 1 else
+      Result := 0;
+  end;
+var
+  NewWidth: Integer;
+begin
+  if Body.PixelRatio > 0 then NewWidth := Round(AWidth / Body.PixelRatio) else NewWidth := AWidth;
+  if Body.ViewportWidth = NewWidth then Exit;
+  if Breakpoint(Body.ViewportWidth) <> Breakpoint(NewWidth) then begin
+    Body.ViewportWidth := NewWidth;
+    Body.ApplyStyles;
+  end else
+    Body.ViewportWidth := NewWidth;
+end;
+
 procedure TCSSShape.Relayout(AWidth, AHeight: Integer);
 begin
-  if (FCachedWidth <> AWidth) or (FCachedHeight <> AHeight) or (FIsChanged) then begin
-//    Writeln(Format('ChangeBounds :%d, %d, %d, %d, - %s',  [ATop, ALeft, AWidth, AHeight, KeepBase.ToString]));
+  if (FCachedWidth <> AWidth) or (FCachedHeight <> AHeight) or FIsChanged or not FLayoutValid then begin
+    UpdatePixelRatio;
+    UpdateViewport(AWidth);
     Body.LayoutTo(0, 0, AWidth, AHeight);
     Body.AlignControlsTo(Left, Top);
+    FLayoutValid := True;
   end;
   FCachedWidth := AWidth;
   FCachedHeight := AHeight;
@@ -256,9 +312,10 @@ end;
 
 procedure TCSSShape.Paint;
 begin
-{  if FIsChanged then begin
-    FIsChanged := False;
-  end;}
+  if not FLayoutValid then begin     // layout was changed by CalculatePreferredSize
+    Body.LayoutTo(0, 0, Width, Height);
+    FLayoutValid := True;
+  end;
   Body.PaintTo(Self.Canvas);
   if Assigned(FOnPaint) then FOnPaint(Self);
 end;
@@ -272,28 +329,56 @@ begin
   end;
 end;
 
+(*
+  Set :active state for visible nodes at position (AActive = False clears all)
+*)
+procedure TCSSShape.SetActiveNodes(X, Y: Integer; AActive: Boolean);
+var
+  Node: THtmlNode;
+  NewActive, Modified: Boolean;
+begin
+  Modified := False;
+  Node := FBodyNode;
+  while Assigned(Node) do begin
+    NewActive := AActive and Node.Visible and PtInRect(Node.CompSize.ContentRect, Point(X, Y));
+    if Node.Active <> NewActive then begin
+      Node.Active := NewActive;
+      Modified := True;
+    end;
+    Node := Node.GetNext(Node, True);
+  end;
+  if Modified then begin
+    Body.ApplyStyles;
+    Changed;
+  end;
+end;
+
 procedure TCSSShape.MouseDown(Button: TMouseButton; Shift: TShiftState; X,
   Y: Integer);
 begin
   inherited MouseDown(Button, Shift, X, Y);
   FMouseDownNode := FBodyNode.NodeAtPosition( Point(X, Y));
+  if Button = mbLeft then SetActiveNodes(X, Y, True);
 end;
 
 procedure TCSSShape.MouseUp(Button: TMouseButton; Shift: TShiftState; X,
   Y: Integer);
+var
+  Node: THtmlNode;
 begin
   inherited MouseUp(Button, Shift, X, Y);
+  if Button = mbLeft then SetActiveNodes(X, Y, False);
   if Assigned(FMouseDownNode) then begin
-    if FMouseDownNode = FBodyNode.NodeAtPosition( Point(X, Y)) then begin
-      if Assigned(FMouseDownNode.OnClick) then FMouseDownNode.OnClick(FMouseDownNode);
-    end;
+    Node := FMouseDownNode;
     FMouseDownNode := Nil;
+    if Node = FBodyNode.NodeAtPosition( Point(X, Y)) then begin
+      if Assigned(Node.OnClick) then Node.OnClick(Node);   // note: OnClick can change or free nodes
+    end;
   end;
 end;
 
 procedure TCSSShape.MouseMove(Shift: TShiftState; X, Y: Integer);
 // TODO: move this part into Node handling to provide support for various controls
-// TODO: check for changes after style applied to prevent redrawing
 var
   Node: THtmlNode;
   Modified: Boolean;
@@ -304,7 +389,7 @@ begin
   Modified := False;
   NewCursor :=  crNone;
   while Assigned(Node) do begin
-    if PtInRect(Node.CompSize.ContentRect, Point(X,Y)) then begin
+    if Node.Visible and PtInRect(Node.CompSize.ContentRect, Point(X,Y)) then begin
       if Node.CompStyle.Cursor <> crDefault then NewCursor := Node.CompStyle.Cursor;
       if not Node.Hovered then begin
         Node.Hovered := True;
@@ -352,7 +437,9 @@ begin
   if (Parent = nil) or (not Parent.HandleAllocated) then Exit;
   if WidthIsAnchored then AWidth := Width else AWidth := -1;
   if (HeightIsAnchored and AutoSize) then AHeight := Height else AHeight := -1;
+  UpdatePixelRatio;
   FBodyNode.LayoutTo( 0, 0, AWidth, AHeight);
+  FLayoutValid := False;     // body layout is for preferred size now
   if WidthIsAnchored then PreferredWidth := 0 else PreferredWidth := FBodyNode.CompSize.MarginRect.Width;
   if (HeightIsAnchored and AutoSize) then PreferredHeight := 0 else PreferredHeight := FBodyNode.CompSize.MarginRect.Height;
 end;
@@ -364,6 +451,7 @@ begin
   FBodyNode.Id := 'body';
   FBodyNode.ParentControl := Self;
   FIsChanged := True;
+  FScaleByDPI := True;
   SetBounds(0,0, 150, 150);  // default size
 end;
 
@@ -391,28 +479,6 @@ begin
   Relayout(AWidth, AHeight);
 end;
 
-procedure TCSSShape.DoSetBounds(ALeft, ATop, AWidth, AHeight: integer);
-// TODO: add align controls only when Left or Top Changed without invalidating preffered size
-var
-  LeftChanged, TopChanged,
-  WidthChanged, HeightChanged: Boolean;
-begin
-  WidthChanged := AWidth <> Width;
-  HeightChanged := AHeight <> Height;
-  LeftChanged := ALeft <> Left;
-  TopChanged := ATop <> Top;
-  inherited DoSetBounds(ALeft, ATop, AWidth, AHeight);
-  exit;
-  if WidthChanged or HeightChanged { or LeftChanged or TopChanged} then begin // this is allways TRUE :)
-//    FIsChanged := True;
-    if AutoSize then begin
-      InvalidatePreferredSize;
-      AdjustSize;
-//      FIsChanged := False;
-    end;
-  end;
-end;
-
 function TCSSShape.NodeMarginToScreen(ANode: THtmlNode): TRect;
 var
   P: TPoint;
@@ -429,11 +495,18 @@ begin
   Result := Rect(P.x, P.y, P.x + ANode.CompSize.MarginRect.Width, P.y + ANode.CompSize.MarginRect.Height);
 end;
 
+(*
+  Set FontAwesome (4.x) font file for THTMLFaNode, default is fontawesome-webfont.ttf in application folder
+*)
+procedure SetFontAwesomeFile(const AFileName: String);
+begin
+  if FileExists(AFileName) then FAFont.Name := AFileName;
+end;
+
 initialization
 begin
 	FAFont := TFreeTypeFont.Create;
-  // TODO: this is not best way!
-  if FileExists(Application.Location + 'fontawesome-webfont.ttf') then 	FAFont.Name :=  Application.Location + 'fontawesome-webfont.ttf';
+  SetFontAwesomeFile(Application.Location + 'fontawesome-webfont.ttf');
 end;
 
 finalization

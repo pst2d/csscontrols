@@ -1,22 +1,26 @@
 (*
-  Version 0.1 Initial idea, concept proof
+  Version 0.2
   Author: Pavol Stugel (pstugel@gmail.com)
   Warning: this is work in progress version, all methods can be changed in future!
 
   Scope:
   - very basic html(node) +  basic css layout support. KISS (https://en.wikipedia.org/wiki/KISS_principle)
+  - Tailwind CSS like utility classes (see csstailwind.pas)
 
   TODO (in random order):
   - transform property support
-  - high dpi support
-  - em length support
-  - float:right, float:left support
   - image background support
-  - more display:flex support
   - transition support
+  - opacity, box-shadow, line-height
+  - dashed/dotted border painting, antialiasing
+  - display:grid
   - delphi support
 
   History:
+  2026.10.10 - CSS engine rework: selectors and cascade, flexbox (direction, wrap, gap, grow/shrink/basis,
+               justify-content, align-items/self, auto margins, order), box-sizing, min/max sizes, em/rem units,
+               high dpi pixel ratio, float:right, font properties, text wrapping, full color table,
+               utility classes support (csstailwind.pas), tests and demo
   2020.05.01 - Align LCL controls working again
   2020.04.17 - TCSSShape fixes, "0" length fixed
   2020.02.22 - baseline align fix, added: display:inline-flex; basic owerflow support
@@ -159,6 +163,7 @@ type
     CachedWidth,
     CachedHeight,
     CachedBaseLine: Integer;
+    CachedMinWidth: Integer;      // width of longest word
     CachedPixelRatio: Single;
   end;
   TCSSStyleSheet = class;
@@ -364,6 +369,9 @@ type
     procedure MeasureText(AMaxWidth: Integer; out AWidth, AHeight, ABaseLine: Integer); virtual;
     procedure AssignFontTo(AFont: TFont);
     function BorderColor(ASide: TCSSSide): TColor;
+    function FlexTextRect(const AContent: TRect): TRect;
+    function MeasureLongestWord: Integer;
+    function MinContentWidth(AAutoMinimum: Boolean = False): Integer;
     procedure CalcRadius(AWidth, AHeight: Integer; out ATopLeft, ATopRight, ABottomRight, ABottomLeft: TPoint);
   public
     constructor Create(AInlineStyle: String = '');virtual;
@@ -372,6 +380,7 @@ type
     procedure Assign(Source: TPersistent); override;
     function ApplyStyle: THtmlNode;
     function ApplyStyles: THtmlNode;
+    procedure ApplySubtree(ANode: THtmlNode);
     procedure ApplyStyleForNode(ANode: THtmlNode);
     function MatchesCompound(const ACompound: TCSSCompoundSelector): Boolean;
     function Matches(const ASelector: TCSSCompoundSelectors): Boolean; overload;
@@ -397,6 +406,7 @@ type
     function SetHover(AValue: String): THtmlNode;
     function SetOnClick(AValue: TNotifyEvent): THtmlNode;
     function SetTagStr(AValue: String): THtmlNode;
+    function SetText(const AValue: String): THtmlNode;
     function Clear: THtmlNode;
     function Delete(ANode: THtmlNode): THtmlNode;
     procedure Detach;
@@ -416,6 +426,7 @@ type
     property Active: Boolean read FActive write FActive;
     property ViewportWidth: Integer read FViewportWidth write FViewportWidth;  // used from RootNode only, -1 = unknown
     property ChildCount: Integer read FChildCount;
+    property Visible: Boolean read FVisible;     // computed by layout (display:none node or parent)
     property PixelRatio: Single read FPixelRatio write FPixelRatio;  // used from RootNode only
   published
     property AlignControl: TControl read FAlignControl write IntSetAlignControl;
@@ -449,6 +460,8 @@ var
 
   procedure ParseCSS(ACSS: String; ATarget: TStringList);
   function ParseSelector(const ASelector: String; out ASpecificity: Integer): TCSSCompoundSelectors;
+  function CSSToColor(AValue: String): TCSSColor;
+  function CSSToLength(AValue: String): TCSSLength;
   function CSSResolveUtility(const AClassName: String; out ADeclarations: String; out AOrder: Integer): Boolean;
   procedure CSSClearUtilityCache;
   function StrBefore(const AValue: String; const ASubstr: String): String;
@@ -456,6 +469,7 @@ var
   function StrBetween(const AValue: String; const AStart, AEnd: String): String;
   function HTMLDiv(AInlineStyle: String; AId: String = ''): THtmlNode;
   function HTMLSpan(AInlineStyle: String; AText: String = ''; AId: String = ''): THtmlNode;
+  function HTMLNode(const AClass: String; const AText: String = ''; const AElement: String = 'div'): THtmlNode;
 
 implementation
 
@@ -700,6 +714,17 @@ begin
   Result.Id := AId;
 end;
 
+(*
+  Create node with classes (utility classes), eg.: HTMLNode('px-4 py-2 rounded bg-blue-500 text-white', 'Save', 'span')
+*)
+function HTMLNode(const AClass: String; const AText: String; const AElement: String): THtmlNode;
+begin
+  Result := THtmlNode.Create;
+  Result.FElementName := LowerCase(AElement);
+  Result.Text := AText;
+  Result.SetClass(AClass);
+end;
+
 function HTMLSpan(AInlineStyle: String; AText: String = ''; AId: String = ''): THtmlNode;
 begin
   Result := THtmlNode.Create;
@@ -780,6 +805,7 @@ var
   I, J: Integer;
   InRound: Integer;
 begin
+  Result := nil;
   if AValue = '' then exit;
   SetLength(Result, 10);
   Count :=0;
@@ -2843,6 +2869,8 @@ begin
     AssignFontTo(ACanvas.Font);
     {$ifdef fpc} ACanvas.Font.EndUpdate;{$endif}
     R := FCompSize.RealContentRect;
+    if (FCompStyle.Display in [cdtFlex, cdtInlineFlex]) and (FChildCount = 0) then
+      R := FlexTextRect(R);    // text in flex container is anonymous flex item
     if FCompStyle.WhiteSpace = cwsNoWrap then
       Flags := DT_LEFT or DT_NOPREFIX or DT_SINGLELINE or DT_END_ELLIPSIS
     else
@@ -2897,6 +2925,7 @@ begin
     (FCachedFont.Weight.FontType <> FCompStyle.Font.Weight.FontType) or (FCachedFont.Style <> FCompStyle.Font.Style) or
     (FCachedFont.Size.LengthType <> cltPx) or (FCachedFont.CachedPixelRatio <> RootNode.FPixelRatio) then begin
     MeasureText(-1, FCachedFont.CachedWidth, FCachedFont.CachedHeight, FCachedFont.CachedBaseLine);
+    FCachedFont.CachedMinWidth := MeasureLongestWord;
     FCachedFont.Size.Value := FCompSize.FontSize;
     FCachedFont.Size.LengthType := cltPx;
     FCachedFont.Family := FCompStyle.Font.Family;
@@ -2949,6 +2978,70 @@ begin
 end;
 
 (*
+  Width of longest word in text (min-content width of text)
+*)
+function THtmlNode.MeasureLongestWord: Integer;
+var
+  Words: TStringArray;
+  I: Integer;
+begin
+  Result := 0;
+  {$ifndef fmx}
+  if (FText = '') or (CSSMeasureBitmap = nil) then Exit;
+  AssignFontTo(CSSMeasureBitmap.Canvas.Font);
+  Words := SplitParameters(StringReplace(FText, #10, ' ', [rfReplaceAll]));
+  for I := 0 to High(Words) do
+    Result := Max(Result, CSSMeasureBitmap.Canvas.TextWidth(Words[I]) + 1);
+  {$endif}
+end;
+
+(*
+  Minimal width of node without overflow (min-content), border box.
+  Node and its children must be already measured by layout.
+*)
+function THtmlNode.MinContentWidth(AAutoMinimum: Boolean): Integer;
+var
+  N: THtmlNode;
+  Sum, Count: Integer;
+  Space: Integer;
+  FixedWidth: Boolean;
+begin
+  Space := FCompSize.Padding.Left + FCompSize.Padding.Right + FCompSize.Border.Left + FCompSize.Border.Right;
+  FixedWidth := (FCompStyle.Width.LengthType in [cltPx, cltPt, cltEm, cltRem]) or Assigned(FAlignControl);
+  if FixedWidth and not AAutoMinimum then
+    Exit(FCompSize.ContentWidth);
+  Result := 0;
+  if FChildCount = 0 then begin
+    if FText <> '' then begin
+      if FCompStyle.WhiteSpace = cwsNoWrap then Result := FCachedFont.CachedWidth
+        else Result := FCachedFont.CachedMinWidth;
+    end;
+  end else begin
+    Sum := 0;
+    Count := 0;
+    N := FFirstChild;
+    while Assigned(N) do begin
+      if (N.FCompStyle.Display <> cdtNone) and not (N.FCompStyle.Position in [cpAbsolute, cpFixed]) then begin
+        if (FCompStyle.Display in [cdtFlex, cdtInlineFlex]) and (FCompStyle.FlexDirection in [cfdRow, cfdRowReverse]) and
+          (FCompStyle.FlexWrap = cfwNoWrap) then
+          Inc(Sum, N.MinContentWidth + N.FCompSize.Margin.Left + N.FCompSize.Margin.Right)
+        else
+          Result := Max(Result, N.MinContentWidth + N.FCompSize.Margin.Left + N.FCompSize.Margin.Right);
+        Inc(Count);
+      end;
+      N := N.FNextSibling;
+    end;
+    if Sum > 0 then begin
+      if Count > 1 then Inc(Sum, (Count - 1) * Max(0, CalcLength(FCompStyle.ColumnGap, -1)));
+      Result := Max(Result, Sum);
+    end;
+  end;
+  Inc(Result, Space);
+  // automatic minimum of flex item is never bigger than specified width
+  if AAutoMinimum and FixedWidth then Result := Min(Result, FCompSize.ContentWidth);
+end;
+
+(*
   Setup canvas font based on computed style
 *)
 procedure THtmlNode.AssignFontTo(AFont: TFont);
@@ -2971,6 +3064,52 @@ begin
   AFont.Style := St;
   AFont.Color := FCompStyle.Color.Value;
   {$endif}
+end;
+
+(*
+  Position of text in flex container (text is aligned like one flex item)
+*)
+function THtmlNode.FlexTextRect(const AContent: TRect): TRect;
+var
+  TW, TH, TB, FreeW, FreeH, X, Y: Integer;
+  MainAlign: TCSSJustifyContent;
+  CrossAlign: TCSSAlignItems;
+  function MainOffset(AFree: Integer): Integer;
+  begin
+    case MainAlign of
+      cjcFlexEnd: Result := AFree;
+      cjcCenter, cjcSpaceAround, cjcSpaceEvenly: Result := AFree div 2;
+      else Result := 0;
+    end;
+  end;
+  function CrossOffset(AFree: Integer): Integer;
+  begin
+    case CrossAlign of
+      caiFlexEnd: Result := AFree;
+      caiCenter: Result := AFree div 2;
+      else Result := 0;
+    end;
+  end;
+begin
+  Result := AContent;
+  if FCompStyle.WhiteSpace = cwsNoWrap then MeasureText(-1, TW, TH, TB)
+    else MeasureText(Max(1, AContent.Width), TW, TH, TB);
+  TW := Min(TW, AContent.Width);
+  FreeW := Max(0, AContent.Width - TW);
+  FreeH := Max(0, AContent.Height - TH);
+  MainAlign := FCompStyle.JustifyContent;
+  CrossAlign := FCompStyle.AlignItems;
+  if FCompStyle.FlexDirection in [cfdRow, cfdRowReverse] then begin
+    X := MainOffset(FreeW);
+    Y := CrossOffset(FreeH);
+    if FCompStyle.FlexDirection = cfdRowReverse then X := FreeW - X;
+  end else begin
+    Y := MainOffset(FreeH);
+    X := CrossOffset(FreeW);
+    if CrossAlign = caiStretch then TW := AContent.Width;
+    if FCompStyle.FlexDirection = cfdColumnReverse then Y := FreeH - Y;
+  end;
+  Result := Rect(AContent.Left + X, AContent.Top + Y, AContent.Left + X + TW, AContent.Top + Y + TH);
 end;
 
 function THtmlNode.BorderColor(ASide: TCSSSide): TColor;
@@ -3073,18 +3212,13 @@ begin
   ApplyStyleForNode(Self);
 end;
 
+(*
+  Apply styles to this node and all descendants
+*)
 function THtmlNode.ApplyStyles: THtmlNode;
-  procedure ApplyInside(ANode: THtmlNode);
-  begin
-    while Assigned(ANode) do begin
-      ApplyStyleForNode(ANode);
-      if ANode.ChildCount > 0 then ApplyInside(ANode.FirstChild);
-      ANode := ANode.GetNext(ANode, False);
-    end;
-  end;
 begin
   Result := Self;
-  ApplyInside(Self);
+  ApplySubtree(Self);
 end;
 
 (*
@@ -3655,6 +3789,9 @@ var
       Space := AItem.Node.FCompSize.Padding.Top + AItem.Node.FCompSize.Padding.Bottom + AItem.Node.FCompSize.Border.Top + AItem.Node.FCompSize.Border.Bottom;
     end;
     Result := Max(AValue, Space);
+    // automatic minimum size of flex items (min-width: auto) is min-content width
+    if IsRow and (Mn.LengthType in [cltUndefined, cltAuto]) and (cs.Overflow = cotVisible) then
+      Result := Max(Result, AItem.Node.MinContentWidth(True));
     if not ((Mx.LengthType = cltPercentage) and (Parent < 0)) and (Mx.LengthType in [cltPx, cltPt, cltEm, cltRem, cltPercentage]) then begin
       V := AItem.Node.CalcLength(Mx, Parent);
       if cs.BoxSizing = cbxContentBox then Inc(V, Space);
@@ -4241,7 +4378,6 @@ begin
           CtrlNode.AlignControl.Visible := True;
         end;
       end;
-      CtrlNode.AlignControl.BringToFront;
       {$ifdef fpc}
       CtrlOldBounds := CtrlNode.AlignControl.BoundsRect;
       {$endif}
@@ -4254,6 +4390,7 @@ begin
       OffsetRect(CtrlNewBounds, DifX, DifY);
 
       if (CtrlNode.AlignControl.Parent <> nil) and (not CompareRect(@CtrlNewBounds,@CtrlOldBounds)) then begin
+        CtrlNode.AlignControl.BringToFront;   // control must be above painted node
 			  CtrlNode.AlignControl.SetBounds(
 				  CtrlNewBounds.Left,
 				  CtrlNewBounds.Top,
@@ -4317,6 +4454,12 @@ begin
   AParentNode.AddNode(Self);
 end;
 
+
+function THtmlNode.SetText(const AValue: String): THtmlNode;
+begin
+  Result := Self;
+  FText := AValue;
+end;
 
 function THtmlNode.SetTagStr(AValue: String): THtmlNode;
 begin
@@ -4428,6 +4571,26 @@ begin
   FLastNode := ANode;
   Inc(Self.FChildCount);
   Inc(RootNode.FTotalCount, 1 + CountNodes(ANode.FFirstChild));
+  // styles depends on position in tree (stylesheet of root node, :first-child, :last-child ...)
+  if Assigned(RootNode.StyleSheet) or Assigned(CSSUtilityResolver) then begin
+    ApplySubtree(ANode);
+    if Assigned(ANode.FPrevSibling) then ApplyStyleForNode(ANode.FPrevSibling);
+  end;
+end;
+
+(*
+  Apply styles to node and all its descendants
+*)
+procedure THtmlNode.ApplySubtree(ANode: THtmlNode);
+var
+  N: THtmlNode;
+begin
+  ApplyStyleForNode(ANode);
+  N := ANode.FFirstChild;
+  while Assigned(N) do begin
+    ApplySubtree(N);
+    N := N.FNextSibling;
+  end;
 end;
 
 function THtmlNode.GetNext(ANode: THtmlNode; GoAboveChildren: Boolean): THtmlNode;

@@ -18,3 +18,5 @@ tests/out/
 
 # lazbuild generated (contains local paths)
 packagefiles.xml
+demo/renderdemo
+demo/out/

@@ -49,6 +49,7 @@ type
     procedure TestNestedFlexShrinkToFit;
     procedure TestNestedFlexGrowLayoutsChildren;
     procedure TestFlexMaxWidth;
+    procedure TestFlexMinContent;
   end;
 
 implementation
@@ -429,6 +430,23 @@ begin
   Layout(300);
   CheckBox('A', A, 0, 0, 100, 10);
   CheckBox('B', B, 100, 0, 200, 10);
+end;
+
+procedure TTestLayout.TestFlexMinContent;
+var
+  F, A, B: THtmlNode;
+begin
+  F := Add(FRoot, 'display: flex; width: 100px');
+  A := HTMLNode('', 'Supercalifragilisticexpialidocious').AppendTo(F);
+  B := HTMLNode('', 'Supercalifragilisticexpialidocious').AppendTo(F);
+  Layout(300);
+  AssertTrue('min-content keeps word width', A.CompSize.ContentRect.Width > 50);
+  AssertTrue('no overlap', B.CompSize.ContentRect.Left >= A.CompSize.ContentRect.Right);
+  A.InlineStyle := 'min-width: 0';
+  B.InlineStyle := 'min-width: 0';
+  Layout(300);
+  CheckBox('A min-width 0', A, 0, 0, 50, -1);
+  CheckBox('B min-width 0', B, 50, 0, 50, -1);
 end;
 
 initialization

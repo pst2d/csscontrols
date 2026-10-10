@@ -11,7 +11,7 @@
         <UnitOutputDirectory Value="lib\$(TargetCPU)-$(TargetOS)"/>
       </SearchPaths>
     </CompilerOptions>
-    <Files Count="2">
+    <Files Count="3">
       <Item1>
         <Filename Value="cssctrls.pas"/>
         <HasRegisterProc Value="True"/>
@@ -21,6 +21,10 @@
         <Filename Value="cssbase.pas"/>
         <UnitName Value="cssbase"/>
       </Item2>
+      <Item3>
+        <Filename Value="csstailwind.pas"/>
+        <UnitName Value="csstailwind"/>
+      </Item3>
     </Files>
     <RequiredPkgs Count="2">
       <Item1>
