@@ -258,7 +258,7 @@ end;
 
 procedure TTestParser.TestUnknownValuesUseDefaults;
 begin
-  FItem.Parse('display: grid; text-align: start; align-items: space-around; overflow: clip');
+  FItem.Parse('display: table; text-align: start; align-items: space-around; overflow: clip');
   AssertTrue(FItem.Display = cdtBlock);
   AssertTrue(FItem.TextAlign = ctaLeft);
   AssertTrue(FItem.AlignItems = caiStretch);

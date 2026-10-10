@@ -9,13 +9,15 @@ uses
   Classes, SysUtils,  Types, Math,
   strutils,
   {$ifdef fpc}
-  Controls,  Graphics, Forms,
-  LMessages,LCLIntf,
+  Controls,  Graphics, Forms, ExtCtrls,
+  LMessages,LCLIntf, LazUTF8,
   FPimage, LCLType, LCLProc, IntfGraphics, GraphType, EasyLazFreeType, LazFreeTypeIntfDrawer,      // font rendering
   {$endif}
   cssbase;
 
 type
+
+  TCSSNodeEvent = procedure(Sender: TObject; ANode: THtmlNode) of object;
 
   { TCSSShape }
 
@@ -31,6 +33,14 @@ type
     FScaleByDPI: Boolean;
     FDragNode: THtmlNode;           // node with dragged scrollbar thumb
     FDragAxis, FDragStart, FDragScroll: Integer;
+    FAnimTimer: TTimer;             // runs only while some nodes are animated
+    FInspect: Boolean;              // debug overlay of node under mouse (like browser inspector)
+    FInspectNode: THtmlNode;
+    FOnInspect: TCSSNodeEvent;
+    procedure SetInspect(AValue: Boolean);
+    procedure AnimTimer(Sender: TObject);
+    procedure InvalidateArea(const ARect: TRect);
+    function FocusControlOf(ANode: THtmlNode): Boolean;
     function GetBodyNode: THtmlNode;
     function ScrollAt(const APos: TPoint; DX, DY: Integer): Boolean;
     procedure ScrollChanged;
@@ -46,6 +56,7 @@ type
     procedure CalculatePreferredSize(var PreferredWidth,
       PreferredHeight: Integer; WithThemeSpace: Boolean); override;
     procedure Paint; override;
+    procedure PaintInspector(ACanvas: TCanvas; ANode: THtmlNode);
     procedure SetParent(NewParent: TWinControl); override;
     procedure MouseDown(Button: TMouseButton; Shift: TShiftState; X, Y: Integer
       ); override;
@@ -64,6 +75,7 @@ type
       KeepBase: boolean); override;
     function NodeMarginToScreen(ANode: THtmlNode): TRect;
     function NodeMarginToClient(ANode: THtmlNode): TRect;
+    property InspectNode: THtmlNode read FInspectNode;
 
   published
     property Align;
@@ -78,6 +90,8 @@ type
     property Enabled;
     property ParentShowHint;
     property ScaleByDPI: Boolean read FScaleByDPI write SetScaleByDPI default True;  // scale CSS px by screen DPI (Windows, Linux)
+    property Inspect: Boolean read FInspect write SetInspect default False;   // debug: show boxes of node under mouse
+    property OnInspect: TCSSNodeEvent read FOnInspect write FOnInspect;       // node under mouse in Inspect mode was changed
     property OnChangeBounds;
     property OnDragDrop;
     property OnDragOver;
@@ -331,8 +345,199 @@ begin
     Body.LayoutTo(0, 0, Width, Height);
     FLayoutValid := True;
   end;
-  Body.PaintTo(Self.Canvas);
+  Body.PaintTo(Self.Canvas, ClientRect);
+  if FInspect and Assigned(FInspectNode) then PaintInspector(Canvas, FInspectNode);
   if Assigned(FOnPaint) then FOnPaint(Self);
+  if not (csDesigning in ComponentState) and not FAnimTimer.Enabled and Body.Animating then FAnimTimer.Enabled := True;
+end;
+
+(*
+  Next frame of animations: only animated area is repainted (old and new position)
+*)
+procedure TCSSShape.AnimTimer(Sender: TObject);
+var
+  R, R2: TRect;
+begin
+  R := Body.AnimationBounds;
+  if not Body.AnimationTick(GetTickCount64) then begin
+    FAnimTimer.Enabled := False;
+    Exit;
+  end;
+  R2 := Body.AnimationBounds;
+  if R.IsEmpty then R := R2
+    else if not R2.IsEmpty then R := TRect.Union(R, R2);
+  if FInspect then Invalidate else InvalidateArea(R);
+end;
+
+procedure TCSSShape.InvalidateArea(const ARect: TRect);
+var
+  R: TRect;
+begin
+  if ARect.IsEmpty or (Parent = nil) or not Parent.HandleAllocated then begin
+    Invalidate;
+    Exit;
+  end;
+  R := TRect.Intersect(ARect, ClientRect);
+  if R.IsEmpty then Exit;
+  OffsetRect(R, Left, Top);
+  LCLIntf.InvalidateRect(Parent.Handle, @R, False);
+end;
+
+procedure TCSSShape.SetInspect(AValue: Boolean);
+begin
+  if FInspect = AValue then Exit;
+  FInspect := AValue;
+  FInspectNode := nil;
+  Invalidate;
+end;
+
+(*
+  Debug overlay like in browser inspector: margin, border, padding and content box of node, guide lines
+  and label with element, classes and size
+*)
+procedure TCSSShape.PaintInspector(ACanvas: TCanvas; ANode: THtmlNode);
+const
+  DASH = 4;
+  GAP = 3;
+var
+  N: THtmlNode;
+  MR, BR, PR, CR: TRect;
+  S, Dims: String;
+  I, X, Y, TW, TH, W1: Integer;
+  Ratio: Single;
+  // area between outer and inner rectangle filled with semi-transparent color
+  procedure Frame(AOuter, AInner: TRect; R, G, B, A: Byte);
+  var
+    Bmp: TBitmap;
+    procedure Part(AL, AT, AR, AB: Integer);
+    begin
+      if (AR > AL) and (AB > AT) then ACanvas.StretchDraw(Rect(AL, AT, AR, AB), Bmp);
+    end;
+  begin
+    Bmp := CSSAlphaBitmap(R, G, B, A);
+    AInner := TRect.Intersect(AInner, AOuter);
+    if AInner.IsEmpty then begin
+      Part(AOuter.Left, AOuter.Top, AOuter.Right, AOuter.Bottom);
+      Exit;
+    end;
+    Part(AOuter.Left, AOuter.Top, AOuter.Right, AInner.Top);
+    Part(AOuter.Left, AInner.Bottom, AOuter.Right, AOuter.Bottom);
+    Part(AOuter.Left, AInner.Top, AInner.Left, AInner.Bottom);
+    Part(AInner.Right, AInner.Top, AOuter.Right, AInner.Bottom);
+  end;
+  procedure HLine(AY: Integer);
+  var
+    K: Integer;
+  begin
+    K := 0;
+    while K < ClientWidth do begin
+      ACanvas.FillRect(K, AY, K + DASH, AY + 1);
+      Inc(K, DASH + GAP);
+    end;
+  end;
+  procedure VLine(AX: Integer);
+  var
+    K: Integer;
+  begin
+    K := 0;
+    while K < ClientHeight do begin
+      ACanvas.FillRect(AX, K, AX + 1, K + DASH);
+      Inc(K, DASH + GAP);
+    end;
+  end;
+  function Px(AValue: Integer): String;
+  begin
+    Result := FormatFloat('0.#', AValue / Ratio);
+  end;
+begin
+  // node can be removed from tree since last mouse move
+  N := FBodyNode;
+  while Assigned(N) and (N <> ANode) do N := N.GetNext(N, True);
+  if N = nil then begin
+    FInspectNode := nil;
+    Exit;
+  end;
+  Ratio := FBodyNode.PixelRatio;
+  if Ratio <= 0 then Ratio := 1;
+  ACanvas.ClipRect := ClientRect;
+  with ANode.CompSize do begin
+    MR := ANode.TransformedBounds(MarginRect);
+    BR := ANode.TransformedBounds(ContentRect);
+    PR := ANode.TransformedBounds(ANode.PaddingBox);
+    CR := ANode.TransformedBounds(RealContentRect);
+  end;
+  Frame(MR, BR, 246, 178, 107, 110);     // margin
+  Frame(BR, PR, 255, 229, 153, 140);     // border
+  Frame(PR, CR, 147, 196, 125, 120);     // padding
+  Frame(CR, Rect(0, 0, 0, 0), 111, 168, 220, 110);   // content
+  // guide lines on border box edges
+  ACanvas.Brush.Style := bsSolid;
+  ACanvas.Brush.Color := RGBToColor(59, 130, 246);
+  HLine(BR.Top);
+  HLine(BR.Bottom - 1);
+  VLine(BR.Left);
+  VLine(BR.Right - 1);
+  // label: element#id.class  width x height
+  S := ANode.Element;
+  if ANode.Id <> '' then S := S + '#' + ANode.Id;
+  for I := 0 to ANode.ClassList.Count - 1 do S := S + '.' + ANode.ClassList.Item[I];
+  if UTF8Length(S) > 60 then S := UTF8Copy(S, 1, 58) + '...';
+  Dims := Px(BR.Width) + ' x ' + Px(BR.Height);
+  ACanvas.Font.Name := 'default';
+  ACanvas.Font.Height := -12;
+  ACanvas.Font.Style := [];
+  W1 := ACanvas.TextWidth(S);
+  TW := W1 + ACanvas.TextWidth('  ' + Dims) + 12;
+  TH := ACanvas.TextHeight('Wg') + 6;
+  X := Max(0, Min(BR.Left, ClientWidth - TW));
+  Y := BR.Top - TH - 4;
+  if Y < 0 then Y := BR.Bottom + 4;
+  if Y + TH > ClientHeight then Y := Max(0, BR.Top + 4);
+  ACanvas.Brush.Color := RGBToColor(36, 41, 51);
+  ACanvas.FillRect(X, Y, X + TW, Y + TH);
+  ACanvas.Brush.Style := bsClear;
+  ACanvas.Font.Color := RGBToColor(216, 160, 255);
+  ACanvas.TextOut(X + 6, Y + 3, S);
+  ACanvas.Font.Color := RGBToColor(220, 224, 230);
+  ACanvas.TextOut(X + 6 + W1, Y + 3, '  ' + Dims);
+  ACanvas.Brush.Style := bsSolid;
+end;
+
+(*
+  Click on node without OnClick focuses LCL control inside it (like click on <label> in HTML): nearest parent
+  which contains exactly one focusable aligned control, eg. wrapper of input with icons, or field with label.
+*)
+function TCSSShape.FocusControlOf(ANode: THtmlNode): Boolean;
+var
+  Found: TWinControl;
+  Count: Integer;
+  procedure Collect(AParent: THtmlNode);
+  var
+    C: THtmlNode;
+  begin
+    if not AParent.Visible then Exit;
+    if (AParent.AlignControl is TWinControl) and TWinControl(AParent.AlignControl).CanFocus then begin
+      Inc(Count);
+      Found := TWinControl(AParent.AlignControl);
+    end;
+    C := AParent.FirstChild;
+    while Assigned(C) and (Count < 2) do begin
+      Collect(C);
+      C := AParent.GetNext(C);
+    end;
+  end;
+begin
+  Result := False;
+  while Assigned(ANode) and (ANode <> FBodyNode) and not Assigned(ANode.OnClick) do begin
+    Count := 0;
+    Collect(ANode);
+    if Count = 1 then begin
+      Found.SetFocus;
+      Exit(True);
+    end;
+    if Count > 1 then Exit;
+    ANode := ANode.ParentNode;
+  end;
 end;
 
 procedure TCSSShape.SetParent(NewParent: TWinControl);
@@ -487,7 +692,10 @@ begin
     end;
   end;
   FMouseDownNode := FBodyNode.NodeAtPosition( Point(X, Y));
-  if Button = mbLeft then SetActiveNodes(X, Y, True);
+  if Button = mbLeft then begin
+    if FMouseDownNode = nil then FocusControlOf(FBodyNode.NodeAtPosition(Point(X, Y), False));
+    SetActiveNodes(X, Y, True);
+  end;
 end;
 
 procedure TCSSShape.MouseUp(Button: TMouseButton; Shift: TShiftState; X,
@@ -518,6 +726,14 @@ var
   NewCursor: TCursor;
 begin
   inherited MouseMove(Shift, X, Y);
+  if FInspect then begin
+    Node := FBodyNode.NodeAtPosition(Point(X, Y), False);
+    if Node <> FInspectNode then begin
+      FInspectNode := Node;
+      Invalidate;
+      if Assigned(FOnInspect) then FOnInspect(Self, Node);
+    end;
+  end;
   if Assigned(FDragNode) then begin
     if FDragAxis = 1 then Modified := FDragNode.ScrollByThumb(1, FDragScroll, Y - FDragStart)
       else Modified := FDragNode.ScrollByThumb(2, FDragScroll, X - FDragStart);
@@ -591,6 +807,10 @@ begin
   FBodyNode.ParentControl := Self;
   FIsChanged := True;
   FScaleByDPI := True;
+  FAnimTimer := TTimer.Create(Self);
+  FAnimTimer.Enabled := False;
+  FAnimTimer.Interval := 15;
+  FAnimTimer.OnTimer := AnimTimer;
   if not (csDesigning in ComponentState) then Screen.AddHandlerActiveControlChanged(ActiveControlChanged);
   SetBounds(0,0, 150, 150);  // default size
 end;

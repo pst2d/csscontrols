@@ -4,7 +4,7 @@ program csstests;
 
 uses
   Interfaces, Forms, Classes, consoletestrunner,
-  test_parser, test_tree, test_cascade, test_layout, test_tailwind, test_render, test_transform, test_html, test_scroll;
+  test_parser, test_tree, test_cascade, test_layout, test_tailwind, test_render, test_transform, test_html, test_scroll, test_grid, test_anim;
 
 var
   App: TTestRunner;

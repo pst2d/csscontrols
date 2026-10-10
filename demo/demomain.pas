@@ -5,8 +5,8 @@ unit demomain;
 interface
 
 uses
-  Classes, SysUtils, Forms, Controls, StdCtrls, ExtCtrls, Graphics,
-  cssbase, CSSCtrls, csstailwind, demoscenes;
+  Classes, SysUtils, Forms, Controls, StdCtrls, ExtCtrls, Graphics, Menus,
+  cssbase, CSSCtrls, csstailwind, demoscenes, cssbutton;
 
 type
 
@@ -15,10 +15,20 @@ type
   TDemoForm = class(TForm)
   private
     FList: TListBox;
+    FInspect: TCheckBox;
     FShape: TCSSShape;
     FSheet: TCSSStyleSheet;
     FStatus: TLabel;
     FControls: TList;      // LCL controls created by scene
+    FSelectMenu: TPopupMenu;
+    FSelectNode: THtmlNode;
+    procedure InspectClick(Sender: TObject);
+    procedure ShapeInspect(Sender: TObject; ANode: THtmlNode);
+    procedure SelectClick(Sender: TObject);
+    procedure SelectItemClick(Sender: TObject);
+    procedure PhoneChange(Sender: TObject);
+    procedure SaveClick(Sender: TObject);
+    procedure ButtonClick(Sender: TObject);
     procedure ListClick(Sender: TObject);
     procedure NodeClick(Sender: TObject);
     procedure ToggleClick(Sender: TObject);
@@ -44,6 +54,7 @@ implementation
 constructor TDemoForm.CreateNew(AOwner: TComponent; Num: Integer);
 var
   I: Integer;
+  Panel: TPanel;
 begin
   inherited CreateNew(AOwner, Num);
   Caption := 'csscontrols demo';
@@ -53,13 +64,24 @@ begin
   Color := clWhite;
   FControls := TList.Create;
 
+  Panel := TPanel.Create(Self);
+  Panel.Parent := Self;
+  Panel.Align := alLeft;
+  Panel.Width := 160;
+  Panel.BevelOuter := bvNone;
+  FInspect := TCheckBox.Create(Self);
+  FInspect.Parent := Panel;
+  FInspect.Align := alBottom;
+  FInspect.BorderSpacing.Around := 6;
+  FInspect.Caption := 'Inspect (debug)';
+  FInspect.OnClick := @InspectClick;
   FList := TListBox.Create(Self);
-  FList.Parent := Self;
-  FList.Align := alLeft;
-  FList.Width := 160;
+  FList.Parent := Panel;
+  FList.Align := alClient;
   for I := 0 to High(DEMO_SCENES) do FList.Items.Add(DEMO_SCENES[I].Name);
   FList.Items.Add('LCL controls');
   FList.OnClick := @ListClick;
+  FSelectMenu := TPopupMenu.Create(Self);
 
   FStatus := TLabel.Create(Self);
   FStatus.Parent := Self;
@@ -73,6 +95,7 @@ begin
   FShape.Parent := Self;
   FShape.Align := alClient;
   FShape.Body.StyleSheet := FSheet;
+  FShape.OnInspect := @ShapeInspect;
 
   I := 0;
   if ParamCount >= 1 then I := StrToIntDef(ParamStr(1), 0);   // start scene index
@@ -91,6 +114,77 @@ end;
 procedure TDemoForm.ListClick(Sender: TObject);
 begin
   if FList.ItemIndex >= 0 then ShowScene(FList.ItemIndex);
+end;
+
+procedure TDemoForm.InspectClick(Sender: TObject);
+begin
+  FShape.Inspect := FInspect.Checked;
+  if FInspect.Checked then FStatus.Caption := 'Inspect: move mouse over nodes';
+end;
+
+(*
+  Box model of node under mouse in Inspect mode
+*)
+procedure TDemoForm.ShapeInspect(Sender: TObject; ANode: THtmlNode);
+  function Sides(const R: TRect): String;
+  begin
+    if (R.Left = R.Top) and (R.Right = R.Top) and (R.Bottom = R.Top) then Result := IntToStr(R.Top)
+      else Result := Format('%d %d %d %d', [R.Top, R.Right, R.Bottom, R.Left]);
+  end;
+var
+  S: String;
+  I: Integer;
+begin
+  if ANode = nil then begin
+    FStatus.Caption := 'Inspect: move mouse over nodes';
+    Exit;
+  end;
+  S := ANode.Element;
+  if ANode.Id <> '' then S := S + '#' + ANode.Id;
+  for I := 0 to ANode.ClassList.Count - 1 do S := S + '.' + ANode.ClassList.Item[I];
+  with ANode.CompSize do
+    FStatus.Caption := Format('%s   x %d  y %d   %d x %d   margin %s   border %s   padding %s', [S,
+      ContentRect.Left, ContentRect.Top, ContentRect.Width, ContentRect.Height, Sides(Margin), Sides(Border), Sides(Padding)]);
+end;
+
+(*
+  Dropdown styled with utility classes, items are shown in popup menu
+*)
+procedure TDemoForm.SelectClick(Sender: TObject);
+var
+  Items: TStringList;
+  Item: TMenuItem;
+  I: Integer;
+  R: TRect;
+  P: TPoint;
+begin
+  FSelectNode := THtmlNode(Sender);
+  FSelectMenu.Items.Clear;
+  Items := TStringList.Create;
+  try
+    Items.Delimiter := '|';
+    Items.StrictDelimiter := True;
+    Items.DelimitedText := FSelectNode.Attributes['data-items'];
+    for I := 0 to Items.Count - 1 do begin
+      Item := TMenuItem.Create(FSelectMenu);
+      Item.Caption := Items[I];
+      Item.Checked := Items[I] = FSelectNode.FirstChild.Text;
+      Item.OnClick := @SelectItemClick;
+      FSelectMenu.Items.Add(Item);
+    end;
+  finally
+    Items.Free;
+  end;
+  R := FSelectNode.TransformedBounds(FSelectNode.CompSize.ContentRect);   // scrolled position
+  P := FShape.ClientToScreen(Point(R.Left, R.Bottom + 4));
+  FSelectMenu.PopUp(P.X, P.Y);
+end;
+
+procedure TDemoForm.SelectItemClick(Sender: TObject);
+begin
+  if FSelectNode = nil then Exit;
+  FSelectNode.FirstChild.Text := TMenuItem(Sender).Caption;
+  FShape.Changed;
 end;
 
 procedure TDemoForm.NodeClick(Sender: TObject);
@@ -127,7 +221,62 @@ begin
     end;
   end else
     SetChecked(Node, Node.Attributes['data-checked'] <> '1');
+  if Node.Attributes['data-checked'] = '1' then FStatus.Caption := 'Toggle: on' else FStatus.Caption := 'Toggle: off';
+  FShape.Body.ApplyStyles;     // styles of children can depend on classes of node (stylesheet rules)
   FShape.Changed;
+end;
+
+(*
+  Value of LCL control in node: read the control (TEdit.Text), react with its events (OnChange).
+  Phone is validated while typing: classes of wrapper node and error message are changed.
+*)
+procedure TDemoForm.PhoneChange(Sender: TObject);
+var
+  Node, Wrap, Msg: THtmlNode;
+  Digits, I: Integer;
+  S: String;
+begin
+  Node := FShape.Body.GetElementById('phone');
+  if Node = nil then Exit;
+  S := TEdit(Sender).Text;
+  Digits := 0;
+  for I := 1 to Length(S) do if S[I] in ['0'..'9'] then Inc(Digits);
+  Wrap := Node.ParentNode;
+  Msg := Wrap.ParentNode.GetNext(Wrap);      // error message below input
+  if Digits >= 9 then begin
+    Wrap.ClassList.Name := StringReplace(StringReplace(Wrap.ClassList.Name, 'border-rose-400', 'border-emerald-500', []),
+      'focus-within:ring-rose-100', 'focus-within:ring-emerald-100', []);
+    if Assigned(Msg) then Msg.SetClass('hidden');
+  end else begin
+    Wrap.ClassList.Name := StringReplace(StringReplace(Wrap.ClassList.Name, 'border-emerald-500', 'border-rose-400', []),
+      'focus-within:ring-emerald-100', 'focus-within:ring-rose-100', []);
+    if Assigned(Msg) then Msg.SetClass('flex items-center gap-1.5 text-xs text-rose-600');
+  end;
+  FShape.Body.ApplyStyles;
+  FShape.Changed;
+end;
+
+(*
+  Values of all inputs (TEdit, TMemo) in scene
+*)
+procedure TDemoForm.SaveClick(Sender: TObject);
+var
+  N: THtmlNode;
+  S: String;
+begin
+  S := '';
+  N := FShape.Body;
+  while Assigned(N) do begin
+    if N.AlignControl is TCustomEdit then
+      S := S + N.Attributes['placeholder'] + ' = "' + TCustomEdit(N.AlignControl).Text + '"   ';
+    N := N.GetNext(N, True);
+  end;
+  FStatus.Caption := 'Saved: ' + S;
+end;
+
+procedure TDemoForm.ButtonClick(Sender: TObject);
+begin
+  FStatus.Caption := 'TCSSButton clicked: ' + TCSSButton(Sender).Caption;
 end;
 
 (*
@@ -178,8 +327,6 @@ var
   Kind, S: String;
   Edit: TEdit;
   Memo: TMemo;
-  Combo: TComboBox;
-  Items: TStringList;
   ActiveCls: TStringList;
   I: Integer;
 begin
@@ -191,6 +338,7 @@ begin
       Edit.TextHint := ANode.Attributes['placeholder'];
       Edit.Color := BackdropColor(ANode);
       if ANode.Attributes['data-password'] <> '' then Edit.PasswordChar := '*';
+      if ANode.Id = 'phone' then Edit.OnChange := @PhoneChange;
       ANode.Text := '';
       ANode.SetAlignControl(Edit);
     end else
@@ -202,22 +350,8 @@ begin
       ANode.Text := '';
       ANode.SetAlignControl(Memo);
     end else
-    if Kind = 'combo' then begin
-      Combo := TComboBox(AddControl(TComboBox.Create(Self)));
-      Combo.Style := csDropDownList;
-      Items := TStringList.Create;
-      try
-        Items.Delimiter := '|';
-        Items.StrictDelimiter := True;
-        Items.DelimitedText := ANode.Attributes['data-items'];
-        Combo.Items.Assign(Items);
-      finally
-        Items.Free;
-      end;
-      Combo.ItemIndex := 0;
-      ANode.Text := '';
-      ANode.SetAlignControl(Combo);
-    end;
+    if Kind = 'select' then
+      ANode.OnClick := @SelectClick;
     if ANode.Attributes['data-active'] <> '' then begin
       // base classes = classes without active classes
       ActiveCls := TStringList.Create;
@@ -236,6 +370,9 @@ begin
     if ANode.Attributes['data-action'] = 'toggle-password' then
       ANode.OnClick := @PasswordClick
     else
+    if ANode.Attributes['data-action'] = 'save' then
+      ANode.OnClick := @SaveClick
+    else
     if (ANode.Text <> '') and ANode.ClassList.Contains('cursor-pointer') then
       ANode.OnClick := @NodeClick;
     SetupScene(ANode.FirstChild);
@@ -249,6 +386,7 @@ var
 begin
   for I := 0 to FControls.Count - 1 do TControl(FControls[I]).Free;
   FControls.Clear;
+  FSelectNode := nil;
   FShape.Body.Clear;
   FShape.Body.SetClass('');
   FShape.Body.InlineStyle := '';
@@ -280,6 +418,7 @@ var
   Edit: TEdit;
   Check: TCheckBox;
   Btn: TButton;
+  CBtn: TCSSButton;
 begin
   FShape.Body.SetClass('p-8 bg-slate-100');
   Form := HTMLNode('max-w-md mx-auto p-6 bg-white rounded-xl border border-slate-200 flex flex-col gap-4').AppendTo(FShape.Body);
@@ -304,6 +443,24 @@ begin
   Btn := TButton(AddControl(TButton.Create(Self)));
   Btn.Caption := 'Sign in';
   HTMLNode('h-9').SetAlignControl(Btn).AppendTo(Form);
+
+  // own component (demo/cssbutton.pas): TCSSShape descendant with Caption and Kind properties
+  HTMLNode('pt-2 text-sm font-medium text-slate-700', 'TCSSButton (own component built on TCSSShape)').AppendTo(Form);
+  Row := HTMLNode('flex gap-3').AppendTo(Form);
+  CBtn := TCSSButton(AddControl(TCSSButton.Create(Self)));
+  CBtn.Caption := 'Save';
+  CBtn.OnClick := @ButtonClick;
+  HTMLNode('w-24 h-10').SetAlignControl(CBtn).AppendTo(Row);
+  CBtn := TCSSButton(AddControl(TCSSButton.Create(Self)));
+  CBtn.Caption := 'Cancel';
+  CBtn.Kind := cbkSecondary;
+  CBtn.OnClick := @ButtonClick;
+  HTMLNode('w-24 h-10').SetAlignControl(CBtn).AppendTo(Row);
+  CBtn := TCSSButton(AddControl(TCSSButton.Create(Self)));
+  CBtn.Caption := 'Delete';
+  CBtn.Kind := cbkDanger;
+  CBtn.OnClick := @ButtonClick;
+  HTMLNode('w-24 h-10').SetAlignControl(CBtn).AppendTo(Row);
 end;
 
 end.

@@ -10,7 +10,7 @@ unit test_render;
 interface
 
 uses
-  Classes, SysUtils, Types, Graphics, GraphType, IntfGraphics, FPImage, fpcunit, testregistry, cssbase, csstailwind;
+  Classes, SysUtils, Types, Graphics, GraphType, IntfGraphics, FPImage, LCLIntf, fpcunit, testregistry, cssbase, csstailwind;
 
 type
 
@@ -58,6 +58,8 @@ type
     procedure TestShadowRadius;
     procedure TestShadowLargeBox;
     procedure TestTailwindShadow;
+    procedure TestOverflowClipsRoundedCorners;
+    procedure TestPaintWithCanvasOffset;
   end;
 
   { TTestRenderRetina - same tests with bitmaps rendered in 2x resolution }
@@ -510,6 +512,55 @@ begin
   finally
     CSSTailwindDisable;
   end;
+end;
+
+(*
+  Children touching corners of rounded parent with overflow: hidden are clipped by inner radius
+*)
+procedure TTestRender.TestOverflowClipsRoundedCorners;
+var
+  Child, Inner: THtmlNode;
+begin
+  Child := THtmlNode.Create('height: 30px; background-color: red').AppendTo(FRoot);
+  Inner := THtmlNode.Create('height: 30px; background-color: lime').AppendTo(FRoot);
+  Render('border: 2px solid black; border-radius: 20px; overflow: hidden', 100, 64);
+  CheckPixel('top left outside', 3, 3, OUTSIDE);
+  CheckPixel('top left child', 12, 12, clRed);
+  CheckPixel('top right outside', 96, 3, OUTSIDE);
+  CheckPixel('bottom left outside', 3, 60, OUTSIDE);
+  CheckPixel('bottom right outside', 96, 60, OUTSIDE);
+  CheckPixel('bottom right child', 86, 51, clLime);
+  CheckPixel('middle', 50, 20, clRed);
+  // without overflow clipping children are not rounded
+  Render('border: 2px solid black; border-radius: 20px', 100, 64);
+  CheckPixel('not clipped', 3, 3, clRed);
+  Child.Free;
+  Inner.Free;
+end;
+
+(*
+  Canvas of graphic control has offset (window origin): clip rect of painting must not overflow
+*)
+procedure TTestRender.TestPaintWithCanvasOffset;
+var
+  Bmp: TBitmap;
+begin
+  FRoot.InlineStyle := 'background-color: blue; border-radius: 6px';
+  FRoot.LayoutTo(0, 0, 100, 40);
+  Bmp := TBitmap.Create;
+  try
+    Bmp.SetSize(300, 120);
+    Bmp.Canvas.Brush.Color := OUTSIDE;
+    Bmp.Canvas.FillRect(0, 0, 300, 120);
+    SetWindowOrgEx(Bmp.Canvas.Handle, -150, -60, nil);
+    FRoot.PaintTo(Bmp.Canvas);
+    SetWindowOrgEx(Bmp.Canvas.Handle, 0, 0, nil);
+    FreeAndNil(FImage);
+    FImage := Bmp.CreateIntfImage;
+  finally
+    Bmp.Free;
+  end;
+  CheckPixel('background with offset', 170, 80, BG);
 end;
 
 { TTestRenderRetina }

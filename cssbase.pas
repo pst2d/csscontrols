@@ -81,7 +81,7 @@ type
   TCSSTextAlign = (ctaUndefined, ctaLeft, ctaRight, ctaCenter, ctaJustify);   // https://developer.mozilla.org/en-US/docs/Web/CSS/text-align
   TCSSColorType = (cctUndefined, cctNormal, cctTransparent, cctCurrentColor);
   TCSSTextDecoration = (ctdUndefined, ctdUnderline, ctdNone, ctdLineThrough);   // https://developer.mozilla.org/en-US/docs/Web/CSS/text-decoration
-  TCSSDisplayType = (cdtBlock, cdtInline, cdtFlex, cdtInlineFlex, cdtNone);         // https://developer.mozilla.org/en-US/docs/Web/CSS/display
+  TCSSDisplayType = (cdtBlock, cdtInline, cdtFlex, cdtInlineFlex, cdtNone, cdtGrid);         // https://developer.mozilla.org/en-US/docs/Web/CSS/display
   TCSSFloatType = (cftUndefined, cftNone, cftLeft, cftRight);        // https://developer.mozilla.org/en-US/docs/Web/CSS/float
   TCSSSide = (csTop, csLeft, csBottom, csRight);        // for margin, padding etc.
   TCSSFlexWrap = (cfwNoWrap, cfwWrap, cfwWrapReverse);  // https://developer.mozilla.org/en-US/docs/Web/CSS/flex-wrap
@@ -223,13 +223,32 @@ type
     A, B, C, D, E, F: Single;
   end;
   TCSSTransformKind = (tkNone, tkTranslate, tkGeneral);
+  TCSSTiming = record                    // cubic-bezier() timing function
+    X1, Y1, X2, Y2: Single;
+  end;
+  TCSSColorChannels = array[0..5] of TCSSColor;   // background, color, border top, right, bottom, left
+  PCSSAnim = ^TCSSAnim;
+  TCSSAnim = record                      // running transition and/or built-in animation of node
+    Start: QWord;
+    Duration, Delay: Integer;            // ms
+    Timing: TCSSTiming;
+    ColorOn: array[0..5] of Boolean;
+    ColorFrom, ColorTo: TCSSColorChannels;
+    OpacityOn: Boolean;
+    OpacityFrom, OpacityTo, BaseOpacity: Single;
+    MatrixOn, MatrixPending: Boolean;    // pending: target matrix is known after layout
+    MatrixFrom, MatrixTo: TCSSMatrix2D;
+    Frames: Integer;                     // built-in keyframes: 0 none, 1 spin, 2 ping, 3 pulse, 4 bounce
+    FramesDuration: Integer;
+    FramesStart: QWord;
+  end;
   THtmlNode = class;
   TCSSLayoutState = record       // saved layout of node (transformed node is laid out again in higher resolution)
     Node: THtmlNode;
     ContentRect, MarginRect, Margin, Padding, Border, Position: TRect;
     BaseLine, ContentWidth, ContentHeight, LayoutWidth, LayoutHeight: Integer;
     FontSize: Single;
-    Transform: TCSSMatrix2D;
+    Transform, TransformTarget: TCSSMatrix2D;
     Kind: TCSSTransformKind;
     Visible, LayoutRoot: Boolean;
   end;
@@ -264,6 +283,13 @@ type
     Translate,                  // individual transform properties
     Rotate,
     Scale: String;
+    Opacity: Single;            // 0..1, default 1
+    PointerEventsNone: Boolean; // pointer-events: none (mouse ignores node and its children)
+    TransitionProperty,         // all (default), none, list of properties
+    TransitionTiming: String;   // ease, linear, ease-in, ease-out, ease-in-out, cubic-bezier()
+    TransitionDuration,         // ms
+    TransitionDelay: Integer;
+    Animation: String;          // built-in animations: spin, ping, pulse, bounce (animation: spin 1s linear infinite)
     Color: TCSSColor;
     Cursor: TCursor;
     Changed: Boolean;
@@ -290,6 +316,10 @@ type
     RadiusBottomRight: TCSSBorderRadius;
     RowGap,
     ColumnGap: TCSSLength;
+    GridTemplateColumns,        // grid-template-columns: repeat(3, minmax(0, 1fr)), 200px 1fr, auto 1fr ...
+    GridTemplateRows: String;
+    GridColumnSpan,             // grid-column: span N (-1 = all columns, 0 = auto)
+    GridRowSpan: Integer;       // grid-row: span N
     Specified: TCSSInheritedProps; // inherited properties set by this style
     TextAlign: TCSSTextAlign;
     WhiteSpace: TCSSWhiteSpace;
@@ -425,6 +455,13 @@ type
     FTransformKind: TCSSTransformKind;
     FTransformBmp: TBitmap;       // cached painted node for scale, rotate
     FTransformKey: String;
+    FTransformTarget: TCSSMatrix2D;     // transformation from styles (FTransform is animated)
+    FTransformSrc: array of LongWord;   // cached source of transformed node (premultiplied ARGB)
+    FTransformSrcW, FTransformSrcH: Integer;
+    FTransformSrcKey: String;
+    FAnim: PCSSAnim;              // running transition or animation (nil = none)
+    FStyled: Boolean;             // node was painted (transitions start only for painted nodes, as in browser)
+    FTransformSig: String;        // resolved transform properties (change starts transition)
     FBgCache: array[0..5] of record   // cached background bitmaps: 0..3 corners, 4 whole, 5 gradient strip
       Key: String;
       Bmp: TBitmap;
@@ -441,6 +478,8 @@ type
       TargetHeight: Integer; out NewWidth, NewHeight: Integer);
     procedure LayoutDoFlexAlign(AParentNode: THtmlNode; AList: TList; AWidth,
       AHeight: Integer; out NewWidth, NewHeight: Integer);
+    function IsWhiteSpaceText: Boolean;     // whitespace between elements in markup (no flex or grid item)
+    procedure LayoutDoGrid(AParentNode: THtmlNode; AList: TList; AWidth, AHeight: Integer; out NewWidth, NewHeight: Integer);
     function LayoutDoVerticalAlign(AList: TList; ClearList: Boolean = True): Integer;
     procedure LayoutGetNodeSize(ANode: THtmlNode; ParentWidth,
       ParentHeight: Integer; InFlex: Boolean = False; AForceWidth: Integer = -1; AForceHeight: Integer = -1);
@@ -474,6 +513,11 @@ type
     function ParseShadows(const AValue: String): TCSSShadowArray;
     procedure PaintBoxShadow(ACanvas: TCanvas);
     procedure ComputeTransform;
+    procedure UpdateTransformKind;
+    procedure UpdateTransitions(const AOldColors: TCSSColorChannels; AOldOpacity: Single; const AOldMatrix: TCSSMatrix2D);
+    procedure ApplyAnimation(ANow: QWord; out ADone: Boolean);
+    procedure StopAnimation;
+    function AnimMaxScale: Single;
     procedure OffsetSubtree(DX, DY: Integer);
     procedure PaintNodeTree(ACanvas: TCanvas; const AClipRect: TRect);
     procedure PaintTransformed(ACanvas: TCanvas; const AClipRect: TRect);
@@ -504,14 +548,18 @@ type
     function GetElementById(const AId: String): THtmlNode;
     procedure LayoutTo(ALeft, ATop, AWidth, AHeight: Integer);
     procedure AlignControlsTo(ALeft, ATop: Integer);
-    function NodeAtPosition(APos: TPoint): THtmlNode;
+    function NodeAtPosition(APos: TPoint; AClickable: Boolean = True): THtmlNode;   // top node with OnClick (or any node)
     function HitTest(const APos: TPoint): Boolean; virtual;
+    function Animating: Boolean;                        // root: some nodes are animated (transition or animation)
+    function AnimationTick(ANow: QWord): Boolean;      // root: next frame of animations, True = repaint
+    function AnimationBounds: TRect;                    // root: painted area of animated nodes
     function TransformPoint(const P: TPointF): TPointF;
     function UntransformPoint(const P: TPointF): TPointF;
     function ScreenToLayout(const P: TPointF): TPointF;
     function LayoutToScreen(const P: TPointF): TPointF;
     function TransformedBounds(const ARect: TRect): TRect;
     property TransformKind: TCSSTransformKind read FTransformKind;
+    property TransformMatrix: TCSSMatrix2D read FTransform;     // shown transformation (can be animated)
     function ClipsContent: Boolean;
     function PaddingBox: TRect;
     function CanScroll(DX, DY: Integer): Boolean;
@@ -531,7 +579,8 @@ type
     function GetAttribute(const AName: String): String;
     procedure SetAttribute(const AName, AValue: String);
     property Attributes[const AName: String]: String read GetAttribute write SetAttribute;
-    procedure PaintTo(ACanvas: TCanvas);
+    procedure PaintTo(ACanvas: TCanvas); overload;
+    procedure PaintTo(ACanvas: TCanvas; const AClipRect: TRect); overload;
     function CalcLength(const AValue: TCSSLength; AParentLength: Integer): Integer;
     function ResolveVars(const AValue: String; ADepth: Integer = 0): String;
     function EffectiveColor(const AColor: TCSSColor): TColor;
@@ -604,6 +653,7 @@ var
   function CSSResolveUtility(const AClassName: String; out ADeclarations: String; out AOrder: Integer): Boolean;
   procedure CSSClearUtilityCache;
   procedure CSSClearPaintCache;
+  function CSSAlphaBitmap(R, G, B, A: Byte): TBitmap;
   procedure CSSRegisterImage(const AName: String; AGraphic: TGraphic);
   function StrBefore(const AValue: String; const ASubstr: String): String;
   function StrAfter(const AValue: String; const ASubstr: String): String;
@@ -1126,7 +1176,92 @@ begin
   if (AValue = 'inline') or (AValue = 'inline-block') then Result := cdtInline else
   if AValue = 'inline-flex' then Result := cdtInlineFlex else
   if AValue = 'none' then Result := cdtNone else
+  if (AValue = 'grid') or (AValue = 'inline-grid') then Result := cdtGrid else
     Result := cdtBlock;
+end;
+
+(*
+  Time in ms: 150ms, 0.3s
+*)
+function CSSToTime(AValue: String): Integer;
+begin
+  AValue := LowerCase(Trim(AValue));
+  if Copy(AValue, Length(AValue) - 1, 2) = 'ms' then
+    Result := Round(CSSStrToFloatDef(Copy(AValue, 1, Length(AValue) - 2), 0))
+  else if Copy(AValue, Length(AValue), 1) = 's' then
+    Result := Round(CSSStrToFloatDef(Copy(AValue, 1, Length(AValue) - 1), 0) * 1000)
+  else
+    Result := 0;
+  Result := Max(0, Result);
+end;
+
+function IsCSSTime(const AValue: String): Boolean;
+begin
+  Result := (AValue <> '') and (AValue[1] in ['0'..'9', '.']) and (AValue[Length(AValue)] = 's');
+end;
+
+function CSSToOpacity(AValue: String): Single;
+begin
+  AValue := Trim(AValue);
+  if Copy(AValue, Length(AValue), 1) = '%' then
+    Result := CSSStrToFloatDef(Copy(AValue, 1, Length(AValue) - 1), 100) / 100
+  else
+    Result := CSSStrToFloatDef(AValue, 1);
+  Result := EnsureRange(Result, 0, 1);
+end;
+
+(*
+  transition: <property> <duration> <timing-function> <delay>, ... (one duration and timing for all properties)
+*)
+procedure ParseTransition(AItem: TCSSItem; const AValue: String);
+var
+  Items, Parts: TStringArray;
+  I, J: Integer;
+  S, Props: String;
+  TimeCount: Integer;
+begin
+  Props := '';
+  TimeCount := 0;
+  Items := SplitParameters(LowerCase(Trim(AValue)), ',');
+  for I := 0 to High(Items) do begin
+    Parts := SplitParameters(Trim(Items[I]), ' ');
+    TimeCount := 0;
+    for J := 0 to High(Parts) do begin
+      S := Trim(Parts[J]);
+      if S = '' then Continue;
+      if IsCSSTime(S) then begin          // times and timing of first item are used
+        if I = 0 then
+          if TimeCount = 0 then AItem.TransitionDuration := CSSToTime(S) else AItem.TransitionDelay := CSSToTime(S);
+        Inc(TimeCount);
+      end else
+      if (S = 'linear') or (Copy(S, 1, 4) = 'ease') or (Copy(S, 1, 12) = 'cubic-bezier') then begin
+        if I = 0 then AItem.TransitionTiming := S;
+      end
+      else begin
+        if Props <> '' then Props := Props + ',';
+        Props := Props + S;
+      end;
+    end;
+  end;
+  if Props = '' then Props := 'all';
+  AItem.TransitionProperty := Props;
+end;
+
+(*
+  grid-column, grid-row: number of spanned tracks (span 2, span 2 / span 2), -1 = all columns (1 / -1), 0 = auto
+*)
+function CSSToGridSpan(AValue: String): Integer;
+var
+  P: Integer;
+begin
+  AValue := LowerCase(Trim(AValue));
+  Result := 0;
+  P := Pos('span', AValue);
+  if P > 0 then
+    Result := Max(0, StrToIntDef(Trim(StrBefore(Copy(AValue, P + 4, MaxInt) + '/', '/')), 0))
+  else
+  if (Pos('-1', AValue) > 0) and (Pos('/', AValue) > 0) then
+    Result := -1;
 end;
 
 function CSSToFloat(AValue: String): TCSSFloatType;
@@ -2125,6 +2260,17 @@ begin
   ResetRadius(RadiusBottomRight);
   ResetLength(RowGap);
   ResetLength(ColumnGap);
+  GridTemplateColumns := '';
+  GridTemplateRows := '';
+  GridColumnSpan := 0;
+  GridRowSpan := 0;
+  Opacity := 1;
+  PointerEventsNone := False;
+  TransitionProperty := 'all';
+  TransitionTiming := 'ease';
+  TransitionDuration := 0;
+  TransitionDelay := 0;
+  Animation := '';
   Specified := [];
   TextAlign := ctaUndefined;
   WhiteSpace := cwsNormal;
@@ -2381,6 +2527,9 @@ begin
   end;
   case AName[1] of
     'a':
+      if AName = 'animation' then
+        Animation := LowerCase(Trim(AValue))
+      else
       if AName = 'align-items' then
         AlignItems := CSSToAlignItems(AValue)
       else
@@ -2475,6 +2624,18 @@ begin
       else
       if AName = 'font-weight' then
         Font.Weight := CSSToFontWeight(AValue);
+    'g':
+      if AName = 'grid-template-columns' then
+        GridTemplateColumns := AValue
+      else
+      if AName = 'grid-template-rows' then
+        GridTemplateRows := AValue
+      else
+      if AName = 'grid-column' then
+        GridColumnSpan := CSSToGridSpan(AValue)
+      else
+      if AName = 'grid-row' then
+        GridRowSpan := CSSToGridSpan(AValue);
     'h':
       if AName = 'height' then
         Height := CSSToLength(AValue);
@@ -2509,6 +2670,9 @@ begin
       if AName = 'max-height' then
         MaxHeight := CSSToLength(AValue);
     'o':
+      if AName = 'opacity' then
+        Opacity := CSSToOpacity(AValue)
+      else
       if AName = 'object-fit' then
         ObjectFit := LowerCase(AValue)
       else
@@ -2524,6 +2688,9 @@ begin
       if AName = 'order' then
         Order := StrToIntDef(AValue, 0);
     'p':
+      if AName = 'pointer-events' then
+        PointerEventsNone := SameText(Trim(AValue), 'none')
+      else
       if AName = 'padding-left' then
         Padding[csLeft] := CSSToLength(AValue)
       else
@@ -2553,6 +2720,21 @@ begin
     't':
       if AName = 'top' then
         Top := CSSToLength(AValue)
+      else
+      if AName = 'transition' then
+        ParseTransition(Self, AValue)
+      else
+      if AName = 'transition-property' then
+        TransitionProperty := LowerCase(Trim(AValue))
+      else
+      if AName = 'transition-duration' then
+        TransitionDuration := CSSToTime(AValue)
+      else
+      if AName = 'transition-delay' then
+        TransitionDelay := CSSToTime(AValue)
+      else
+      if AName = 'transition-timing-function' then
+        TransitionTiming := LowerCase(Trim(AValue))
       else
       if AName = 'transform' then
         Transform := AValue
@@ -2629,6 +2811,17 @@ begin
     RadiusBottomRight := Src.RadiusBottomRight;
     RowGap := Src.RowGap;
     ColumnGap := Src.ColumnGap;
+    GridTemplateColumns := Src.GridTemplateColumns;
+    GridTemplateRows := Src.GridTemplateRows;
+    GridColumnSpan := Src.GridColumnSpan;
+    GridRowSpan := Src.GridRowSpan;
+    Opacity := Src.Opacity;
+    PointerEventsNone := Src.PointerEventsNone;
+    TransitionProperty := Src.TransitionProperty;
+    TransitionTiming := Src.TransitionTiming;
+    TransitionDuration := Src.TransitionDuration;
+    TransitionDelay := Src.TransitionDelay;
+    Animation := Src.Animation;
     Specified := Src.Specified;
     TextAlign :=  Src.TextAlign;
     WhiteSpace := Src.WhiteSpace;
@@ -2742,12 +2935,19 @@ end;
 *)
 type
   TCSSSampleKind = (cskOutside, cskBackground, cskTop, cskLeft, cskBottom, cskRight);
+  // rounded padding box of nearest painted parent with overflow clipping (children touching its corners are rounded)
+  TCSSClipCorners = record
+    Active: Boolean;
+    Box: TRect;
+    RX, RY: array[0..3] of Integer;
+  end;
 
 var
   CSSCornerCache: TStringList;          // key -> TBitmap
   CSSShadowCache: TStringList;          // key -> TCSSShadowSlices
   CSSPaintGeneration: Integer = 0;      // incremented when styles or layout are changed (cache of transformed nodes)
   CSSImageCache: TStringList;           // url -> TCSSImageData
+  CSSPaintClip: TCSSClipCorners;        // valid only while painting
 
 const
   CSS_CORNER_CACHE_LIMIT = 2000;
@@ -2987,7 +3187,13 @@ begin
     N := Max(1, Round((P.Total + P.Gap) / (P.Dash + P.Gap)));
     while (N > 1) and ((P.Total - N * P.Dash) / (N - 1) < P.W) do Dec(N);
     if N > 1 then P.Gap := (P.Total - N * P.Dash) / (N - 1)
-      else P.Gap := -1;    // one dash in middle
+    else if P.Total > 3 * P.W then begin    // short side: shorter dashes at both corners (as browsers)
+      P.Gap := Max(P.W, P.Total / 3);
+      P.Dash := (P.Total - P.Gap) / 2;
+    end else begin
+      P.Dash := P.Total;                    // very short side is solid
+      P.Gap := -1;
+    end;
   end else
   if AStyle = cbsDotted then begin
     P.DotCount := Max(1, Round(P.Total / (2 * P.W)));
@@ -3173,6 +3379,30 @@ begin
     CSSCornerCache.OwnsObjects := True;
   end;
   Result := CSSCornerCache;
+end;
+
+(*
+  Cached 1x1 bitmap with color and alpha, StretchDraw of it fills rectangle with semi-transparent color
+*)
+function CSSAlphaBitmap(R, G, B, A: Byte): TBitmap;
+var
+  I: Integer;
+  Key: String;
+  Img: TLazIntfImage;
+  Wr: TCSSPixelWriter;
+begin
+  Key := 'A' + IntToHex(R, 2) + IntToHex(G, 2) + IntToHex(B, 2) + IntToHex(A, 2);
+  if CornerCache.Find(Key, I) then Exit(TBitmap(CSSCornerCache.Objects[I]));
+  Img := NewAlphaImage(1, 1);
+  try
+    Wr := PixelWriter(Img);
+    WriterLine(Wr, 0);
+    WritePixel(Wr, 0, R, G, B, A);
+    Result := IntfImageToBitmap(Img);
+  finally
+    Img.Free;
+  end;
+  CSSCornerCache.AddObject(Key, Result);
 end;
 
 function CornerBitmap(const AKey: String; const S: TCSSPaintShape; ACorner: Integer; const ARect: TRect;
@@ -4025,11 +4255,28 @@ var
   Slices: TCSSShadowSlices;
   C: TCSSRGBA;
   XS, YS: array[0..3] of Integer;
+  Opaque: Boolean;
+  Inner: TRect;              // part of node which is surely covered by its background
   procedure DrawPart(ABitmap: TBitmap; const ARect: TRect);
   begin
     if (ARect.Right <= ARect.Left) or (ARect.Bottom <= ARect.Top) then Exit;
     if (ABitmap.Width = ARect.Width) and (ABitmap.Height = ARect.Height) then ACanvas.Draw(ARect.Left, ARect.Top, ABitmap)
       else ACanvas.StretchDraw(ARect, ABitmap);
+  end;
+  // center of shadow under opaque node: only strips outside of node (offset, spread) are painted
+  procedure DrawOutside(ABitmap: TBitmap; const ARect: TRect);
+  var
+    In_: TRect;
+  begin
+    In_ := TRect.Intersect(ARect, Inner);
+    if In_.IsEmpty then begin
+      DrawPart(ABitmap, ARect);
+      Exit;
+    end;
+    DrawPart(ABitmap, Rect(ARect.Left, ARect.Top, ARect.Right, In_.Top));
+    DrawPart(ABitmap, Rect(ARect.Left, In_.Bottom, ARect.Right, ARect.Bottom));
+    DrawPart(ABitmap, Rect(ARect.Left, In_.Top, In_.Left, In_.Bottom));
+    DrawPart(ABitmap, Rect(In_.Right, In_.Top, ARect.Right, In_.Bottom));
   end;
 begin
   {$ifndef fmx}
@@ -4039,6 +4286,14 @@ begin
   Box := FCompSize.ContentRect;
   if (Box.Width <= 0) or (Box.Height <= 0) then Exit;
   CalcRadius(Box.Width, Box.Height, P[0], P[1], P[2], P[3]);
+  // opaque background covers shadow under node (corners of node are excluded)
+  Opaque := (FCompStyle.Background.Color.ColorType = cctNormal) and (FCompStyle.Background.Color.Alpha = 255);
+  Inner := Box;
+  Inner.Left := Box.Left + Max(P[0].x, P[3].x);
+  Inner.Right := Box.Right - Max(P[1].x, P[2].x);
+  Inner.Top := Box.Top + Max(P[0].y, P[1].y);
+  Inner.Bottom := Box.Bottom - Max(P[3].y, P[2].y);
+  if (Inner.Width <= 0) or (Inner.Height <= 0) then Opaque := False;
   Sc := RootNode.FPaintScale;
   if Sc <= 0 then Sc := 1;
   if CSSShadowCache = nil then begin
@@ -4080,7 +4335,10 @@ begin
       YS[0] := O.Top; YS[1] := O.Top + Slices.TH; YS[2] := O.Bottom - Slices.BH; YS[3] := O.Bottom;
       for J := 0 to 2 do
         for X := 0 to 2 do
-          DrawPart(Slices.Parts[J * 3 + X], Rect(XS[X], YS[J], XS[X + 1], YS[J + 1]));
+          if (J = 1) and (X = 1) and Opaque then
+            DrawOutside(Slices.Parts[4], Rect(XS[1], YS[1], XS[2], YS[2]))
+          else
+            DrawPart(Slices.Parts[J * 3 + X], Rect(XS[X], YS[J], XS[X + 1], YS[J + 1]));
     end;
   end;
   {$endif}
@@ -4247,6 +4505,7 @@ var
     Saved: TRect;
   begin
     Saved := ACanvas.ClipRect;
+    if TRect.Intersect(Box, Saved).IsEmpty then Exit;    // empty clip rect would mean "no clipping"
     ACanvas.ClipRect := TRect.Intersect(Box, Saved);
     try
       for Side := Low(TCSSSide) to High(TCSSSide) do
@@ -4271,28 +4530,10 @@ var
   // background color with alpha in slab: 1x1 bitmap is stretched
   procedure FillAlpha(const ARect: TRect);
   var
-    X: Integer;
     C: TCSSRGBA;
-    Img: TLazIntfImage;
-    Wr: TCSSPixelWriter;
-    Bmp: TBitmap;
   begin
     C := CSSColorToRGBA(cs.Background.Color);
-    Key := 'A' + RGBAKey(C);
-    if CornerCache.Find(Key, X) then Bmp := TBitmap(CSSCornerCache.Objects[X])
-    else begin
-      Img := NewAlphaImage(1, 1);
-      try
-        Wr := PixelWriter(Img);
-        WriterLine(Wr, 0);
-        WritePixel(Wr, 0, ToByte(C.R), ToByte(C.G), ToByte(C.B), ToByte(C.A));
-        Bmp := IntfImageToBitmap(Img);
-      finally
-        Img.Free;
-      end;
-      CSSCornerCache.AddObject(Key, Bmp);
-    end;
-    ACanvas.StretchDraw(ARect, Bmp);
+    ACanvas.StretchDraw(ARect, CSSAlphaBitmap(ToByte(C.R), ToByte(C.G), ToByte(C.B), ToByte(C.A)));
   end;
 begin
   {$ifndef fmx}
@@ -4447,9 +4688,10 @@ begin
       if Kind = bkAxisGradient then begin
         Key := Format('%d,%d,%s,%s,%f', [W, H, BgImage, RGBAKey(CSSColorToRGBA(cs.Background.Color)), Sc]);
         for I := 0 to High(Slabs) do begin
-          ACanvas.ClipRect := TRect.Intersect(Slabs[I], ClipSave);
-          if not ACanvas.ClipRect.IsEmpty then
-            ACanvas.StretchDraw(Box, GradientStrip(Grad, Round(W * Sc), Round(H * Sc), Key));
+          R := TRect.Intersect(Slabs[I], ClipSave);     // empty clip rect would mean "no clipping"
+          if R.IsEmpty then Continue;
+          ACanvas.ClipRect := R;
+          ACanvas.StretchDraw(Box, GradientStrip(Grad, Round(W * Sc), Round(H * Sc), Key));
         end;
       end else begin
         BackgroundImageRect(Src, W, H, Dst);
@@ -4461,8 +4703,9 @@ begin
           Dst.Top := Dst.Top - Ceil(Dst.Top / TH) * TH;
         end;
         for I := 0 to High(Slabs) do begin
-          ACanvas.ClipRect := TRect.Intersect(Slabs[I], ClipSave);
-          if ACanvas.ClipRect.IsEmpty then Continue;
+          R := TRect.Intersect(Slabs[I], ClipSave);
+          if R.IsEmpty then Continue;
+          ACanvas.ClipRect := R;
           FY := Dst.Top;
           J := 0;
           repeat
@@ -4888,10 +5131,34 @@ var
       Apply(Mat(CSSStrToFloatDef(Parts[0], 1), CSSStrToFloatDef(Parts[1], 0), CSSStrToFloatDef(Parts[2], 0),
         CSSStrToFloatDef(Parts[3], 1), CSSStrToFloatDef(Parts[4], 0), CSSStrToFloatDef(Parts[5], 0)));
   end;
+  // transformation from styles, animated transformation is shown
+  procedure SetTarget(const AM: TCSSMatrix2D);
+  var
+    Done: Boolean;
+  begin
+    FTransformTarget := AM;
+    FTransform := AM;
+    if Assigned(FAnim) and (RootNode.FRenderScale = 1) then begin     // not in offscreen layout of transformed parent
+      if FAnim^.MatrixPending then begin
+        FAnim^.MatrixTo := AM;
+        FAnim^.MatrixPending := False;
+        FAnim^.MatrixOn := True;
+      end else
+      if FAnim^.MatrixOn then
+        FAnim^.MatrixTo := AM;
+      ApplyAnimation(GetTickCount64, Done);
+    end;
+    UpdateTransformKind;
+  end;
 begin
   FTransformKind := tkNone;
   FTransform := MatIdentity;
-  if FLayoutRoot or ((FCompStyle.Transform = '') and (FCompStyle.Translate = '') and (FCompStyle.Rotate = '') and (FCompStyle.Scale = '')) then Exit;
+  FTransformTarget := MatIdentity;
+  if FLayoutRoot then Exit;
+  if (FCompStyle.Transform = '') and (FCompStyle.Translate = '') and (FCompStyle.Rotate = '') and (FCompStyle.Scale = '') then begin
+    SetTarget(MatIdentity);
+    Exit;
+  end;
   W := FCompSize.ContentRect.Width;
   H := FCompSize.ContentRect.Height;
   // transform-origin, default center
@@ -4946,11 +5213,401 @@ begin
     end;
   end;
   M := MatMul(M, Mat(1, 0, 0, 1, -OX, -OY));
-  FTransform := M;
+  SetTarget(M);
+end;
+
+procedure THtmlNode.UpdateTransformKind;
+var
+  M: TCSSMatrix2D;
+begin
+  M := FTransform;
+  FTransformKind := tkNone;
   if (Abs(M.A - 1) < 1E-6) and (Abs(M.B) < 1E-6) and (Abs(M.C) < 1E-6) and (Abs(M.D - 1) < 1E-6) then begin
     if (Abs(M.E) >= 0.5) or (Abs(M.F) >= 0.5) then FTransformKind := tkTranslate;
   end else
     FTransformKind := tkGeneral;
+  if (FCompStyle.Opacity < 0.999) and not FLayoutRoot then FTransformKind := tkGeneral;   // painted through bitmap with alpha
+end;
+
+{ animations }
+
+(*
+  Minimal animations (KISS): transitions of colors, opacity and transform (hover, focus, class changes) and
+  built-in animations spin, ping, pulse, bounce (as in Tailwind CSS). There are no @keyframes. Animation
+  changes only painted values (layout is not changed), TCSSShape repaints animated area with a timer.
+*)
+var
+  CSSAnimNodes: TList;       // nodes with running animation (all trees)
+
+function TimingFromName(const AName: String): TCSSTiming;
+var
+  P: TStringArray;
+  procedure SetT(X1, Y1, X2, Y2: Single);
+  begin
+    Result.X1 := X1; Result.Y1 := Y1; Result.X2 := X2; Result.Y2 := Y2;
+  end;
+begin
+  if AName = 'linear' then SetT(0, 0, 1, 1)
+  else if AName = 'ease-in' then SetT(0.42, 0, 1, 1)
+  else if AName = 'ease-out' then SetT(0, 0, 0.58, 1)
+  else if AName = 'ease-in-out' then SetT(0.42, 0, 0.58, 1)
+  else if Copy(AName, 1, 13) = 'cubic-bezier(' then begin
+    P := SplitParameters(Copy(AName, 14, Length(AName) - 14), ',');
+    SetT(0.25, 0.1, 0.25, 1);
+    if Length(P) = 4 then
+      SetT(CSSStrToFloatDef(Trim(P[0]), 0), CSSStrToFloatDef(Trim(P[1]), 0), CSSStrToFloatDef(Trim(P[2]), 1), CSSStrToFloatDef(Trim(P[3]), 1));
+  end
+  else SetT(0.25, 0.1, 0.25, 1);    // ease
+end;
+
+function MakeTiming(X1, Y1, X2, Y2: Single): TCSSTiming;
+begin
+  Result.X1 := X1; Result.Y1 := Y1; Result.X2 := X2; Result.Y2 := Y2;
+end;
+
+(*
+  Value of cubic-bezier timing function at X (0..1)
+*)
+function TimingValue(const T: TCSSTiming; X: Single): Single;
+  function Bez(U, A, B: Single): Single; inline;
+  begin
+    Result := 3 * Sqr(1 - U) * U * A + 3 * (1 - U) * U * U * B + U * U * U;
+  end;
+  function BezD(U, A, B: Single): Single; inline;
+  begin
+    Result := 3 * Sqr(1 - U) * A + 6 * (1 - U) * U * (B - A) + 3 * U * U * (1 - B);
+  end;
+var
+  U, D, E: Single;
+  I: Integer;
+begin
+  if X <= 0 then Exit(0);
+  if X >= 1 then Exit(1);
+  U := X;
+  for I := 1 to 8 do begin     // Newton: U for X
+    E := Bez(U, T.X1, T.X2) - X;
+    if Abs(E) < 1E-4 then Break;
+    D := BezD(U, T.X1, T.X2);
+    if Abs(D) < 1E-6 then Break;
+    U := EnsureRange(U - E / D, 0, 1);
+  end;
+  Result := Bez(U, T.Y1, T.Y2);
+end;
+
+procedure GetColorChannels(AStyle: TCSSItem; out AColors: TCSSColorChannels);
+begin
+  AColors[0] := AStyle.Background.Color;
+  AColors[1] := AStyle.Color;
+  AColors[2] := AStyle.Border[csTop].Color;
+  AColors[3] := AStyle.Border[csRight].Color;
+  AColors[4] := AStyle.Border[csBottom].Color;
+  AColors[5] := AStyle.Border[csLeft].Color;
+end;
+
+procedure SetColorChannel(AStyle: TCSSItem; AIndex: Integer; const AColor: TCSSColor);
+begin
+  case AIndex of
+    0: AStyle.Background.Color := AColor;
+    1: AStyle.Color := AColor;
+    2: AStyle.Border[csTop].Color := AColor;
+    3: AStyle.Border[csRight].Color := AColor;
+    4: AStyle.Border[csBottom].Color := AColor;
+    5: AStyle.Border[csLeft].Color := AColor;
+  end;
+end;
+
+function SameCSSColor(const A, B: TCSSColor): Boolean;
+begin
+  Result := (A.ColorType = B.ColorType) and ((A.ColorType <> cctNormal) or ((A.Value = B.Value) and (A.Alpha = B.Alpha)));
+end;
+
+// colors which can be interpolated (no background = transparent)
+function CanLerpColor(const A, B: TCSSColor; AIndex: Integer): Boolean;
+  function Ok(const C: TCSSColor): Boolean;
+  begin
+    Result := (C.ColorType in [cctNormal, cctTransparent]) or ((AIndex = 0) and (C.ColorType = cctUndefined));
+  end;
+begin
+  Result := Ok(A) and Ok(B);
+end;
+
+// interpolation of premultiplied colors (as browsers)
+function LerpColor(const A, B: TCSSColor; T: Single): TCSSColor;
+var
+  CA, CB: TCSSRGBA;
+  Al: Single;
+  function Ch(X, Y: Single): Byte;
+  begin
+    Result := EnsureRange(Round((X * CA.A + (Y * CB.A - X * CA.A) * T) / Al * 255), 0, 255);
+  end;
+begin
+  CA := CSSColorToRGBA(A);
+  CB := CSSColorToRGBA(B);
+  Al := CA.A + (CB.A - CA.A) * T;
+  Result.ColorType := cctNormal;
+  if Al <= 0.002 then begin
+    Result.Value := 0;
+    Result.Alpha := 0;
+    Exit;
+  end;
+  Result.Value := RGBToColor(Ch(CA.R, CB.R), Ch(CA.G, CB.G), Ch(CA.B, CB.B));
+  Result.Alpha := EnsureRange(Round(Al * 255), 0, 255);
+end;
+
+function MatLerp(const A, B: TCSSMatrix2D; T: Single): TCSSMatrix2D;
+begin
+  Result.A := A.A + (B.A - A.A) * T;
+  Result.B := A.B + (B.B - A.B) * T;
+  Result.C := A.C + (B.C - A.C) * T;
+  Result.D := A.D + (B.D - A.D) * T;
+  Result.E := A.E + (B.E - A.E) * T;
+  Result.F := A.F + (B.F - A.F) * T;
+end;
+
+function MatScale(const M: TCSSMatrix2D): Single;
+begin
+  Result := Max(Sqrt(Sqr(M.A) + Sqr(M.B)), Sqrt(Sqr(M.C) + Sqr(M.D)));
+end;
+
+(*
+  animation: spin 1s linear infinite -> 1 (spin), ADuration = 1000
+*)
+function BuiltinAnimation(const AValue: String; out ADuration: Integer): Integer;
+var
+  Parts: TStringArray;
+  I: Integer;
+begin
+  Result := 0;
+  ADuration := 0;
+  if AValue = '' then Exit;
+  Parts := SplitParameters(AValue, ' ');
+  for I := 0 to High(Parts) do
+    if Parts[I] = 'spin' then Result := 1
+    else if Parts[I] = 'ping' then Result := 2
+    else if Parts[I] = 'pulse' then Result := 3
+    else if Parts[I] = 'bounce' then Result := 4
+    else if IsCSSTime(Parts[I]) and (ADuration = 0) then ADuration := CSSToTime(Parts[I]);
+  if ADuration <= 0 then
+    if Result = 3 then ADuration := 2000 else ADuration := 1000;
+end;
+
+function THtmlNode.Animating: Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  if CSSAnimNodes = nil then Exit;
+  for I := 0 to CSSAnimNodes.Count - 1 do
+    if THtmlNode(CSSAnimNodes[I]).RootNode = Self then Exit(True);
+end;
+
+function THtmlNode.AnimationTick(ANow: QWord): Boolean;
+var
+  I: Integer;
+  N: THtmlNode;
+  Done: Boolean;
+begin
+  Result := False;
+  if CSSAnimNodes = nil then Exit;
+  for I := CSSAnimNodes.Count - 1 downto 0 do begin
+    if I >= CSSAnimNodes.Count then Continue;
+    N := THtmlNode(CSSAnimNodes[I]);
+    if N.RootNode <> Self then Continue;
+    Result := True;
+    N.ApplyAnimation(ANow, Done);
+    if Done then N.StopAnimation;
+  end;
+end;
+
+function THtmlNode.AnimationBounds: TRect;
+var
+  I: Integer;
+  N: THtmlNode;
+  R: TRect;
+begin
+  Result := Rect(0, 0, 0, 0);
+  if CSSAnimNodes = nil then Exit;
+  for I := 0 to CSSAnimNodes.Count - 1 do begin
+    N := THtmlNode(CSSAnimNodes[I]);
+    if (N.RootNode <> Self) or not N.FVisible then Continue;
+    R := N.FCompSize.ContentRect;
+    if N.FCompStyle.BoxShadow <> '' then InflateRect(R, 60, 60) else InflateRect(R, 2, 2);
+    R := N.TransformedBounds(R);
+    if Result.IsEmpty then Result := R else Result := TRect.Union(Result, R);
+  end;
+end;
+
+procedure THtmlNode.StopAnimation;
+begin
+  if FAnim = nil then Exit;
+  if Assigned(CSSAnimNodes) then CSSAnimNodes.Remove(Self);
+  Dispose(FAnim);
+  FAnim := nil;
+end;
+
+function THtmlNode.AnimMaxScale: Single;
+begin
+  Result := 1;
+  if FAnim = nil then Exit;
+  if FAnim^.MatrixOn or FAnim^.MatrixPending then Result := Max(MatScale(FAnim^.MatrixFrom), MatScale(FAnim^.MatrixTo));
+  if FAnim^.Frames = 2 then Result := Max(Result, 2 * MatScale(FTransformTarget));    // ping scales to 2
+end;
+
+(*
+  Styles were applied: start transitions of changed values (AOld* are values shown before)
+*)
+procedure THtmlNode.UpdateTransitions(const AOldColors: TCSSColorChannels; AOldOpacity: Single; const AOldMatrix: TCSSMatrix2D);
+var
+  cs: TCSSItem;
+  Props, Sig: TStringArray;
+  TSig: String;
+  NewColors: TCSSColorChannels;
+  NewOn: array[0..5] of Boolean;
+  I, Frames, FramesDur: Integer;
+  Transition, Restart, OpacityOn, MatrixNew, Done: Boolean;
+  Now: QWord;
+  function Has(const AName: String): Boolean;
+  var
+    K: Integer;
+  begin
+    for K := 0 to High(Props) do
+      if (Trim(Props[K]) = AName) or (Trim(Props[K]) = 'all') then Exit(True);
+    Result := False;
+  end;
+  function ChannelEnabled(AIndex: Integer): Boolean;
+  begin
+    case AIndex of
+      0: Result := Has('background-color') or Has('background');
+      1: Result := Has('color');
+      else Result := Has('border-color') or Has('border');
+    end;
+  end;
+begin
+  cs := FCompStyle;
+  Now := GetTickCount64;
+  TSig := ResolveVars(cs.Transform) + '|' + ResolveVars(cs.Translate) + '|' + ResolveVars(cs.Rotate) + '|' + ResolveVars(cs.Scale);
+  Frames := BuiltinAnimation(cs.Animation, FramesDur);
+  Transition := FStyled and (cs.TransitionDuration > 0) and (cs.TransitionProperty <> 'none');
+  if not Transition and (Frames = 0) then begin
+    StopAnimation;
+    FTransformSig := TSig;
+    Exit;
+  end;
+  if FAnim = nil then begin
+    New(FAnim);
+    FillChar(FAnim^, SizeOf(TCSSAnim), 0);
+    if CSSAnimNodes = nil then CSSAnimNodes := TList.Create;
+    CSSAnimNodes.Add(Self);
+  end;
+  if FAnim^.Frames <> Frames then FAnim^.FramesStart := Now;
+  FAnim^.Frames := Frames;
+  FAnim^.FramesDuration := FramesDur;
+  FAnim^.BaseOpacity := cs.Opacity;
+  Restart := False;
+  OpacityOn := False;
+  MatrixNew := False;
+  GetColorChannels(cs, NewColors);
+  Props := SplitParameters(cs.TransitionProperty, ',');
+  for I := 0 to 5 do begin
+    NewOn[I] := Transition and ChannelEnabled(I) and CanLerpColor(AOldColors[I], NewColors[I], I) and
+      ((FAnim^.ColorOn[I] and SameCSSColor(FAnim^.ColorTo[I], NewColors[I])) or not SameCSSColor(AOldColors[I], NewColors[I]));
+    if NewOn[I] and not (FAnim^.ColorOn[I] and SameCSSColor(FAnim^.ColorTo[I], NewColors[I])) then Restart := True;
+  end;
+  if Transition and Has('opacity') then begin
+    OpacityOn := (FAnim^.OpacityOn and (FAnim^.OpacityTo = cs.Opacity)) or (Abs(AOldOpacity - cs.Opacity) > 0.001);
+    if OpacityOn and not (FAnim^.OpacityOn and (FAnim^.OpacityTo = cs.Opacity)) then Restart := True;
+  end;
+  if Transition and (Has('transform') or Has('translate') or Has('scale') or Has('rotate')) and (TSig <> FTransformSig) then begin
+    MatrixNew := True;
+    Restart := True;
+  end;
+  FTransformSig := TSig;
+  if Restart then begin      // all running values continue from shown values
+    FAnim^.Start := Now;
+    FAnim^.Duration := cs.TransitionDuration;
+    FAnim^.Delay := cs.TransitionDelay;
+    FAnim^.Timing := TimingFromName(cs.TransitionTiming);
+    for I := 0 to 5 do begin
+      if NewOn[I] then begin
+        FAnim^.ColorFrom[I] := AOldColors[I];
+        FAnim^.ColorTo[I] := NewColors[I];
+      end;
+      FAnim^.ColorOn[I] := NewOn[I];
+    end;
+    if OpacityOn then begin
+      FAnim^.OpacityFrom := AOldOpacity;
+      FAnim^.OpacityTo := cs.Opacity;
+    end;
+    FAnim^.OpacityOn := OpacityOn;
+    if MatrixNew or FAnim^.MatrixOn then FAnim^.MatrixFrom := AOldMatrix;
+    if MatrixNew then FAnim^.MatrixPending := True;
+  end else begin
+    for I := 0 to 5 do FAnim^.ColorOn[I] := NewOn[I];
+    FAnim^.OpacityOn := OpacityOn;
+  end;
+  if not Transition then begin
+    FAnim^.MatrixOn := False;
+    FAnim^.MatrixPending := False;
+  end;
+  ApplyAnimation(Now, Done);       // shown values (cascade has set target values)
+  if Done then StopAnimation;
+end;
+
+(*
+  Animated values at time ANow are written to computed style and FTransform
+*)
+procedure THtmlNode.ApplyAnimation(ANow: QWord; out ADone: Boolean);
+var
+  A: PCSSAnim;
+  P, E, Op, Q, CX, CY, Y: Single;
+  M, X: TCSSMatrix2D;
+  I: Integer;
+begin
+  A := FAnim;
+  ADone := True;
+  if A = nil then Exit;
+  if A^.Duration > 0 then P := EnsureRange((Int64(ANow) - Int64(A^.Start) - A^.Delay) / A^.Duration, 0, 1) else P := 1;
+  E := TimingValue(A^.Timing, P);
+  for I := 0 to 5 do
+    if A^.ColorOn[I] then
+      if P >= 1 then SetColorChannel(FCompStyle, I, A^.ColorTo[I])
+        else SetColorChannel(FCompStyle, I, LerpColor(A^.ColorFrom[I], A^.ColorTo[I], E));
+  if A^.OpacityOn then Op := A^.OpacityFrom + (A^.OpacityTo - A^.OpacityFrom) * E else Op := A^.BaseOpacity;
+  if A^.MatrixOn then M := MatLerp(A^.MatrixFrom, A^.MatrixTo, E)
+  else if A^.MatrixPending then M := A^.MatrixFrom
+  else M := FTransformTarget;
+  // built-in keyframes (Tailwind CSS animate-*)
+  if (A^.Frames > 0) and (A^.FramesDuration > 0) then begin
+    Q := ((ANow - A^.FramesStart) mod QWord(A^.FramesDuration)) / A^.FramesDuration;
+    CX := FCompSize.ContentRect.Width / 2;
+    CY := FCompSize.ContentRect.Height / 2;
+    X := MatIdentity;
+    case A^.Frames of
+      1: X := Mat(Cos(2 * Pi * Q), Sin(2 * Pi * Q), -Sin(2 * Pi * Q), Cos(2 * Pi * Q), 0, 0);    // spin
+      2: begin                                                                                  // ping
+        Q := TimingValue(MakeTiming(0, 0, 0.2, 1), Min(Q / 0.75, 1));
+        X := Mat(1 + Q, 0, 0, 1 + Q, 0, 0);
+        Op := Op * (1 - Q);
+      end;
+      3: if Q < 0.5 then Op := Op * (1 - 0.5 * TimingValue(MakeTiming(0.4, 0, 0.6, 1), Q * 2))     // pulse
+           else Op := Op * (0.5 + 0.5 * TimingValue(MakeTiming(0.4, 0, 0.6, 1), (Q - 0.5) * 2));
+      4: begin                                                                                  // bounce
+        if Q < 0.5 then Y := -0.25 * FCompSize.ContentRect.Height * (1 - TimingValue(MakeTiming(0.8, 0, 1, 1), Q * 2))
+          else Y := -0.25 * FCompSize.ContentRect.Height * TimingValue(MakeTiming(0, 0, 0.2, 1), (Q - 0.5) * 2);
+        X := Mat(1, 0, 0, 1, 0, Y);
+      end;
+    end;
+    M := MatMul(M, MatMul(Mat(1, 0, 0, 1, CX, CY), MatMul(X, Mat(1, 0, 0, 1, -CX, -CY))));
+  end;
+  FCompStyle.Opacity := Op;
+  FTransform := M;
+  UpdateTransformKind;
+  if P >= 1 then begin
+    for I := 0 to 5 do A^.ColorOn[I] := False;
+    A^.OpacityOn := False;
+    A^.MatrixOn := False;
+  end;
+  ADone := (P >= 1) and (A^.Frames = 0) and not A^.MatrixPending;
 end;
 
 (*
@@ -5095,8 +5752,32 @@ var
   DX, DY, I: Integer;
   Clip: TRect;
   Children: THtmlNodeArray;
+  SavedClip: TCSSClipCorners;
+  // rounded corners of padding box clip children (only children touching corners are rounded, KISS)
+  procedure SetClipCorners;
+  var
+    P: array[0..3] of TPoint;
+    BX, BY: array[0..3] of Integer;
+    J: Integer;
+  begin
+    with FCompSize.ContentRect do CalcRadius(Right - Left, Bottom - Top, P[0], P[1], P[2], P[3]);
+    if (P[0].x = 0) and (P[1].x = 0) and (P[2].x = 0) and (P[3].x = 0) then Exit;   // parent clip stays
+    with FCompSize.Border do begin
+      BX[0] := Left; BX[1] := Right; BX[2] := Right; BX[3] := Left;
+      BY[0] := Top; BY[1] := Top; BY[2] := Bottom; BY[3] := Bottom;
+    end;
+    CSSPaintClip.Active := True;
+    CSSPaintClip.Box := PaddingBox;
+    for J := 0 to 3 do begin
+      CSSPaintClip.RX[J] := Max(0, P[J].x - BX[J]);
+      CSSPaintClip.RY[J] := Max(0, P[J].y - BY[J]);
+      if CSSPaintClip.RY[J] = 0 then CSSPaintClip.RX[J] := 0;
+    end;
+  end;
 begin
   if not FVisible then Exit;
+  FStyled := True;
+  if (FCompStyle.Opacity <= 0.004) and not FLayoutRoot then Exit;     // opacity: 0
   case FTransformKind of
     tkTranslate: begin       // translated node is painted directly (exact, no bitmap)
       DX := Round(FTransform.E);
@@ -5112,26 +5793,40 @@ begin
       Exit;
     end;
     tkGeneral: begin
-      PaintTransformed(ACanvas, AClipRect);
+      SavedClip := CSSPaintClip;          // transformed node is painted in its own coordinates
+      CSSPaintClip.Active := False;
+      try
+        PaintTransformed(ACanvas, AClipRect);
+      finally
+        CSSPaintClip := SavedClip;
+      end;
       Exit;
     end;
   end;
   DrawNode(ACanvas, AClipRect);
   if FChildCount > 0 then begin
-    if ClipsContent then Clip := TRect.Intersect(PaddingBox, AClipRect)
-      else Clip := AClipRect;
-    Children := PaintOrder;
-    for I := 0 to High(Children) do begin
-      N := Children[I];
-      if (FScrollX <> 0) or (FScrollY <> 0) then begin   // scrolled content
-        N.OffsetSubtree(-FScrollX, -FScrollY);
-        try
+    SavedClip := CSSPaintClip;
+    if ClipsContent then begin
+      Clip := TRect.Intersect(PaddingBox, AClipRect);
+      SetClipCorners;
+    end else
+      Clip := AClipRect;
+    try
+      Children := PaintOrder;
+      for I := 0 to High(Children) do begin
+        N := Children[I];
+        if (FScrollX <> 0) or (FScrollY <> 0) then begin   // scrolled content
+          N.OffsetSubtree(-FScrollX, -FScrollY);
+          try
+            N.PaintNodeTree(ACanvas, Clip);
+          finally
+            N.OffsetSubtree(FScrollX, FScrollY);
+          end;
+        end else
           N.PaintNodeTree(ACanvas, Clip);
-        finally
-          N.OffsetSubtree(FScrollX, FScrollY);
-        end;
-      end else
-        N.PaintNodeTree(ACanvas, Clip);
+      end;
+    finally
+      CSSPaintClip := SavedClip;
     end;
     if (FScrollMax.X > FScrollMin.X) or (FScrollMax.Y > FScrollMin.Y) then begin
       ACanvas.ClipRect := AClipRect;
@@ -5159,6 +5854,7 @@ begin
   AStates[I].ContentHeight := FCompSize.ContentHeight;
   AStates[I].FontSize := FCompSize.FontSize;
   AStates[I].Transform := FTransform;
+  AStates[I].TransformTarget := FTransformTarget;
   AStates[I].Kind := FTransformKind;
   AStates[I].Visible := FVisible;
   AStates[I].LayoutRoot := FLayoutRoot;
@@ -5188,6 +5884,7 @@ begin
       FCompSize.ContentHeight := ContentHeight;
       FCompSize.FontSize := FontSize;
       FTransform := Transform;
+      FTransformTarget := TransformTarget;
       FTransformKind := Kind;
       FVisible := Visible;
       FLayoutRoot := LayoutRoot;
@@ -5208,9 +5905,9 @@ var
   E, I, X, Y, DW, DH, SW, SH: Integer;
   Shadows: TCSSShadowArray;
   Sc, U, V, FX, FY, W00, W10, W01, W11: Single;
-  Key: String;
+  Key, SrcKey: String;
   Black, White: TLazIntfImage;
-  Src: array of LongWord;          // premultiplied ARGB
+  Opa: Single;
   Pts: array[0..3] of TPointF;
   MAbs, Inv: TCSSMatrix2D;
   Img: TLazIntfImage;
@@ -5274,7 +5971,7 @@ var
   end;
   function Sample(SX, SY: Integer): LongWord; inline;
   begin
-    if (SX < 0) or (SY < 0) or (SX >= KSW) or (SY >= KSH) then Result := 0 else Result := Src[SY * KSW + SX];
+    if (SX < 0) or (SY < 0) or (SX >= KSW) or (SY >= KSH) then Result := 0 else Result := FTransformSrc[SY * KSW + SX];
   end;
   function Ch(AP: LongWord; AShift: Byte): Single; inline;
   begin
@@ -5313,16 +6010,21 @@ begin
     Ceil(Max(Max(Pts[0].x, Pts[1].x), Max(Pts[2].x, Pts[3].x))), Ceil(Max(Max(Pts[0].y, Pts[1].y), Max(Pts[2].y, Pts[3].y))));
   if (CB.Width <= 0) or (CB.Height <= 0) or (CB.Width > 8000) or (CB.Height > 8000) then Exit;
 
-  Key := Format('%d,%f,%d,%d,%d,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%d,%d', [CSSPaintGeneration, Sc, E, SW, SH,
-    FTransform.A, FTransform.B, FTransform.C, FTransform.D, FTransform.E, FTransform.F, Sig,
-    CB.Left - FCompSize.ContentRect.Left + (CB.Top - FCompSize.ContentRect.Top) * 65536]);
+  // resolution K of source: node is laid out again with pixel ratio * K, so text and borders are sharp also when
+  // node is scaled up or on Retina display. During animation K is the largest scale (source is rendered once).
+  K := Sc * Max(1, Max(MatScale(FTransform), AnimMaxScale));
+  K := Min(K, 4);
+  if Assigned(FAnim) then K := Ceil(K * 4 - 0.01) / 4;
+  SrcKey := Format('%d,%f,%d,%d,%d,%d,%.3f', [CSSPaintGeneration, Sc, E, SW, SH, Sig, K]);
+  Opa := FCompStyle.Opacity;
+  Key := Format('%s,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%d,%.3f', [SrcKey,
+    FTransform.A, FTransform.B, FTransform.C, FTransform.D, FTransform.E, FTransform.F,
+    CB.Left - FCompSize.ContentRect.Left + (CB.Top - FCompSize.ContentRect.Top) * 65536, Opa]);
   if not (Assigned(FTransformBmp) and (FTransformKey = Key)) then begin
     FreeAndNil(FTransformBmp);
     FTransformKey := Key;
-    // source: node painted on black and white in resolution K (node is laid out again with pixel ratio * K,
-    // so text and borders are sharp also when node is scaled up or on Retina display)
-    K := Sc * Max(1, Max(Sqrt(Sqr(FTransform.A) + Sqr(FTransform.B)), Sqrt(Sqr(FTransform.C) + Sqr(FTransform.D))));
-    K := Min(K, 4);
+    if FTransformSrcKey <> SrcKey then begin
+    // source: node painted on black and white (or transparent) in resolution K
     OldScale := RootNode.FPaintScale;
     OldRatio := RootNode.FPixelRatio;
     States := nil;
@@ -5353,13 +6055,16 @@ begin
       if Length(States) > 0 then RestoreLayout(States);
     end;
     try
-      SetLength(Src, KSW * KSH);
+      FTransformSrcKey := SrcKey;
+      FTransformSrcW := KSW;
+      FTransformSrcH := KSH;
+      SetLength(FTransformSrc, KSW * KSH);
       for Y := 0 to KSH - 1 do
         for X := 0 to KSW - 1 do begin
           CB0 := Black.Colors[X, Y];
           if White = nil then begin     // transparent render (macOS returns premultiplied colors)
             A := CB0.Alpha shr 8;
-            Src[Y * KSW + X] := (LongWord(A) shl 24) or (LongWord(Min(A, CB0.Red shr 8)) shl 16) or
+            FTransformSrc[Y * KSW + X] := (LongWord(A) shl 24) or (LongWord(Min(A, CB0.Red shr 8)) shl 16) or
               (LongWord(Min(A, CB0.Green shr 8)) shl 8) or LongWord(Min(A, CB0.Blue shr 8));
             Continue;
           end;
@@ -5367,13 +6072,16 @@ begin
           // alpha from difference, color on black is premultiplied color
           A := 255 - ((CW0.Red shr 8 - CB0.Red shr 8) + (CW0.Green shr 8 - CB0.Green shr 8) + (CW0.Blue shr 8 - CB0.Blue shr 8)) div 3;
           A := EnsureRange(A, 0, 255);
-          Src[Y * KSW + X] := (LongWord(A) shl 24) or (LongWord(Min(A, CB0.Red shr 8)) shl 16) or
+          FTransformSrc[Y * KSW + X] := (LongWord(A) shl 24) or (LongWord(Min(A, CB0.Red shr 8)) shl 16) or
             (LongWord(Min(A, CB0.Green shr 8)) shl 8) or LongWord(Min(A, CB0.Blue shr 8));
         end;
     finally
       Black.Free;
       White.Free;
     end;
+    end;
+    KSW := FTransformSrcW;
+    KSH := FTransformSrcH;
     // destination in device pixels: inverse mapping with bilinear sampling
     Uniform := (Abs(FTransform.B) < 1E-6) and (Abs(FTransform.C) < 1E-6) and (Abs(Abs(FTransform.A) - Abs(FTransform.D)) < 1E-6) and
       (Abs(Abs(FTransform.A) * Sc - KSW / SW) < 0.02);
@@ -5382,6 +6090,22 @@ begin
     Img := NewAlphaImage(DW, DH);
     try
       Wr := PixelWriter(Img);
+      // only moved (opacity, translate): source pixels are copied (fast path, eg. animated opacity)
+      if Uniform and (Abs(FTransform.A - 1) < 1E-6) and (Abs(FTransform.D - 1) < 1E-6) then begin
+        P := MatApply(Inv, PointF(CB.Left + 0.5 / Sc, CB.Top + 0.5 / Sc));
+        X0 := Round((P.x - R.Left) * KSW / SW - 0.5);
+        Y0 := Round((P.y - R.Top) * KSH / SH - 0.5);
+        for Y := 0 to DH - 1 do begin
+          WriterLine(Wr, Y);
+          for X := 0 to DW - 1 do begin
+            C00 := Sample(X0 + X, Y0 + Y);
+            A := C00 shr 24;
+            if A = 0 then WritePixel(Wr, X, 0, 0, 0, 0)
+              else WritePixel(Wr, X, Min(255, ((C00 shr 16) and $FF) * 255 div A), Min(255, ((C00 shr 8) and $FF) * 255 div A),
+                Min(255, (C00 and $FF) * 255 div A), Round(A * Opa));
+          end;
+        end;
+      end else
       for Y := 0 to DH - 1 do begin
         WriterLine(Wr, Y);
         for X := 0 to DW - 1 do begin
@@ -5409,7 +6133,7 @@ begin
           PR := Ch(C00, 16) * W00 + Ch(C10, 16) * W10 + Ch(C01, 16) * W01 + Ch(C11, 16) * W11;
           PG := Ch(C00, 8) * W00 + Ch(C10, 8) * W10 + Ch(C01, 8) * W01 + Ch(C11, 8) * W11;
           PB := Ch(C00, 0) * W00 + Ch(C10, 0) * W10 + Ch(C01, 0) * W01 + Ch(C11, 0) * W11;
-          WritePixel(Wr, X, Min(255, Round(PR * 255 / PA)), Min(255, Round(PG * 255 / PA)), Min(255, Round(PB * 255 / PA)), Round(PA));
+          WritePixel(Wr, X, Min(255, Round(PR * 255 / PA)), Min(255, Round(PG * 255 / PA)), Min(255, Round(PB * 255 / PA)), Round(PA * Opa));
         end;
       end;
       FTransformBmp := IntfImageToBitmap(Img);
@@ -5766,6 +6490,15 @@ procedure THtmlNode.CalcRadius(AWidth, AHeight: Integer; out ATopLeft, ATopRight
   begin
     Result := Point(Trunc(P.x * F), Trunc(P.y * F));
   end;
+  // corner touching rounded corner of clipping parent (overflow: hidden) gets its inner radius
+  procedure ClipCorner(var P: TPoint; AIndex, DX, DY: Integer);
+  begin
+    with CSSPaintClip do
+      if (RX[AIndex] > 0) and (DX >= 0) and (DY >= 0) and (DX <= 1) and (DY <= 1) then begin
+        P.x := Max(P.x, RX[AIndex] - DX);
+        P.y := Max(P.y, RY[AIndex] - DY);
+      end;
+  end;
 var
   F: Double;
 begin
@@ -5773,6 +6506,13 @@ begin
   ATopRight := RadiusPoint(FCompStyle.RadiusTopRight);
   ABottomRight := RadiusPoint(FCompStyle.RadiusBottomRight);
   ABottomLeft := RadiusPoint(FCompStyle.RadiusBottomLeft);
+  if CSSPaintClip.Active then
+    with FCompSize.ContentRect, CSSPaintClip do begin
+      ClipCorner(ATopLeft, 0, Left - Box.Left, Top - Box.Top);
+      ClipCorner(ATopRight, 1, Box.Right - Right, Top - Box.Top);
+      ClipCorner(ABottomRight, 2, Box.Right - Right, Box.Bottom - Bottom);
+      ClipCorner(ABottomLeft, 3, Left - Box.Left, Box.Bottom - Bottom);
+    end;
   F := 1;
   Reduce(F, AWidth, ATopLeft.x, ATopRight.x);
   Reduce(F, AWidth, ABottomLeft.x, ABottomRight.x);
@@ -5810,6 +6550,7 @@ destructor THtmlNode.Destroy;
 var
   I: Integer;
 begin
+  StopAnimation;
   Clear;
   Detach;
   for I := 0 to High(FBgCache) do FBgCache[I].Bmp.Free;
@@ -5862,10 +6603,14 @@ var
   Decl: String;
   Spec, Order: Integer;
   TempRules: array of TCSSItem;
+  OldColors: TCSSColorChannels;
+  OldOpacity: Single;
 begin
   if ANode.RootNode = Nil then exit;
   Inc(CSSPaintGeneration);
   sh := ANode.RootNode.StyleSheet;
+  GetColorChannels(ANode.FCompStyle, OldColors);       // shown values (can be values of running transition)
+  OldOpacity := ANode.FCompStyle.Opacity;
   ANode.FCompStyle.Reset;
   ApplyElementDefaults(ANode);
   Rules := TList.Create;
@@ -5912,6 +6657,7 @@ begin
       else if ObjectFit = 'none' then Background.Size := 'auto'
       else Background.Size := '100% 100%';
     end;
+  ANode.UpdateTransitions(OldColors, OldOpacity, ANode.FTransform);
 end;
 
 (*
@@ -6129,7 +6875,13 @@ end;
 
 procedure THtmlNode.PaintTo(ACanvas: TCanvas);
 begin
-  PaintNodeTree(ACanvas, Rect(0, 0, MaxInt, MaxInt));
+  // clip rect must not overflow when canvas adds offset of control (LPtoDP), so MaxInt can't be used
+  PaintNodeTree(ACanvas, Rect(0, 0, $100000, $100000));
+end;
+
+procedure THtmlNode.PaintTo(ACanvas: TCanvas; const AClipRect: TRect);
+begin
+  PaintNodeTree(ACanvas, AClipRect);
 end;
 
 function THtmlNode.SetAlignControl(AValue: TControl): THtmlNode;
@@ -6353,7 +7105,7 @@ begin
   if SpecifiedSize(cs.Width, ParentWidth, HorzSpace) >= 0 then
     cW := SpecifiedSize(cs.Width, ParentWidth, HorzSpace)
   else
-  if (cs.Width.LengthType in [cltUndefined, cltAuto]) and (ParentWidth <> -1) and (cs.Display in [cdtBlock,cdtFlex]) and
+  if (cs.Width.LengthType in [cltUndefined, cltAuto]) and (ParentWidth <> -1) and (cs.Display in [cdtBlock, cdtFlex, cdtGrid]) and
      (not InFlex) and not (cs.Float in [cftLeft, cftRight]) and not (cs.Position in [cpAbsolute, cpFixed]) then
     cW := Max(0, ParentWidth - ANode.CompSize.LeftSpace - ANode.CompSize.RightSpace);
   if not ANode.FLayoutRoot then begin
@@ -6362,6 +7114,13 @@ begin
     if SpecifiedSize(cs.Height, ParentHeight, VertSpace) >= 0 then
       cH := SpecifiedSize(cs.Height, ParentHeight, VertSpace);
     cH := Constrain(cH, cs.MinHeight, cs.MaxHeight, ParentHeight, VertSpace);
+  end;
+  // absolute node with left and right (top and bottom) is stretched, eg. inset-0
+  if (cs.Position in [cpAbsolute, cpFixed]) and not ANode.FLayoutRoot then begin
+    if (cW = -1) and (PW >= 0) and not (cs.Left.LengthType in [cltUndefined, cltAuto]) and not (cs.Right.LengthType in [cltUndefined, cltAuto]) then
+      cW := Max(0, PW - ANode.FCompSize.Position.Left - ANode.FCompSize.Position.Right - ANode.CompSize.LeftSpace - ANode.CompSize.RightSpace);
+    if (cH = -1) and (PH >= 0) and not (cs.Top.LengthType in [cltUndefined, cltAuto]) and not (cs.Bottom.LengthType in [cltUndefined, cltAuto]) then
+      cH := Max(0, PH - ANode.FCompSize.Position.Top - ANode.FCompSize.Position.Bottom - ANode.CompSize.TopSpace - ANode.CompSize.BottomSpace);
   end;
   if AForceWidth >= 0 then cW := Max(0, AForceWidth - HorzSpace);
   if AForceHeight >= 0 then cH := Max(0, AForceHeight - VertSpace);
@@ -6388,14 +7147,23 @@ begin
 
   // if node have childrens calculate childrens required space
   if ANode.FChildCount > 0 then begin
-    if (cs.Display in [cdtBlock, cdtFlex]) and (cW = -1) and not InFlex then
+    if cs.Position in [cpAbsolute, cpFixed] then
+      // absolute node: shrink to fit content (stretched size is set above)
+    else
+    if (cs.Display in [cdtBlock, cdtFlex, cdtGrid]) and (cW = -1) and not InFlex then
       cW := ParentWidth;
     LayoutCalcPosition(ANode.FFirstChild, cW, cH, childWidth, childHeight);
+    // wrapped content of absolute node is not wider than containing block
+    if (cW = -1) and (cs.Position in [cpAbsolute, cpFixed]) and (cs.WhiteSpace = cwsNormal) and (PW > 0) and
+      (childWidth > PW - ANode.FCompSize.Position.Left - ANode.CompSize.LeftSpace - ANode.CompSize.RightSpace) then begin
+      cW := Max(1, PW - ANode.FCompSize.Position.Left - ANode.CompSize.LeftSpace - ANode.CompSize.RightSpace);
+      LayoutCalcPosition(ANode.FFirstChild, cW, cH, childWidth, childHeight);
+    end;
     if cW = -1 then cW := Constrain(childWidth, cs.MinWidth, cs.MaxWidth, ParentWidth, HorzSpace);
     if cH = -1 then begin
       cH := Constrain(childHeight, cs.MinHeight, cs.MaxHeight, ParentHeight, VertSpace);
       // flex container is higher than its content (min-height): items are aligned in final height
-      if (cs.Display in [cdtFlex, cdtInlineFlex]) and (cH > childHeight) then
+      if (cs.Display in [cdtFlex, cdtInlineFlex, cdtGrid]) and (cH > childHeight) then
         LayoutCalcPosition(ANode.FFirstChild, cW, cH, childWidth, childHeight);
     end;
     cB := cH - ANode.FLastNode.CompSize.MarginRect.Bottom + ANode.FLastNode.CompSize.BaseLine + ANode.CompSize.BottomSpace; // TODO: not LastNode, but bottom right position node
@@ -6603,7 +7371,11 @@ begin
   Items := nil;
   for I := 0 to AList.Count - 1 do begin
     Node := THtmlNode(AList[I]);
-    if Node.FCompStyle.Display = cdtNone then Continue;
+    if (Node.FCompStyle.Display = cdtNone) or Node.IsWhiteSpaceText then begin
+      Node.FCompSize.ContentRect := Rect(0, 0, 0, 0);
+      Node.FCompSize.MarginRect := Rect(0, 0, 0, 0);
+      Continue;
+    end;
     LayoutGetNodeSize(Node, AWidth, AHeight, True);
     if Node.FCompStyle.Position in [cpAbsolute, cpFixed] then begin    // positioned when size of container is known
       SetLength(AbsNodes, Length(AbsNodes) + 1);
@@ -6812,6 +7584,293 @@ begin
   end;
 end;
 
+function THtmlNode.IsWhiteSpaceText: Boolean;
+begin
+  Result := (FElementName = '#text') and (FChildCount = 0) and (Trim(FText) = '');
+end;
+
+(*
+  Grid layout (KISS subset of CSS grid): grid-template-columns and grid-template-rows with px, %, rem, fr,
+  auto, minmax(min, max) (max is used) and repeat(N, ...), automatic placement row by row, column and row
+  spans, gaps, align-items/align-self in cells (stretch, start, center, end).
+  Not supported: line numbers and names, template areas, auto-fill/auto-fit, dense placement, justify-items.
+  AWidth, AHeight - inner size of grid container (-1 = not known)
+*)
+procedure THtmlNode.LayoutDoGrid(AParentNode: THtmlNode; AList: TList; AWidth, AHeight: Integer; out NewWidth, NewHeight: Integer);
+type
+  TGridTrack = record
+    Kind: Integer;              // 0 = length, 1 = fr, 2 = auto
+    Value: Single;              // px or fr
+    Size, Pos: Integer;
+  end;
+  TGridTracks = array of TGridTrack;
+  TGridItem = record
+    Node: THtmlNode;
+    Col, Row, ColSpan, RowSpan: Integer;
+    ForceW: Integer;            // forced border box width (-1 = own width)
+  end;
+var
+  ps: TCSSItem;
+  Cols, Rows: TGridTracks;
+  Items: array of TGridItem;
+  AbsNodes: array of THtmlNode;
+  Used: array of array of Boolean;     // occupied cells [row][col]
+  ColGap, RowGap, I, J, R, C, NCols, X, Y, W, H, Need, CW, CH: Integer;
+  Nd: THtmlNode;
+  Align: TCSSAlignItems;
+  sz: THtmlSize;
+
+  function AutoToZeroInt(AValue: Integer): Integer; inline;
+  begin
+    if (AValue = MaxInt) or (AValue < -100000) then Result := 0 else Result := AValue;
+  end;
+  procedure ParseTracks(const ATemplate: String; ASize: Integer; var ATracks: TGridTracks);
+    procedure Add(AToken: String);
+    var
+      T: TGridTrack;
+      V: Integer;
+    begin
+      AToken := Trim(AToken);
+      if AToken = '' then Exit;
+      if Copy(AToken, 1, 7) = 'minmax(' then begin     // minmax(min, max): max is used
+        AToken := Copy(AToken, 8, Length(AToken) - 8);
+        while Pos(',', AToken) > 0 do AToken := StrAfter(AToken, ',');
+        AToken := Trim(AToken);
+      end;
+      T := Default(TGridTrack);
+      if AToken = 'auto' then T.Kind := 2
+      else if (Length(AToken) > 2) and (Copy(AToken, Length(AToken) - 1, 2) = 'fr') then begin
+        T.Kind := 1;
+        T.Value := CSSStrToFloatDef(Copy(AToken, 1, Length(AToken) - 2), 1);
+      end else begin
+        V := AParentNode.CalcLength(CSSToLength(AToken), ASize);
+        if (V < 0) or (V = MaxInt) then T.Kind := 2 else T.Value := V;
+      end;
+      SetLength(ATracks, Length(ATracks) + 1);
+      ATracks[High(ATracks)] := T;
+    end;
+  var
+    Parts, Inner, Sub: TStringArray;
+    S: String;
+    I, K, M: Integer;
+  begin
+    ATracks := nil;
+    S := LowerCase(Trim(ATemplate));
+    if (S = '') or (S = 'none') then Exit;
+    Parts := SplitParameters(S, ' ');
+    for I := 0 to High(Parts) do
+      if Copy(Parts[I], 1, 7) = 'repeat(' then begin
+        Inner := SplitParameters(Copy(Parts[I], 8, Length(Parts[I]) - 8), ',');
+        if Length(Inner) < 2 then Continue;
+        Sub := SplitParameters(Trim(Copy(Parts[I], Pos(',', Parts[I]) + 1, Length(Parts[I]) - Pos(',', Parts[I]) - 1)), ' ');
+        for K := 1 to EnsureRange(StrToIntDef(Trim(Inner[0]), 1), 1, 100) do
+          for M := 0 to High(Sub) do Add(Sub[M]);
+      end else
+        Add(Parts[I]);
+  end;
+  function AreaFree(ARow, ACol, AColSpan, ARowSpan: Integer): Boolean;
+  var
+    I, J: Integer;
+  begin
+    for I := ARow to ARow + ARowSpan - 1 do
+      if I <= High(Used) then
+        for J := ACol to ACol + AColSpan - 1 do
+          if Used[I][J] then Exit(False);
+    Result := True;
+  end;
+  procedure Mark(ARow, ACol, AColSpan, ARowSpan: Integer);
+  var
+    I, J: Integer;
+  begin
+    while High(Used) < ARow + ARowSpan - 1 do begin
+      SetLength(Used, Length(Used) + 1);
+      SetLength(Used[High(Used)], NCols);
+    end;
+    for I := ARow to ARow + ARowSpan - 1 do
+      for J := ACol to ACol + AColSpan - 1 do Used[I][J] := True;
+  end;
+  // fr tracks share free space (rounding errors go to last track)
+  procedure Distribute(var ATracks: TGridTracks; AFree: Integer; AKeepContent: Boolean);
+  var
+    I: Integer;
+    FrSum, Acc, Prev: Single;
+  begin
+    FrSum := 0;
+    for I := 0 to High(ATracks) do
+      if ATracks[I].Kind = 1 then FrSum := FrSum + ATracks[I].Value;
+    if (FrSum <= 0) or (AFree <= 0) then Exit;
+    Acc := 0;
+    for I := 0 to High(ATracks) do
+      if ATracks[I].Kind = 1 then begin
+        Prev := Acc;
+        Acc := Acc + AFree * ATracks[I].Value / FrSum;
+        if AKeepContent then ATracks[I].Size := Max(ATracks[I].Size, Round(Acc) - Round(Prev))
+          else ATracks[I].Size := Round(Acc) - Round(Prev);
+      end;
+  end;
+  function SpanSize(const ATracks: TGridTracks; AFirst, ACount, AGap: Integer): Integer;
+  var
+    I: Integer;
+  begin
+    Result := AGap * (ACount - 1);
+    for I := AFirst to AFirst + ACount - 1 do Inc(Result, ATracks[I].Size);
+  end;
+  procedure SetPositions(var ATracks: TGridTracks; AGap: Integer);
+  var
+    I, P: Integer;
+  begin
+    P := 0;
+    for I := 0 to High(ATracks) do begin
+      ATracks[I].Pos := P;
+      Inc(P, ATracks[I].Size + AGap);
+    end;
+  end;
+begin
+  ps := AParentNode.FCompStyle;
+  ColGap := AParentNode.CalcLength(ps.ColumnGap, AWidth);
+  RowGap := AParentNode.CalcLength(ps.RowGap, AHeight);
+  if (ColGap < 0) or (ColGap = MaxInt) then ColGap := 0;
+  if (RowGap < 0) or (RowGap = MaxInt) then RowGap := 0;
+  ParseTracks(ResolveVars(ps.GridTemplateColumns), AWidth, Cols);
+  if Length(Cols) = 0 then begin      // one column
+    SetLength(Cols, 1);
+    Cols[0].Kind := 1;
+    Cols[0].Value := 1;
+  end;
+  NCols := Length(Cols);
+  ParseTracks(ResolveVars(ps.GridTemplateRows), AHeight, Rows);
+
+  // automatic placement: row by row, cursor doesn't go back (as grid-auto-flow: row)
+  Items := nil;
+  AbsNodes := nil;
+  Used := nil;
+  R := 0;
+  C := 0;
+  for I := 0 to AList.Count - 1 do begin
+    Nd := THtmlNode(AList[I]);
+    if (Nd.FCompStyle.Display = cdtNone) or Nd.IsWhiteSpaceText then begin
+      Nd.FCompSize.ContentRect := Rect(0, 0, 0, 0);
+      Nd.FCompSize.MarginRect := Rect(0, 0, 0, 0);
+      Continue;
+    end;
+    if Nd.FCompStyle.Position in [cpAbsolute, cpFixed] then begin
+      LayoutGetNodeSize(Nd, AWidth, AHeight, True);
+      SetLength(AbsNodes, Length(AbsNodes) + 1);
+      AbsNodes[High(AbsNodes)] := Nd;
+      Continue;
+    end;
+    SetLength(Items, Length(Items) + 1);
+    Items[High(Items)].Node := Nd;
+    J := Nd.FCompStyle.GridColumnSpan;
+    if (J < 0) or (J > NCols) then J := NCols else if J = 0 then J := 1;
+    Items[High(Items)].ColSpan := J;
+    Items[High(Items)].RowSpan := Max(1, Nd.FCompStyle.GridRowSpan);
+    repeat
+      if C + J > NCols then begin
+        Inc(R);
+        C := 0;
+      end;
+      if AreaFree(R, C, J, Items[High(Items)].RowSpan) then Break;
+      Inc(C);
+    until False;
+    Items[High(Items)].Row := R;
+    Items[High(Items)].Col := C;
+    Mark(R, C, J, Items[High(Items)].RowSpan);
+    Inc(C, J);
+  end;
+  while Length(Rows) < Length(Used) do begin    // implicit rows are auto
+    SetLength(Rows, Length(Rows) + 1);
+    Rows[High(Rows)] := Default(TGridTrack);
+    Rows[High(Rows)].Kind := 2;
+  end;
+
+  // column sizes: fixed, auto (max-content of items in one column), fr (free space)
+  for J := 0 to NCols - 1 do
+    if Cols[J].Kind = 0 then Cols[J].Size := Round(Cols[J].Value) else Cols[J].Size := 0;
+  for I := 0 to High(Items) do
+    with Items[I] do
+      if (ColSpan = 1) and ((Cols[Col].Kind = 2) or ((Cols[Col].Kind = 1) and (AWidth < 0))) then begin
+        LayoutGetNodeSize(Node, -1, AHeight, True);
+        sz := Node.FCompSize;
+        Cols[Col].Size := Max(Cols[Col].Size, sz.ContentWidth + sz.Margin.Left + sz.Margin.Right);
+      end;
+  if AWidth >= 0 then begin
+    W := AWidth - ColGap * (NCols - 1);
+    for J := 0 to NCols - 1 do
+      if Cols[J].Kind <> 1 then Dec(W, Cols[J].Size);
+    Distribute(Cols, W, False);
+  end;
+  SetPositions(Cols, ColGap);
+
+  // items in final width, row sizes from item heights
+  for J := 0 to High(Rows) do
+    if Rows[J].Kind = 0 then Rows[J].Size := Round(Rows[J].Value) else Rows[J].Size := 0;
+  for I := 0 to High(Items) do
+    with Items[I] do begin
+      CW := SpanSize(Cols, Col, ColSpan, ColGap);
+      if Node.FCompStyle.Width.LengthType in [cltUndefined, cltAuto] then begin
+        ForceW := CW - AutoToZeroInt(Node.CalcLength(Node.FCompStyle.Margin[csLeft], CW)) -
+          AutoToZeroInt(Node.CalcLength(Node.FCompStyle.Margin[csRight], CW));
+        LayoutGetNodeSize(Node, CW, -1, True, ForceW, -1);
+      end else begin
+        ForceW := -1;
+        LayoutGetNodeSize(Node, CW, -1, True);
+      end;
+      sz := Node.FCompSize;
+      if (RowSpan = 1) and (Rows[Row].Kind <> 0) then
+        Rows[Row].Size := Max(Rows[Row].Size, sz.ContentHeight + sz.Margin.Top + sz.Margin.Bottom);
+    end;
+  for I := 0 to High(Items) do    // item over more rows enlarges its last row
+    with Items[I] do
+      if RowSpan > 1 then begin
+        Need := Node.FCompSize.ContentHeight + Node.FCompSize.Margin.Top + Node.FCompSize.Margin.Bottom - SpanSize(Rows, Row, RowSpan, RowGap);
+        if Need > 0 then Inc(Rows[Row + RowSpan - 1].Size, Need);
+      end;
+  if AHeight >= 0 then begin
+    H := AHeight - RowGap * Max(0, High(Rows));
+    for J := 0 to High(Rows) do
+      if Rows[J].Kind <> 1 then Dec(H, Rows[J].Size);
+    Distribute(Rows, H, True);
+  end;
+  SetPositions(Rows, RowGap);
+
+  // positions, align in cell (stretch by default)
+  for I := 0 to High(Items) do
+    with Items[I] do begin
+      CW := SpanSize(Cols, Col, ColSpan, ColGap);
+      CH := SpanSize(Rows, Row, RowSpan, RowGap);
+      sz := Node.FCompSize;
+      Align := Node.FCompStyle.AlignSelf;
+      if Align = caiAuto then Align := ps.AlignItems;
+      if (Align = caiStretch) and (Node.FCompStyle.Height.LengthType in [cltUndefined, cltAuto]) and
+        (sz.ContentHeight + sz.Margin.Top + sz.Margin.Bottom <> CH) then begin
+        LayoutGetNodeSize(Node, CW, CH, True, ForceW, CH - sz.Margin.Top - sz.Margin.Bottom);
+        sz := Node.FCompSize;
+      end;
+      H := sz.ContentHeight + sz.Margin.Top + sz.Margin.Bottom;
+      X := Cols[Col].Pos;
+      Y := Rows[Row].Pos;
+      case Align of
+        caiCenter: Inc(Y, (CH - H) div 2);
+        caiFlexEnd: Inc(Y, CH - H);
+      end;
+      sz.MarginRect := Rect(X, Y, X + sz.ContentWidth + sz.Margin.Left + sz.Margin.Right, Y + H);
+      sz.ContentRect := Rect(X + sz.Margin.Left, Y + sz.Margin.Top, sz.MarginRect.Right - sz.Margin.Right, Y + H - sz.Margin.Bottom);
+      if Node.FCompStyle.Position = cpRelative then begin
+        OffsetRect(sz.MarginRect, sz.Position.Left - sz.Position.Right * Ord(Node.FCompStyle.Left.LengthType in [cltUndefined, cltAuto]), sz.Position.Top);
+        OffsetRect(sz.ContentRect, sz.Position.Left - sz.Position.Right * Ord(Node.FCompStyle.Left.LengthType in [cltUndefined, cltAuto]), sz.Position.Top);
+      end;
+    end;
+
+  if AWidth >= 0 then NewWidth := AWidth else NewWidth := SpanSize(Cols, 0, NCols, ColGap);
+  if Length(Rows) > 0 then NewHeight := SpanSize(Rows, 0, Length(Rows), RowGap) else NewHeight := 0;
+  for I := 0 to High(AbsNodes) do begin
+    if AWidth >= 0 then X := AWidth else X := NewWidth;
+    if AHeight >= 0 then Y := AHeight else Y := NewHeight;
+    AbsNodes[I].PlaceAbsolute(X, Y);
+  end;
+end;
+
 (*
   Position of absolute node in container with inner size AWidth x AHeight (left, top, right, bottom)
 *)
@@ -6824,6 +7883,11 @@ begin
   sz := FCompSize;
   // containing block is padding box of parent (coordinates are relative to its content box)
   if Assigned(ParentNode) then Pad := ParentNode.FCompSize.Padding else Pad := Rect(0, 0, 0, 0);
+  // insets in percent: size of container is known now
+  if FCompStyle.Left.LengthType = cltPercentage then sz.Position.Left := CalcLength(FCompStyle.Left, AWidth + Pad.Left + Pad.Right);
+  if FCompStyle.Right.LengthType = cltPercentage then sz.Position.Right := CalcLength(FCompStyle.Right, AWidth + Pad.Left + Pad.Right);
+  if FCompStyle.Top.LengthType = cltPercentage then sz.Position.Top := CalcLength(FCompStyle.Top, AHeight + Pad.Top + Pad.Bottom);
+  if FCompStyle.Bottom.LengthType = cltPercentage then sz.Position.Bottom := CalcLength(FCompStyle.Bottom, AHeight + Pad.Top + Pad.Bottom);
   X := 0;
   Y := 0;
   if not (FCompStyle.Left.LengthType in [cltUndefined, cltAuto]) then X := sz.Position.Left - Pad.Left
@@ -6871,6 +7935,17 @@ begin
     end;
 
     LayoutDoFlexAlign(ANode.ParentNode, GapList, TargetWidth, TargetHeight, NewWidth, NewHeight);
+    GapList.Free;
+    Exit;
+  end;
+  if Assigned(ANode.ParentNode) and (ANode.ParentNode.FCompStyle.Display = cdtGrid) then begin
+    INode := ANode;
+    GapList := TList.Create;
+    while Assigned(INode) do begin
+      GapList.Add(INode);
+      INode := INode.GetNext(INode);
+    end;
+    LayoutDoGrid(ANode.ParentNode, GapList, TargetWidth, TargetHeight, NewWidth, NewHeight);
     GapList.Free;
     Exit;
   end;
@@ -6991,22 +8066,22 @@ begin
 //  if ForNode.CompStyle.Width.LengthType = cltPx then NewWidth := Round(ForNode.CompStyle.Width.Value);
   while Assigned(ANode) do begin
     cs := ANode.CompStyle;
-    if (cs.Display in [cdtBlock, cdtFlex]) and (cs.Width.LengthType in [cltUndefined, cltAuto]) and
+    if (cs.Display in [cdtBlock, cdtFlex, cdtGrid]) and (cs.Width.LengthType in [cltUndefined, cltAuto]) and
       (cs.MaxWidth.LengthType = cltUndefined) and (cs.Float in [cftUndefined, cftNone]) and
       not (cs.Position in [cpAbsolute, cpFixed]) and not ANode.FLayoutRoot then begin // fix block alignment  (eg. first node is block and next is inline, and block width is not correct)
       ANode.FCompSize.MarginRect.Right := TargetWidth;
       ANode.FCompSize.ContentRect.Right := ANode.FCompSize.MarginRect.Right - ANode.CompSize.Margin.Right;
     end;
     if (cs.Position in [cpAbsolute, cpFixed]) and (ANode.FCompStyle.Display <> cdtNone) and
-      ((not (cs.Right.LengthType in [cltUndefined, cltAuto]) and (cs.Left.LengthType in [cltUndefined, cltAuto])) or
-       (not (cs.Bottom.LengthType in [cltUndefined, cltAuto]) and (cs.Top.LengthType in [cltUndefined, cltAuto]))) then begin
-      // right/bottom: size of container is known now
+      (not (cs.Right.LengthType in [cltUndefined, cltAuto]) or not (cs.Bottom.LengthType in [cltUndefined, cltAuto]) or
+       (cs.Left.LengthType = cltPercentage) or (cs.Top.LengthType = cltPercentage)) then begin
+      // right/bottom and percent insets: size of container is known now (static position is kept)
       X := ANode.FCompSize.MarginRect.Left;
       Y := ANode.FCompSize.MarginRect.Top;
       ANode.PlaceAbsolute(TargetWidth, TargetHeight);
-      if not (cs.Left.LengthType in [cltUndefined, cltAuto]) or (cs.Right.LengthType in [cltUndefined, cltAuto]) then
+      if (cs.Left.LengthType in [cltUndefined, cltAuto]) and (cs.Right.LengthType in [cltUndefined, cltAuto]) then
         OffsetRect(ANode.FCompSize.MarginRect, X - ANode.FCompSize.MarginRect.Left, 0);
-      if not (cs.Top.LengthType in [cltUndefined, cltAuto]) or (cs.Bottom.LengthType in [cltUndefined, cltAuto]) then
+      if (cs.Top.LengthType in [cltUndefined, cltAuto]) and (cs.Bottom.LengthType in [cltUndefined, cltAuto]) then
         OffsetRect(ANode.FCompSize.MarginRect, 0, Y - ANode.FCompSize.MarginRect.Top);
       with ANode.FCompSize do
         ContentRect := Rect(MarginRect.Left + Margin.Left, MarginRect.Top + Margin.Top, MarginRect.Right - Margin.Right, MarginRect.Bottom - Margin.Bottom);
@@ -7062,7 +8137,7 @@ var
         Dx := 0;
         Dy := 0;
         // margin: auto for block nodes (flex items are aligned by flex layout)
-        if (ANode.ParentNode <> Nil) and (ANode.CompStyle.Display in [cdtBlock, cdtFlex]) and
+        if (ANode.ParentNode <> Nil) and (ANode.CompStyle.Display in [cdtBlock, cdtFlex, cdtGrid]) and
           not (ANode.ParentNode.CompStyle.Display in [cdtFlex, cdtInlineFlex]) and
           not (ANode.CompStyle.Position in [cpAbsolute, cpFixed]) and (ANode.CompStyle.Float in [cftUndefined, cftNone]) then begin
           if (ANode.CompStyle.Margin[csLeft].LengthType = cltAuto) and (ANode.CompStyle.Margin[csRight].LengthType = cltAuto) then
@@ -7204,7 +8279,7 @@ end;
 (*
   Get Last node at position with OnClick
 *)
-function THtmlNode.NodeAtPosition(APos: TPoint): THtmlNode;
+function THtmlNode.NodeAtPosition(APos: TPoint; AClickable: Boolean): THtmlNode;
   procedure Search(AParent: THtmlNode);
   var
     Children: THtmlNodeArray;
@@ -7213,14 +8288,14 @@ function THtmlNode.NodeAtPosition(APos: TPoint): THtmlNode;
     Children := AParent.PaintOrder;
     for I := 0 to High(Children) do
       if Children[I].FVisible then begin
-        if Assigned(Children[I].FOnClick) and Children[I].HitTest(APos) then Result := Children[I];   // last painted is on top
+        if (Assigned(Children[I].FOnClick) or not AClickable) and Children[I].HitTest(APos) then Result := Children[I];   // last painted is on top
         Search(Children[I]);
       end;
   end;
 begin
   Result := Nil;
   if not FVisible then Exit;
-  if Assigned(FOnClick) and HitTest(APos) then Result := Self;
+  if (Assigned(FOnClick) or not AClickable) and HitTest(APos) then Result := Self;
   Search(Self);
 end;
 
@@ -7231,7 +8306,13 @@ function THtmlNode.HitTest(const APos: TPoint): Boolean;
 var
   P: TPointF;
   InClip: Boolean;
+  N: THtmlNode;
 begin
+  N := Self;
+  while Assigned(N) do begin     // pointer-events: none is inherited
+    if N.FCompStyle.PointerEventsNone then Exit(False);
+    N := N.ParentNode;
+  end;
   P := ScreenToLayoutClip(PointF(APos.X + 0.5, APos.Y + 0.5), InClip);
   Result := InClip and (P.x >= FCompSize.ContentRect.Left) and (P.x < FCompSize.ContentRect.Right) and
     (P.y >= FCompSize.ContentRect.Top) and (P.y < FCompSize.ContentRect.Bottom);
@@ -7547,6 +8628,7 @@ begin
   CSSCornerCache.Free;
   CSSShadowCache.Free;
   CSSImageCache.Free;
+  CSSAnimNodes.Free;
   CSSUtilityCache.Free;
   CSSFontFamilyCache.Free;
   {$ifndef fmx}

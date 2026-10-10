@@ -131,7 +131,7 @@ begin
   CheckResolve('bg-[#ff8800]', 'background-color:#ff8800');
   CheckResolve('text-[13px]', 'font-size:13px');
   CheckResolve('text-[#123456]', 'color:#123456');
-  CheckUnknown('grid-cols-[1fr_2fr]');
+  CheckUnknown('columns-[200px]');
 end;
 
 procedure TTestTailwind.TestGradientsAndImages;

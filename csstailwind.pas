@@ -11,13 +11,16 @@
                 inset-*, top-*, right-*, bottom-*, left-*, float-*, overflow-*, box-border box-content
     flexbox:    flex-row(-reverse) flex-col(-reverse) flex-wrap(-reverse) flex-nowrap flex-1 flex-auto flex-initial
                 flex-none grow(-0) shrink(-0) basis-* order-* justify-* items-* self-* gap(-x,-y)-*
+    effects:    opacity-* transition(-all,-colors,-opacity,-transform,-none) duration-* delay-* ease-*
+                animate-spin animate-ping animate-pulse animate-bounce pointer-events-none
+    grid:       grid inline-grid grid-cols-* grid-rows-* (number, none, [arbitrary]) col-span-* row-span-* (-full)
     spacing:    p-* px-* py-* pt-* pr-* pb-* pl-* m-* mx-* my-* mt-* mr-* mb-* ml-* (negative values, auto)
     sizing:     w-* h-* size-* min-w-* min-h-* max-w-* max-h-* (spacing scale, fractions, full, screen, auto, px)
     typography: text-xs..text-9xl text-left/center/right/justify text-{color} font-thin..font-black
                 font-sans/serif/mono italic not-italic underline line-through no-underline
                 whitespace-nowrap whitespace-normal truncate
     background: bg-{color} (see gradients and images below)
-    borders:    border(-x,-y,-t,-r,-b,-l)(-0,-2,-4,-8) border-{color} border-solid/dashed/dotted/none
+    borders:    border(-x,-y,-t,-r,-b,-l)(-0,-2,-4,-8) border(-x,-y,-t,-r,-b,-l)-{color} border-solid/dashed/dotted/none
                 rounded(-t,-r,-b,-l,-tl,-tr,-br,-bl)(-none,-sm,-md,-lg,-xl,-2xl,-3xl,-full)
     shadows:    shadow-sm shadow shadow-md shadow-lg shadow-xl shadow-2xl shadow-none shadow-{color}
     rings:      ring ring-0 ring-1 ring-2 ring-4 ring-8 ring-{color} (box-shadow with spread, composed with shadow)
@@ -312,7 +315,9 @@ const
   O_BG_SIZE = 305; O_BG_POSITION = 306; O_BG_REPEAT = 307; O_BORDER_W = 310; O_BORDER_W_AXIS = 311; O_BORDER_W_SIDE = 312; O_BORDER_STYLE = 313;
   O_BORDER_COLOR = 314; O_ROUNDED = 320; O_ROUNDED_SIDE = 321; O_ROUNDED_CORNER = 322; O_SHADOW = 350;
   O_SHADOW_COLOR = 351; O_TRANSFORM = 360; O_ORIGIN = 361; O_CURSOR = 400;
-  O_OVERFLOW_AXIS = 46; O_ZINDEX = 25;
+  O_OVERFLOW_AXIS = 46; O_ZINDEX = 25; O_GRID = 67; O_GRID_SPAN = 68; O_BORDER_COLOR_SIDE = 315;
+  O_TRANSITION = 370; O_DURATION = 371; O_EASE = 372; O_ANIMATE = 373; O_OPACITY = 380; O_POINTER = 401;
+  TW_EASE = 'transition-timing-function:cubic-bezier(0.4, 0, 0.2, 1);';
 
   TW_DEFAULT_BORDER_COLOR = '#e5e7eb';  // gray-200
 
@@ -696,6 +701,54 @@ begin
     if HasPrefix(Name, V + '-', C) and Spacing(C, True, True, True, R) then
       Exit(Done(V + ':' + Negate(R), O_INSET_SIDE));
 
+  // transitions, animations, opacity
+  if Name = 'transition' then
+    Exit(Done('transition-property:color,background-color,border-color,opacity,box-shadow,transform;' + TW_EASE + 'transition-duration:150ms', O_TRANSITION));
+  if Name = 'transition-all' then Exit(Done('transition-property:all;' + TW_EASE + 'transition-duration:150ms', O_TRANSITION));
+  if Name = 'transition-colors' then Exit(Done('transition-property:color,background-color,border-color;' + TW_EASE + 'transition-duration:150ms', O_TRANSITION));
+  if Name = 'transition-opacity' then Exit(Done('transition-property:opacity;' + TW_EASE + 'transition-duration:150ms', O_TRANSITION));
+  if Name = 'transition-transform' then Exit(Done('transition-property:transform;' + TW_EASE + 'transition-duration:150ms', O_TRANSITION));
+  if Name = 'transition-none' then Exit(Done('transition-property:none', O_TRANSITION));
+  if HasPrefix(Name, 'duration-', V) then begin
+    if IsArbitrary(V, R) then Exit(Done('transition-duration:' + R, O_DURATION));
+    if TryStrToInt(V, I) then Exit(Done('transition-duration:' + V + 'ms', O_DURATION));
+  end;
+  if HasPrefix(Name, 'delay-', V) then begin
+    if IsArbitrary(V, R) then Exit(Done('transition-delay:' + R, O_DURATION));
+    if TryStrToInt(V, I) then Exit(Done('transition-delay:' + V + 'ms', O_DURATION));
+  end;
+  if Name = 'ease-linear' then Exit(Done('transition-timing-function:linear', O_EASE));
+  if Name = 'ease-in' then Exit(Done('transition-timing-function:cubic-bezier(0.4, 0, 1, 1)', O_EASE));
+  if Name = 'ease-out' then Exit(Done('transition-timing-function:cubic-bezier(0, 0, 0.2, 1)', O_EASE));
+  if Name = 'ease-in-out' then Exit(Done('transition-timing-function:cubic-bezier(0.4, 0, 0.2, 1)', O_EASE));
+  if Name = 'animate-none' then Exit(Done('animation:none', O_ANIMATE));
+  if Name = 'animate-spin' then Exit(Done('animation:spin 1s linear infinite', O_ANIMATE));
+  if Name = 'animate-ping' then Exit(Done('animation:ping 1s cubic-bezier(0, 0, 0.2, 1) infinite', O_ANIMATE));
+  if Name = 'animate-pulse' then Exit(Done('animation:pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite', O_ANIMATE));
+  if Name = 'animate-bounce' then Exit(Done('animation:bounce 1s infinite', O_ANIMATE));
+  if HasPrefix(Name, 'opacity-', V) then begin
+    if IsArbitrary(V, R) then Exit(Done('opacity:' + R, O_OPACITY));
+    if TryStrToInt(V, I) and (I >= 0) and (I <= 100) then Exit(Done('opacity:' + FloatToCSS(I / 100), O_OPACITY));
+  end;
+  if Name = 'pointer-events-none' then Exit(Done('pointer-events:none', O_POINTER));
+  if Name = 'pointer-events-auto' then Exit(Done('pointer-events:auto', O_POINTER));
+
+  // grid
+  if (Name = 'grid') or (Name = 'inline-grid') then Exit(Done('display:' + Name, O_DISPLAY));
+  if Name = 'grid-cols-none' then Exit(Done('grid-template-columns:none', O_GRID));
+  if HasPrefix(Name, 'grid-cols-', V) then begin
+    if IsArbitrary(V, R) then Exit(Done('grid-template-columns:' + R, O_GRID));
+    if TryStrToInt(V, I) and (I > 0) then Exit(Done('grid-template-columns:repeat(' + V + ', minmax(0, 1fr))', O_GRID));
+  end;
+  if HasPrefix(Name, 'grid-rows-', V) then begin
+    if IsArbitrary(V, R) then Exit(Done('grid-template-rows:' + R, O_GRID));
+    if TryStrToInt(V, I) and (I > 0) then Exit(Done('grid-template-rows:repeat(' + V + ', minmax(0, 1fr))', O_GRID));
+  end;
+  if Name = 'col-span-full' then Exit(Done('grid-column:1 / -1', O_GRID_SPAN));
+  if Name = 'row-span-full' then Exit(Done('grid-row:1 / -1', O_GRID_SPAN));
+  if HasPrefix(Name, 'col-span-', V) and TryStrToInt(V, I) then Exit(Done('grid-column:span ' + V + ' / span ' + V, O_GRID_SPAN));
+  if HasPrefix(Name, 'row-span-', V) and TryStrToInt(V, I) then Exit(Done('grid-row:span ' + V + ' / span ' + V, O_GRID_SPAN));
+
   // order, z-index
   if HasPrefix(Name, 'order-', V) and TryStrToInt(V, I) then
     Exit(Done('order:' + Negate(V), O_ORDER));
@@ -807,6 +860,16 @@ begin
         end;
       end;
     if TailwindColor(V, C) then Exit(Done('border-color:' + C, O_BORDER_COLOR));
+    // color of one side: border-t-indigo-600, border-x-transparent
+    if (Length(V) > 2) and (V[1] in ['x', 'y', 't', 'r', 'b', 'l']) and (V[2] = '-') and TailwindColor(Copy(V, 3, MaxInt), C) then
+      case V[1] of
+        'x': Exit(Done('border-left-color:' + C + ';border-right-color:' + C, O_BORDER_COLOR_SIDE));
+        'y': Exit(Done('border-top-color:' + C + ';border-bottom-color:' + C, O_BORDER_COLOR_SIDE));
+        't': Exit(Done('border-top-color:' + C, O_BORDER_COLOR_SIDE));
+        'r': Exit(Done('border-right-color:' + C, O_BORDER_COLOR_SIDE));
+        'b': Exit(Done('border-bottom-color:' + C, O_BORDER_COLOR_SIDE));
+        'l': Exit(Done('border-left-color:' + C, O_BORDER_COLOR_SIDE));
+      end;
   end;
 
   // border radius
