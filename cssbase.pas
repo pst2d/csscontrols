@@ -182,6 +182,17 @@ type
     RX, RY: array[0..3] of Single;      // corner radii: top-left, top-right, bottom-right, bottom-left
   end;
 
+  TCSSPixel = packed record     // 32 bit BGRA pixel (not premultiplied)
+    B, G, R, A: Byte;
+  end;
+  PCSSPixel = ^TCSSPixel;
+  { TCSSImageData - decoded image for background-image }
+  TCSSImageData = class
+    Width, Height: Integer;
+    Pixels: array of TCSSPixel;
+    Premultiplied: array of LongWord;   // A shl 24 or R shl 16 or G shl 8 or B, color multiplied by alpha
+  end;
+
   TCSSCombinator = (ccNone, ccDescendant, ccChild);
   { TCSSCompoundSelector - one part of selector eg. "div.button:hover" }
   TCSSCompoundSelector = record
@@ -391,7 +402,7 @@ type
     function MinContentWidth(AAutoMinimum: Boolean = False): Integer;
     procedure CalcRadius(AWidth, AHeight: Integer; out ATopLeft, ATopRight, ABottomRight, ABottomLeft: TPoint);
     procedure PaintBackgroundAndBorder(ACanvas: TCanvas);
-    procedure BackgroundImageRect(AImage: TLazIntfImage; AWidth, AHeight: Integer; out ARect: TRectF);
+    procedure BackgroundImageRect(AImage: TCSSImageData; AWidth, AHeight: Integer; out ARect: TRectF);
     function BackgroundLayer(const S: TCSSPaintShape; AWidth, AHeight: Integer; const AImage: String;
       const ACornerW, ACornerH: array of Integer; AScale: Single): TBitmap;
   public
@@ -2582,7 +2593,7 @@ type
 
 var
   CSSCornerCache: TStringList;          // key -> TBitmap
-  CSSImageCache: TStringList;           // url -> TLazIntfImage
+  CSSImageCache: TStringList;           // url -> TCSSImageData
 
 const
   CSS_CORNER_CACHE_LIMIT = 2000;
@@ -2661,10 +2672,66 @@ begin
   Result.LoadFromIntfImage(AImage);
 end;
 
+type
+  { TCSSPixelWriter - writes 32 bit pixels directly in native format of TLazIntfImage }
+  TCSSPixelWriter = record
+    Img: TLazIntfImage;
+    Fast: Boolean;
+    ShiftR, ShiftG, ShiftB, ShiftA: Byte;     // shifts of channels in LongWord
+    Line: PLongWord;
+    Y: Integer;
+  end;
+
 function NewAlphaImage(AWidth, AHeight: Integer): TLazIntfImage;
 begin
   Result := TLazIntfImage.Create(0, 0, [riqfRGB, riqfAlpha]);
   Result.SetSize(AWidth, AHeight);
+end;
+
+function PixelWriter(AImage: TLazIntfImage): TCSSPixelWriter;
+  function Shift(AShift: Byte): Byte;
+  begin
+    if AImage.DataDescription.ByteOrder = DefaultByteOrder then Result := AShift else Result := 24 - AShift;
+  end;
+begin
+  Result.Img := AImage;
+  with AImage.DataDescription do begin
+    Result.Fast := (Format = ricfRGBA) and (BitsPerPixel = 32) and (Depth = 32) and (RedPrec = 8) and (GreenPrec = 8) and
+      (BluePrec = 8) and (AlphaPrec = 8) and (RedShift mod 8 = 0) and (GreenShift mod 8 = 0) and (BlueShift mod 8 = 0) and
+      (AlphaShift mod 8 = 0) and (LineOrder = riloTopToBottom);
+    if Result.Fast then begin
+      Result.ShiftR := Shift(RedShift);
+      Result.ShiftG := Shift(GreenShift);
+      Result.ShiftB := Shift(BlueShift);
+      Result.ShiftA := Shift(AlphaShift);
+    end;
+  end;
+  Result.Line := nil;
+  Result.Y := -1;
+end;
+
+procedure WriterLine(var W: TCSSPixelWriter; Y: Integer); inline;
+begin
+  W.Y := Y;
+  if W.Fast then W.Line := PLongWord(W.Img.GetDataLineStart(Y));
+end;
+
+(*
+  Write pixel with not premultiplied color 0..255
+*)
+procedure WritePixel(var W: TCSSPixelWriter; X: Integer; R, G, B, A: Byte); inline;
+begin
+  if W.Fast then
+    W.Line[X] := (LongWord(R) shl W.ShiftR) or (LongWord(G) shl W.ShiftG) or (LongWord(B) shl W.ShiftB) or (LongWord(A) shl W.ShiftA)
+  else
+    W.Img.Colors[X, W.Y] := FPColor(R * 257, G * 257, B * 257, A * 257);
+end;
+
+function ToByte(AValue: Single): Byte; inline;
+begin
+  if AValue <= 0 then Result := 0
+  else if AValue >= 1 then Result := 255
+  else Result := Round(AValue * 255);
 end;
 
 function SamplesPerAxis: Integer; inline;
@@ -2684,12 +2751,15 @@ var
   SR, SG, SB, SA, Step: Single;
   Kind: TCSSSampleKind;
   C: TCSSRGBA;
+  Wr: TCSSPixelWriter;
 begin
   N := SamplesPerAxis;
   Step := 1 / N;
   Img := NewAlphaImage(AWidth, AHeight);
   try
-    for Y := 0 to AHeight - 1 do
+    Wr := PixelWriter(Img);
+    for Y := 0 to AHeight - 1 do begin
+      WriterLine(Wr, Y);
       for X := 0 to AWidth - 1 do begin
         SR := 0; SG := 0; SB := 0; SA := 0;
         for SY := 0 to N - 1 do
@@ -2709,10 +2779,11 @@ begin
             SA := SA + C.A;
           end;
         if SA > 0 then
-          Img.Colors[X, Y] := FPColor(Round(SR / SA * $FFFF), Round(SG / SA * $FFFF), Round(SB / SA * $FFFF), Round(SA / (N * N) * $FFFF))
+          WritePixel(Wr, X, ToByte(SR / SA), ToByte(SG / SA), ToByte(SB / SA), ToByte(SA / (N * N)))
         else
-          Img.Colors[X, Y] := colTransparent;
+          WritePixel(Wr, X, 0, 0, 0, 0);
       end;
+    end;
     Result := IntfImageToBitmap(Img);
   finally
     Img.Free;
@@ -2766,9 +2837,11 @@ end;
 *)
 procedure CSSRegisterImage(const AName: String; AGraphic: TGraphic);
 var
-  X: Integer;
+  X, Y: Integer;
   Bmp: TBitmap;
   Img: TLazIntfImage;
+  Data: TCSSImageData;
+  C: TFPColor;
 begin
   if CSSImageCache = nil then begin
     CSSImageCache := TStringList.Create;
@@ -2789,13 +2862,32 @@ begin
       Bmp.Free;
     end;
   end;
-  CSSImageCache.AddObject(AName, Img);
+  // decode to BGRA array once (fast access in BackgroundLayer)
+  Data := TCSSImageData.Create;
+  try
+    Data.Width := Img.Width;
+    Data.Height := Img.Height;
+    SetLength(Data.Pixels, Data.Width * Data.Height);
+    SetLength(Data.Premultiplied, Data.Width * Data.Height);
+    for Y := 0 to Data.Height - 1 do
+      for X := 0 to Data.Width - 1 do begin
+        C := Img.Colors[X, Y];
+        with Data.Pixels[Y * Data.Width + X] do begin
+          R := C.Red shr 8; G := C.Green shr 8; B := C.Blue shr 8; A := C.Alpha shr 8;
+          Data.Premultiplied[Y * Data.Width + X] := (LongWord(A) shl 24) or (LongWord(R * A div 255) shl 16) or
+            (LongWord(G * A div 255) shl 8) or LongWord(B * A div 255);
+        end;
+      end;
+  finally
+    Img.Free;
+  end;
+  CSSImageCache.AddObject(AName, Data);
 end;
 
 (*
   Load image for background-image: registered name, absolute path or path relative to application
 *)
-function CSSLoadImage(const AName: String): TLazIntfImage;
+function CSSLoadImage(const AName: String): TCSSImageData;
 var
   X: Integer;
   Pic: TPicture;
@@ -2803,7 +2895,7 @@ var
 begin
   Result := nil;
   if AName = '' then Exit;
-  if Assigned(CSSImageCache) and CSSImageCache.Find(AName, X) then Exit(TLazIntfImage(CSSImageCache.Objects[X]));
+  if Assigned(CSSImageCache) and CSSImageCache.Find(AName, X) then Exit(TCSSImageData(CSSImageCache.Objects[X]));
   FileName := AName;
   {$ifdef fpc}
   if not FileExists(FileName) then FileName := Application.Location + AName;
@@ -2820,7 +2912,7 @@ begin
   finally
     Pic.Free;
   end;
-  if CSSImageCache.Find(AName, X) then Result := TLazIntfImage(CSSImageCache.Objects[X]);
+  if CSSImageCache.Find(AName, X) then Result := TCSSImageData(CSSImageCache.Objects[X]);
 end;
 
 { gradients }
@@ -2982,32 +3074,6 @@ begin
   end;
 end;
 
-function ImageColorAt(AImage: TLazIntfImage; U, V: Single): TCSSRGBA;   // bilinear sampling, U, V in source pixels
-var
-  X0, Y0, X1, Y1: Integer;
-  FX, FY: Single;
-  function Px(X, Y: Integer): TCSSRGBA;
-  var
-    C: TFPColor;
-  begin
-    C := AImage.Colors[X, Y];
-    Result.R := C.Red / $FFFF; Result.G := C.Green / $FFFF; Result.B := C.Blue / $FFFF; Result.A := C.Alpha / $FFFF;
-  end;
-  function Mix(const A, B: TCSSRGBA; F: Single): TCSSRGBA;
-  begin
-    Result.R := A.R + (B.R - A.R) * F; Result.G := A.G + (B.G - A.G) * F;
-    Result.B := A.B + (B.B - A.B) * F; Result.A := A.A + (B.A - A.A) * F;
-  end;
-begin
-  U := U - 0.5; V := V - 0.5;
-  X0 := EnsureRange(Floor(U), 0, AImage.Width - 1);
-  Y0 := EnsureRange(Floor(V), 0, AImage.Height - 1);
-  X1 := Min(X0 + 1, AImage.Width - 1);
-  Y1 := Min(Y0 + 1, AImage.Height - 1);
-  FX := EnsureRange(U - X0, 0, 1);
-  FY := EnsureRange(V - Y0, 0, 1);
-  Result := Mix(Mix(Px(X0, Y0), Px(X1, Y0), FX), Mix(Px(X0, Y1), Px(X1, Y1), FX), FY);
-end;
 
 (*
   Replace var(--name, fallback) with custom property value of node or its parents
@@ -3090,7 +3156,7 @@ end;
 (*
   Destination rectangle of background image (background-size, background-position)
 *)
-procedure THtmlNode.BackgroundImageRect(AImage: TLazIntfImage; AWidth, AHeight: Integer; out ARect: TRectF);
+procedure THtmlNode.BackgroundImageRect(AImage: TCSSImageData; AWidth, AHeight: Integer; out ARect: TRectF);
 var
   Parts: TStringArray;
   IW, IH, W, H, Scale: Single;
@@ -3161,22 +3227,68 @@ end;
   Background with gradient, image or color with alpha is rendered to one bitmap (with rounded corners)
 *)
 (*
+  Background with gradient, image or color with alpha is rendered to one bitmap (with rounded corners)
   AWidth, AHeight, S, ACornerW, ACornerH are in device pixels (scaled by AScale)
+  Colors are computed as premultiplied integers 0..255
 *)
 function THtmlNode.BackgroundLayer(const S: TCSSPaintShape; AWidth, AHeight: Integer; const AImage: String;
   const ACornerW, ACornerH: array of Integer; AScale: Single): TBitmap;
+const
+  LUT_SIZE = 1024;
 var
   Key, Url: String;
   Img: TLazIntfImage;
-  Src: TLazIntfImage;
+  Src: TCSSImageData;
   Grad: TCSSGradient;
-  HasGrad, Repeating: Boolean;
-  Base, C: TCSSRGBA;
-  X, Y, SX, SY, N, I: Integer;
-  T, Cov, U, V, Step: Single;
+  HasGrad, Repeating, CornerRow: Boolean;
+  X, Y, SX, SY, N, I, Idx, Cov: Integer;
+  T, TStep, GradLen, Step: Single;
   Dst: TRectF;
   Local: TCSSPaintShape;
-  InCorner: Boolean;
+  Wr: TCSSPixelWriter;
+  Lut: array of LongWord;               // premultiplied ARGB
+  BaseC: TCSSRGBA;
+  BA, BR, BG, BB: Integer;              // premultiplied base color
+  PA, PR, PG, PB: Integer;              // premultiplied pixel
+  // image mapping is separable: source column depends only on X, row only on Y
+  ColX0, ColX1, RowY0, RowY1, ColF, RowF: array of Integer;   // fractions 0..256
+  ColIn, RowIn: array of Boolean;
+  Row0, Row1: PLongWord;
+  P00, P10, P01, P11: LongWord;
+  FX, FY, W00, W10, W01, W11: Integer;
+  procedure MapAxis(ACount: Integer; AStart, ASize: Single; ASrcSize: Integer; var I0, I1, Frac: array of Integer;
+    var Inside: array of Boolean);
+  var
+    K: Integer;
+    U: Single;
+  begin
+    for K := 0 to ACount - 1 do begin
+      U := (K + 0.5 - AStart) / ASize;
+      if Repeating then U := U - Floor(U);
+      Inside[K] := (U >= 0) and (U < 1);
+      U := U * ASrcSize - 0.5;
+      if U < 0 then U := 0;
+      I0[K] := Min(Floor(U), ASrcSize - 1);
+      I1[K] := Min(I0[K] + 1, ASrcSize - 1);
+      Frac[K] := Round((U - Floor(U)) * 256);
+    end;
+  end;
+  function InCorner(X, Y: Integer): Boolean; inline;
+  begin
+    Result := ((X < ACornerW[0]) and (Y < ACornerH[0])) or ((X >= AWidth - ACornerW[1]) and (Y < ACornerH[1])) or
+      ((X >= AWidth - ACornerW[2]) and (Y >= AHeight - ACornerH[2])) or ((X < ACornerW[3]) and (Y >= AHeight - ACornerH[3]));
+  end;
+  function PremultipliedOf(const C: TCSSRGBA): LongWord;
+  var
+    A: Integer;
+  begin
+    A := ToByte(C.A);
+    Result := (LongWord(A) shl 24) or (LongWord(Round(C.R * A)) shl 16) or (LongWord(Round(C.G * A)) shl 8) or LongWord(Round(C.B * A));
+  end;
+  function Channel(P: LongWord; AShift: Byte): Integer; inline;
+  begin
+    Result := (P shr AShift) and $FF;
+  end;
 begin
   Key := Format('%d,%d,%s,%s,%s,%s,%s,%d,%d,%f', [AWidth, AHeight, AImage, RGBAKey(CSSColorToRGBA(FCompStyle.Background.Color)),
     FCompStyle.Background.Size, FCompStyle.Background.Position, FCompStyle.Background.RepeatMode, Ord(CSSAntialiasing),
@@ -3188,57 +3300,95 @@ begin
 
   Local := S;   // shape relative to layer
   Local.L := 0; Local.T := 0; Local.R := AWidth; Local.B := AHeight;
-  Base := CSSColorToRGBA(FCompStyle.Background.Color);
+  BaseC := CSSColorToRGBA(FCompStyle.Background.Color);
+  I := PremultipliedOf(BaseC);
+  BA := Channel(I, 24); BR := Channel(I, 16); BG := Channel(I, 8); BB := Channel(I, 0);
   HasGrad := ParseLinearGradient(AImage, Round(AWidth / AScale), Round(AHeight / AScale), Grad);
   Src := nil;
   if not HasGrad and SameText(Copy(Trim(AImage), 1, 4), 'url(') then begin
     Url := Trim(StrBetween(Trim(AImage), '(', ')'));
     Url := StringReplace(StringReplace(Url, '"', '', [rfReplaceAll]), '''', '', [rfReplaceAll]);
     Src := CSSLoadImage(Url);
+    if Assigned(Src) and ((Src.Width = 0) or (Src.Height = 0)) then Src := nil;
+  end;
+  Repeating := not SameText(Trim(FCompStyle.Background.RepeatMode), 'no-repeat');
+  GradLen := 1;
+  TStep := 0;
+  if HasGrad then begin
+    // gradient colors table, gradient line parameter T is linear in X
+    SetLength(Lut, LUT_SIZE + 1);
+    for I := 0 to LUT_SIZE do Lut[I] := PremultipliedOf(BlendOver(BaseC, GradientColorAt(Grad, I / LUT_SIZE)));
+    GradLen := Abs(AWidth * Grad.DirX) + Abs(AHeight * Grad.DirY);
+    TStep := Grad.DirX / GradLen;
   end;
   if Assigned(Src) then begin
     BackgroundImageRect(Src, Round(AWidth / AScale), Round(AHeight / AScale), Dst);
     Dst := RectF(Dst.Left * AScale, Dst.Top * AScale, Dst.Right * AScale, Dst.Bottom * AScale);
+    SetLength(ColX0, AWidth); SetLength(ColX1, AWidth); SetLength(ColF, AWidth); SetLength(ColIn, AWidth);
+    SetLength(RowY0, AHeight); SetLength(RowY1, AHeight); SetLength(RowF, AHeight); SetLength(RowIn, AHeight);
+    MapAxis(AWidth, Dst.Left, Dst.Width, Src.Width, ColX0, ColX1, ColF, ColIn);
+    MapAxis(AHeight, Dst.Top, Dst.Height, Src.Height, RowY0, RowY1, RowF, RowIn);
   end;
-  Repeating := not SameText(Trim(FCompStyle.Background.RepeatMode), 'no-repeat');
   N := SamplesPerAxis;
   Step := 1 / N;
 
   Img := NewAlphaImage(AWidth, AHeight);
   try
-    for Y := 0 to AHeight - 1 do
+    Wr := PixelWriter(Img);
+    for Y := 0 to AHeight - 1 do begin
+      WriterLine(Wr, Y);
+      CornerRow := (Y < ACornerH[0]) or (Y < ACornerH[1]) or (Y >= AHeight - ACornerH[2]) or (Y >= AHeight - ACornerH[3]);
+      T := ((0.5 - AWidth / 2) * Grad.DirX + (Y + 0.5 - AHeight / 2) * Grad.DirY) / GradLen + 0.5;
+      if Assigned(Src) then begin
+        Row0 := @Src.Premultiplied[RowY0[Y] * Src.Width];
+        Row1 := @Src.Premultiplied[RowY1[Y] * Src.Width];
+        FY := RowF[Y];
+      end;
       for X := 0 to AWidth - 1 do begin
-        C := Base;
+        PA := BA; PR := BR; PG := BG; PB := BB;
         if HasGrad then begin
-          T := ((X + 0.5 - AWidth / 2) * Grad.DirX + (Y + 0.5 - AHeight / 2) * Grad.DirY) /
-            (Abs(AWidth * Grad.DirX) + Abs(AHeight * Grad.DirY)) + 0.5;
-          C := BlendOver(C, GradientColorAt(Grad, T));
+          Idx := Round(T * LUT_SIZE);
+          if Idx < 0 then Idx := 0 else if Idx > LUT_SIZE then Idx := LUT_SIZE;
+          I := Lut[Idx];
+          PA := Channel(I, 24); PR := Channel(I, 16); PG := Channel(I, 8); PB := Channel(I, 0);
+          T := T + TStep;
         end else
-        if Assigned(Src) then begin
-          U := (X + 0.5 - Dst.Left) / Dst.Width;
-          V := (Y + 0.5 - Dst.Top) / Dst.Height;
-          if Repeating then begin
-            U := U - Floor(U);
-            V := V - Floor(V);
+        if Assigned(Src) and ColIn[X] and RowIn[Y] then begin
+          // bilinear sampling (fixed point, premultiplied)
+          FX := ColF[X];
+          P00 := Row0[ColX0[X]]; P10 := Row0[ColX1[X]];
+          P01 := Row1[ColX0[X]]; P11 := Row1[ColX1[X]];
+          W00 := (256 - FX) * (256 - FY); W10 := FX * (256 - FY); W01 := (256 - FX) * FY; W11 := FX * FY;
+          PA := (Channel(P00, 24) * W00 + Channel(P10, 24) * W10 + Channel(P01, 24) * W01 + Channel(P11, 24) * W11) shr 16;
+          PR := (Channel(P00, 16) * W00 + Channel(P10, 16) * W10 + Channel(P01, 16) * W01 + Channel(P11, 16) * W11) shr 16;
+          PG := (Channel(P00, 8) * W00 + Channel(P10, 8) * W10 + Channel(P01, 8) * W01 + Channel(P11, 8) * W11) shr 16;
+          PB := (Channel(P00, 0) * W00 + Channel(P10, 0) * W10 + Channel(P01, 0) * W01 + Channel(P11, 0) * W11) shr 16;
+          if BA > 0 then begin      // image over background color
+            PR := PR + BR * (255 - PA) div 255;
+            PG := PG + BG * (255 - PA) div 255;
+            PB := PB + BB * (255 - PA) div 255;
+            PA := PA + BA * (255 - PA) div 255;
           end;
-          if (U >= 0) and (U < 1) and (V >= 0) and (V < 1) then
-            C := BlendOver(C, ImageColorAt(Src, U * Src.Width, V * Src.Height));
         end;
         // rounded corners
-        InCorner := ((X < ACornerW[0]) and (Y < ACornerH[0])) or ((X >= AWidth - ACornerW[1]) and (Y < ACornerH[1])) or
-          ((X >= AWidth - ACornerW[2]) and (Y >= AHeight - ACornerH[2])) or ((X < ACornerW[3]) and (Y >= AHeight - ACornerH[3]));
-        if InCorner then begin
+        if CornerRow and (PA > 0) and InCorner(X, Y) then begin
           Cov := 0;
           for SY := 0 to N - 1 do
             for SX := 0 to N - 1 do
-              if InOuterShape(Local, X + (SX + 0.5) * Step, Y + (SY + 0.5) * Step) then Cov := Cov + 1;
-          C.A := C.A * Cov / (N * N);
+              if InOuterShape(Local, X + (SX + 0.5) * Step, Y + (SY + 0.5) * Step) then Inc(Cov);
+          PA := PA * Cov div (N * N);
+          PR := PR * Cov div (N * N);
+          PG := PG * Cov div (N * N);
+          PB := PB * Cov div (N * N);
         end;
-        if C.A > 0 then
-          Img.Colors[X, Y] := FPColor(Round(C.R * $FFFF), Round(C.G * $FFFF), Round(C.B * $FFFF), Round(C.A * $FFFF))
+        if PA <= 0 then
+          WritePixel(Wr, X, 0, 0, 0, 0)
+        else if PA >= 255 then
+          WritePixel(Wr, X, Min(PR, 255), Min(PG, 255), Min(PB, 255), 255)
         else
-          Img.Colors[X, Y] := colTransparent;
+          WritePixel(Wr, X, Min(PR * 255 div PA, 255), Min(PG * 255 div PA, 255), Min(PB * 255 div PA, 255), PA);
       end;
+    end;
     FBgLayer := IntfImageToBitmap(Img);
   finally
     Img.Free;

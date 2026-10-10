@@ -2,6 +2,7 @@
   Render demo scenes to PNG files (visual check without GUI)
   Usage: renderdemo [output directory] [width] [scene name] [zoom]
          renderdemo bench [width]
+         renderdemo resize [width]
 *)
 program renderdemo;
 
@@ -77,6 +78,47 @@ begin
   end;
 end;
 
+(*
+  Simulate window resize: every frame has different width, so cached bitmaps of resized nodes are rebuilt
+*)
+procedure BenchResize(const AScene: TDemoScene; AWidth: Integer; AScale: Single);
+const
+  FRAMES = 30;
+var
+  Body: THtmlNode;
+  Sheet: TCSSStyleSheet;
+  Bmp: TBitmap;
+  I: Integer;
+  T0, TLayout, TPaint, T1: QWord;
+begin
+  Sheet := TCSSStyleSheet.Create(nil);
+  Body := THtmlNode.Create;
+  Bmp := TBitmap.Create;
+  try
+    Body.StyleSheet := Sheet;
+    Body.ViewportWidth := AWidth;
+    Body.PaintScale := AScale;
+    AScene.Build(Body, Sheet);
+    Body.ApplyStyles;
+    Bmp.SetSize(AWidth + FRAMES * 3, 1000);
+    TLayout := 0;
+    TPaint := 0;
+    for I := 1 to FRAMES do begin
+      T0 := GetTickCount64;
+      Body.LayoutTo(0, 0, AWidth + I * 3, -1);
+      T1 := GetTickCount64;
+      Inc(TLayout, T1 - T0);
+      Body.PaintTo(Bmp.Canvas);
+      Inc(TPaint, GetTickCount64 - T1);
+    end;
+    WriteLn(Format('%-12s scale %.0f: layout %6.2f ms, paint %7.2f ms per frame', [AScene.Name, AScale, TLayout / FRAMES, TPaint / FRAMES]));
+  finally
+    Bmp.Free;
+    Body.Free;
+    Sheet.Free;
+  end;
+end;
+
 procedure RenderScene(const AScene: TDemoScene; const ADir: String; AWidth: Integer; AZoom: Integer);
 var
   Body: THtmlNode;
@@ -130,6 +172,13 @@ begin
   if ParamCount >= 3 then Scene := ParamStr(3);
   Zoom := 1;
   if ParamCount >= 4 then Zoom := StrToIntDef(ParamStr(4), 1);
+  if Dir = 'resize' then begin
+    for I := 0 to High(DEMO_SCENES) do begin
+      BenchResize(DEMO_SCENES[I], W, 1);
+      BenchResize(DEMO_SCENES[I], W, 2);
+    end;
+    Exit;
+  end;
   if Dir = 'bench' then begin
     for I := 0 to High(DEMO_SCENES) do BenchScene(DEMO_SCENES[I], W);
     Exit;
