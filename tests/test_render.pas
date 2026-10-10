@@ -49,6 +49,15 @@ type
     procedure TestCustomPropertyInGradient;
     procedure TestAlphaBorderAndText;
     procedure TestTailwindGradient;
+    procedure TestImageWithRadius;
+    procedure TestDiagonalGradient;
+    procedure TestAlphaColorSlabs;
+    procedure TestShadowSpread;
+    procedure TestShadowOffset;
+    procedure TestShadowBlur;
+    procedure TestShadowRadius;
+    procedure TestShadowLargeBox;
+    procedure TestTailwindShadow;
   end;
 
   { TTestRenderRetina - same tests with bitmaps rendered in 2x resolution }
@@ -369,6 +378,135 @@ begin
     Render('', 20, 20);
     CheckPixel('bg-black/50', 10, 10, RGBToColor(128, 128, 128));
     FRoot.SetClass('');
+  finally
+    CSSTailwindDisable;
+  end;
+end;
+
+procedure TTestRender.TestImageWithRadius;
+var
+  Bmp: TBitmap;
+begin
+  Bmp := TestImage;
+  try
+    CSSRegisterImage('test.png', Bmp);
+  finally
+    Bmp.Free;
+  end;
+  Render('background-image: url(test.png); background-size: cover; border-radius: 20px', 80, 80);
+  CheckPixel('outside corner', 2, 2, OUTSIDE);
+  CheckPixel('image inside corner', 10, 10, clRed);
+  CheckPixel('image middle top', 20, 3, clRed);
+  CheckPixel('image bottom right corner', 70, 70, clBlack);
+  CheckPixel('outside bottom right', 78, 78, OUTSIDE);
+end;
+
+procedure TTestRender.TestDiagonalGradient;
+begin
+  Render('background-image: linear-gradient(to bottom right, red, blue); border-radius: 10px', 100, 60);
+  CheckPixel('outside', 1, 1, OUTSIDE);
+  CheckPixel('start corner', 6, 6, clRed);
+  CheckPixel('end corner', 93, 53, clBlue);
+  CheckPixel('middle', 50, 30, RGBToColor(127, 0, 128));
+end;
+
+procedure TTestRender.TestAlphaColorSlabs;
+begin
+  Render('background-color: rgba(255, 0, 0, 0.5); border-radius: 15px; border: 2px solid black', 100, 60);
+  CheckPixel('middle', 50, 30, RGBToColor(255, 128, 128));
+  CheckPixel('near corner', 8, 30, RGBToColor(255, 128, 128));
+  CheckPixel('outside', 1, 1, OUTSIDE);
+  CheckPixel('border', 50, 1, clBlack);
+end;
+
+(*
+  Shadow tests: node with shadow inside padded root
+*)
+procedure TTestRender.TestShadowSpread;
+var
+  Box: THtmlNode;
+begin
+  Box := HTMLDiv('width: 40px; height: 40px; background-color: blue; box-shadow: 0 0 0 5px red').AppendTo(FRoot);
+  Render('padding: 20px', 80, 80);
+  CheckPixel('spread left', 17, 40, clRed);
+  CheckPixel('spread top', 40, 17, clRed);
+  CheckPixel('box', 40, 40, BG);
+  CheckPixel('outside', 10, 40, OUTSIDE);
+  Box.Free;
+end;
+
+procedure TTestRender.TestShadowOffset;
+var
+  Box: THtmlNode;
+begin
+  Box := HTMLDiv('width: 40px; height: 40px; background-color: blue; box-shadow: 10px 10px 0 black').AppendTo(FRoot);
+  Render('padding: 20px', 80, 80);
+  CheckPixel('shadow right', 65, 50, clBlack);
+  CheckPixel('shadow bottom', 50, 65, clBlack);
+  CheckPixel('no shadow top left', 15, 15, OUTSIDE);
+  CheckPixel('no shadow top right', 65, 25, OUTSIDE);
+  CheckPixel('box', 30, 30, BG);
+  Box.Free;
+end;
+
+procedure TTestRender.TestShadowBlur;
+var
+  Box: THtmlNode;
+  C: TFPColor;
+begin
+  Box := HTMLDiv('width: 40px; height: 40px; background-color: blue; box-shadow: 0 0 10px black').AppendTo(FRoot);
+  Render('padding: 20px', 80, 80);
+  C := FImage.Colors[19, 40];      // 1px outside of box edge: about half dark
+  AssertTrue('blur near edge', (C.Red shr 8 > 60) and (C.Red shr 8 < 200));
+  CheckPixel('blur far away', 5, 40, OUTSIDE);
+  C := FImage.Colors[14, 40];      // 6px outside: lighter
+  AssertTrue('blur fades out', C.Red shr 8 > FImage.Colors[19, 40].Red shr 8);
+  Box.Free;
+end;
+
+procedure TTestRender.TestShadowRadius;
+var
+  Box: THtmlNode;
+begin
+  Box := HTMLDiv('width: 40px; height: 40px; border-radius: 20px; background-color: blue; box-shadow: 0 0 0 6px red').AppendTo(FRoot);
+  Render('padding: 20px', 80, 80);
+  CheckPixel('spread on circle', 40, 16, clRed);
+  CheckPixel('outside of rounded shadow', 17, 17, OUTSIDE);
+  Box.Free;
+end;
+
+procedure TTestRender.TestShadowLargeBox;
+var
+  Box: THtmlNode;
+begin
+  // big box uses 9-slice template (edges are stretched)
+  Box := HTMLDiv('width: 200px; height: 120px; border-radius: 8px; background-color: blue; box-shadow: 0 4px 0 2px black').AppendTo(FRoot);
+  Render('padding: 20px', 240, 170);
+  CheckPixel('bottom shadow middle', 120, 144, clBlack);
+  CheckPixel('left shadow middle', 18, 80, clBlack);
+  CheckPixel('right shadow middle', 221, 80, clBlack);
+  CheckPixel('top shadow is hidden by offset', 120, 19, OUTSIDE);
+  CheckPixel('box', 120, 80, BG);
+  Box.Free;
+end;
+
+procedure TTestRender.TestTailwindShadow;
+var
+  Box: THtmlNode;
+  C: TFPColor;
+begin
+  CSSTailwindEnable;
+  try
+    Box := HTMLNode('w-20 h-10 bg-white rounded-lg shadow-lg').AppendTo(FRoot);
+    Render('padding: 30px', 140, 110);
+    C := FImage.Colors[70, 72];     // below box: shadow
+    AssertTrue('shadow below box', C.Red shr 8 < 250);
+    CheckPixel('box is white', 70, 50, clWhite);
+    Box.SetClass('w-20 h-10 bg-white shadow-lg shadow-red-500');
+    Render('padding: 30px', 140, 110);
+    C := FImage.Colors[70, 72];
+    AssertTrue('colored shadow is red', (C.Red shr 8 > C.Green shr 8 + 20));
+    Box.Free;
   finally
     CSSTailwindDisable;
   end;

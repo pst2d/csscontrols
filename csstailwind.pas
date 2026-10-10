@@ -19,6 +19,7 @@
     background: bg-{color} (see gradients and images below)
     borders:    border(-x,-y,-t,-r,-b,-l)(-0,-2,-4,-8) border-{color} border-solid/dashed/dotted/none
                 rounded(-t,-r,-b,-l,-tl,-tr,-br,-bl)(-none,-sm,-md,-lg,-xl,-2xl,-3xl,-full)
+    shadows:    shadow-sm shadow shadow-md shadow-lg shadow-xl shadow-2xl shadow-none shadow-{color}
     other:      cursor-*
     values:     arbitrary values eg. w-[200px] bg-[#ff8800] p-[3px] text-[13px]
     variants:   hover: active: first: last: odd: even: group-hover: sm: md: lg: xl: 2xl: (see cssbase.pas)
@@ -27,7 +28,7 @@
     images:     bg-[url(file.png)] bg-none bg-cover bg-contain bg-auto bg-center bg-top ... bg-no-repeat bg-repeat
     opacity:    color modifiers eg. bg-black/50 text-white/70 border-slate-900/10
 
-  Not supported: shadows, transitions, transforms, grid, space-x/y, dark mode.
+  Not supported: inset shadows (shadow-inner), transitions, transforms, grid, space-x/y, dark mode.
 *)
 unit csstailwind;
 
@@ -305,11 +306,22 @@ const
   O_FONT_STYLE = 203; O_TEXT_ALIGN = 204; O_TEXT_COLOR = 205; O_DECORATION = 206; O_WHITESPACE = 207;
   O_BG = 300; O_GRADIENT_FROM = 301; O_GRADIENT_VIA = 302; O_GRADIENT_TO = 303; O_BG_IMAGE = 304;
   O_BG_SIZE = 305; O_BG_POSITION = 306; O_BG_REPEAT = 307; O_BORDER_W = 310; O_BORDER_W_AXIS = 311; O_BORDER_W_SIDE = 312; O_BORDER_STYLE = 313;
-  O_BORDER_COLOR = 314; O_ROUNDED = 320; O_ROUNDED_SIDE = 321; O_ROUNDED_CORNER = 322; O_CURSOR = 400;
+  O_BORDER_COLOR = 314; O_ROUNDED = 320; O_ROUNDED_SIDE = 321; O_ROUNDED_CORNER = 322; O_SHADOW = 350;
+  O_SHADOW_COLOR = 351; O_CURSOR = 400;
 
   TW_DEFAULT_BORDER_COLOR = '#e5e7eb';  // gray-200
 
-  TW_STATIC: array[0..103] of record N, D: String; O: Integer; end = (
+  TW_SHADOW = 'var(--tw-shadow-color, rgb(0 0 0 / 0.1))';
+
+  TW_STATIC: array[0..111] of record N, D: String; O: Integer; end = (
+    (N: 'shadow-sm'; D: 'box-shadow:0 1px 2px 0 var(--tw-shadow-color, rgb(0 0 0 / 0.05))'; O: O_SHADOW),
+    (N: 'shadow'; D: 'box-shadow:0 1px 3px 0 ' + TW_SHADOW + ', 0 1px 2px -1px ' + TW_SHADOW; O: O_SHADOW),
+    (N: 'shadow-md'; D: 'box-shadow:0 4px 6px -1px ' + TW_SHADOW + ', 0 2px 4px -2px ' + TW_SHADOW; O: O_SHADOW),
+    (N: 'shadow-lg'; D: 'box-shadow:0 10px 15px -3px ' + TW_SHADOW + ', 0 4px 6px -4px ' + TW_SHADOW; O: O_SHADOW),
+    (N: 'shadow-xl'; D: 'box-shadow:0 20px 25px -5px ' + TW_SHADOW + ', 0 8px 10px -6px ' + TW_SHADOW; O: O_SHADOW),
+    (N: 'shadow-2xl'; D: 'box-shadow:0 25px 50px -12px var(--tw-shadow-color, rgb(0 0 0 / 0.25))'; O: O_SHADOW),
+    (N: 'shadow-inner'; D: 'box-shadow:inset 0 2px 4px 0 var(--tw-shadow-color, rgb(0 0 0 / 0.05))'; O: O_SHADOW),
+    (N: 'shadow-none'; D: 'box-shadow:none'; O: O_SHADOW),
     (N: 'bg-none'; D: 'background-image:none'; O: O_BG_IMAGE),
     (N: 'bg-gradient-to-t'; D: 'background-image:linear-gradient(to top, var(--tw-gradient-stops))'; O: O_BG_IMAGE),
     (N: 'bg-gradient-to-tr'; D: 'background-image:linear-gradient(to top right, var(--tw-gradient-stops))'; O: O_BG_IMAGE),
@@ -757,6 +769,8 @@ begin
       end;
   end;
 
+  // colored shadow
+  if HasPrefix(Name, 'shadow-', V) and TailwindColor(V, C) then Exit(Done('--tw-shadow-color:' + C, O_SHADOW_COLOR));
   // cursor
   if HasPrefix(Name, 'cursor-', V) and FindIn(V, TW_CURSORS) then Exit(Done('cursor:' + V, O_CURSOR));
 end;

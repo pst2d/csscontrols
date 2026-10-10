@@ -348,7 +348,7 @@ begin
   Modified := False;
   Node := FBodyNode;
   while Assigned(Node) do begin
-    NewActive := AActive and Node.Visible and PtInRect(Node.CompSize.ContentRect, Point(X, Y));
+    NewActive := AActive and Node.Visible and Node.HitTest(Point(X, Y));
     if Node.Active <> NewActive then begin
       Node.Active := NewActive;
       Modified := True;
@@ -397,7 +397,7 @@ begin
   Modified := False;
   NewCursor :=  crNone;
   while Assigned(Node) do begin
-    if Node.Visible and PtInRect(Node.CompSize.ContentRect, Point(X,Y)) then begin
+    if Node.Visible and Node.HitTest(Point(X, Y)) then begin
       if Node.CompStyle.Cursor <> crDefault then NewCursor := Node.CompStyle.Cursor;
       if not Node.Hovered then begin
         Node.Hovered := True;

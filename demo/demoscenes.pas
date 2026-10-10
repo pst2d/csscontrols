@@ -26,9 +26,10 @@ procedure BuildDashboard(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
 procedure BuildStyleSheet(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
 procedure BuildBorders(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
 procedure BuildBackgrounds(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
+procedure BuildShadows(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
 
 const
-  DEMO_SCENES: array[0..8] of TDemoScene = (
+  DEMO_SCENES: array[0..9] of TDemoScene = (
     (Name: 'Card'; Build: @BuildCard),
     (Name: 'Buttons'; Build: @BuildButtons),
     (Name: 'Flexbox'; Build: @BuildFlex),
@@ -37,7 +38,8 @@ const
     (Name: 'Dashboard'; Build: @BuildDashboard),
     (Name: 'Stylesheet'; Build: @BuildStyleSheet),
     (Name: 'Borders'; Build: @BuildBorders),
-    (Name: 'Backgrounds'; Build: @BuildBackgrounds)
+    (Name: 'Backgrounds'; Build: @BuildBackgrounds),
+    (Name: 'Shadows'; Build: @BuildShadows)
   );
 
 implementation
@@ -52,13 +54,13 @@ var
   Card, Info: THtmlNode;
 begin
   ABody.SetClass('p-8 bg-slate-100');
-  Card := N(ABody, 'max-w-sm mx-auto flex items-center gap-4 p-6 bg-white rounded-xl border border-slate-200');
+  Card := N(ABody, 'max-w-sm mx-auto flex items-center gap-4 p-6 bg-white rounded-xl shadow-lg');
   N(Card, 'size-12 shrink-0 rounded-full bg-sky-500');
   Info := N(Card, 'flex flex-col gap-1');
   N(Info, 'text-xl font-medium text-black', 'ChitChat');
   N(Info, 'text-slate-500', 'You have a new message!');
 
-  Card := N(ABody, 'max-w-sm mx-auto mt-6 p-6 bg-white rounded-2xl border border-slate-200 flex flex-col gap-4');
+  Card := N(ABody, 'max-w-sm mx-auto mt-6 p-6 bg-white rounded-2xl shadow-md flex flex-col gap-4');
   Info := N(Card, 'flex items-center gap-3');
   N(Info, 'size-10 shrink-0 rounded-full bg-violet-500');
   N(Info, 'grow font-semibold text-slate-900', 'Erin Lindford');
@@ -66,7 +68,7 @@ begin
   N(Card, 'text-slate-600', 'Product engineer. Building user interfaces with utility classes in Lazarus.');
   Info := N(Card, 'flex gap-2 justify-end');
   N(Info, 'px-4 py-2 rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-100 cursor-pointer', 'Message');
-  N(Info, 'px-4 py-2 rounded-lg bg-violet-600 hover:bg-violet-700 active:bg-violet-800 text-white font-semibold cursor-pointer', 'Follow');
+  N(Info, 'px-4 py-2 rounded-lg bg-violet-600 hover:bg-violet-700 active:bg-violet-800 text-white font-semibold cursor-pointer shadow-md shadow-violet-500/40', 'Follow');
 end;
 
 procedure BuildButtons(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
@@ -173,7 +175,7 @@ begin
   N(Head, 'px-3 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium cursor-pointer', 'New order');
   Stats := N(Main, 'flex flex-wrap gap-4');
   for I := 0 to High(STAT_DATA) do begin
-    Card := N(Stats, 'grow basis-40 p-4 bg-white rounded-xl border border-slate-200 flex flex-col gap-1');
+    Card := N(Stats, 'grow basis-40 p-4 bg-white rounded-xl shadow-sm flex flex-col gap-1');
     N(Card, 'text-sm text-slate-500', STAT_DATA[I, 0]);
     N(Card, 'text-2xl font-bold ' + STAT_DATA[I, 2], STAT_DATA[I, 1]);
   end;
@@ -301,6 +303,25 @@ begin
   N(Card, 'text-xs text-white p-1 font-bold', 'repeat 60x40');
   Card := N(Row, 'w-48 h-32 rounded-lg bg-slate-900 flex items-center justify-center');
   N(Card, 'px-3 py-1 rounded-full bg-white/10 text-white/80 border border-white/20 text-sm', 'bg-white/10');
+end;
+
+procedure BuildShadows(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
+const
+  SHADOWS: array[0..5] of String = ('shadow-sm', 'shadow', 'shadow-md', 'shadow-lg', 'shadow-xl', 'shadow-2xl');
+var
+  I: Integer;
+  Row: THtmlNode;
+begin
+  ABody.SetClass('p-8 bg-slate-100 flex flex-col gap-10');
+  Row := N(ABody, 'flex flex-wrap gap-8');
+  for I := 0 to High(SHADOWS) do
+    N(Row, 'w-32 h-24 bg-white rounded-xl flex items-center justify-center text-sm font-mono text-slate-600 ' + SHADOWS[I], SHADOWS[I]);
+  Row := N(ABody, 'flex flex-wrap gap-8 items-center');
+  N(Row, 'px-5 py-3 rounded-lg bg-cyan-500 text-white font-semibold shadow-lg shadow-cyan-500/50', 'shadow-cyan-500/50');
+  N(Row, 'px-5 py-3 rounded-lg bg-pink-500 text-white font-semibold shadow-xl shadow-pink-500/40', 'shadow-pink-500/40');
+  N(Row, 'size-16 rounded-full bg-amber-400 shadow-lg shadow-amber-500/60');
+  HTMLDiv('width: 120px; height: 60px; background-color: white; border-radius: 12px; box-shadow: 8px 8px 0 #0f172a').AppendTo(Row);
+  HTMLDiv('width: 120px; height: 60px; background-color: white; border-radius: 12px; box-shadow: 0 0 0 4px #6366f1, 0 0 20px 6px rgba(99,102,241,0.5)').AppendTo(Row);
 end;
 
 end.

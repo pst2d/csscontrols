@@ -35,7 +35,8 @@ CSSShape1.Changed;
   platform, corners are cached, so repainting is fast)
 - Backgrounds: colors with alpha, `linear-gradient(...)`, images (`url(...)`, `background-size`,
   `background-position`, `background-repeat`)
-- Custom properties (`--name: value`) and `var()` in background images
+- Shadows: `box-shadow` with offset, blur, spread, color, more shadows (inset shadows are not supported yet)
+- Custom properties (`--name: value`) and `var()` in background images and shadows
 - Stylesheets with selectors: element, `*`, `.class`, `#id`, `:hover`, `:active`, `:first-child`,
   `:last-child`, descendant and child (`>`) combinators, cascade by specificity and order
 - Utility classes (`csstailwind.pas`), see below
@@ -56,6 +57,7 @@ don't need a generated stylesheet. It covers a subset of Tailwind CSS v3:
 | Typography | `text-xs` ... `text-9xl`, `text-center`, `text-{color}`, `font-bold` ..., `font-mono`, `italic`, `underline`, `line-through`, `truncate` |
 | Backgrounds | `bg-{color}` `bg-gradient-to-r` `from-*` `via-*` `to-*` `bg-[url(file.png)]` `bg-cover` `bg-contain` `bg-center` `bg-no-repeat` ... |
 | Borders | `border` `border-2` `border-t` ... `border-{color}` `border-dashed` `rounded` `rounded-lg` `rounded-full` `rounded-t-xl` ... |
+| Shadows | `shadow-sm` `shadow` `shadow-md` `shadow-lg` `shadow-xl` `shadow-2xl` `shadow-none` `shadow-{color}` |
 | Other | `cursor-*` |
 
 - Full Tailwind color palette (`slate` ... `rose`, shades `50` to `950`)
@@ -66,7 +68,7 @@ don't need a generated stylesheet. It covers a subset of Tailwind CSS v3:
   like container queries
 - Utility classes can be mixed with a regular stylesheet. Utilities are applied after stylesheet rules.
 
-Not supported yet: shadows, transitions, transforms, grid, `space-x-*`, dark mode.
+Not supported yet: `shadow-inner`, transitions, transforms, grid, `space-x-*`, dark mode.
 
 ## Background images
 
@@ -110,6 +112,20 @@ lazbuild demo/renderdemo.lpi && demo/renderdemo demo/out 720
 - Borders are always painted solid (`dashed` and `dotted` are drawn as `solid`).
 - Colors with alpha are blended with the nearest background color for text and borders. Backgrounds
   use a real alpha channel.
+- A shadow is also painted under the node itself, so it can be seen through a transparent background.
+
+## Performance
+
+Painting is done with the LCL canvas only, no extra libraries are used:
+
+- Straight parts of backgrounds and borders are drawn with `FillRect`.
+- Background images and horizontal or vertical gradients are drawn with `StretchDraw`.
+- Rounded corners, border joins and diagonal gradients are rasterized with antialiasing into small bitmaps,
+  which are cached. Equal corners of different nodes share one bitmap.
+- Shadows are cut into 9 cached parts (corners, edges, center), so their cost doesn't depend on node size.
+- Bitmaps are rendered in device resolution (2x on macOS Retina).
+
+`demo/renderdemo resize` measures painting while a window is being resized.
 - Text inside a node is laid out as one block (no inline formatting across nodes).
 
 ## License
