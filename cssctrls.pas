@@ -6,7 +6,7 @@ unit CSSCtrls;
 
 interface
 uses
-  Classes, SysUtils,  Types,
+  Classes, SysUtils,  Types, Math,
   strutils,
   {$ifdef fpc}
   Controls,  Graphics, Forms,
@@ -29,7 +29,12 @@ type
     FOnPaint: TNotifyEvent;
     FBodyNode: THtmlNode;
     FScaleByDPI: Boolean;
+    FDragNode: THtmlNode;           // node with dragged scrollbar thumb
+    FDragAxis, FDragStart, FDragScroll: Integer;
     function GetBodyNode: THtmlNode;
+    function ScrollAt(const APos: TPoint; DX, DY: Integer): Boolean;
+    procedure ScrollChanged;
+    procedure ActiveControlChanged(Sender: TObject; LastControl: TControl);
     function GetStyle: String;
     procedure SetScaleByDPI(AValue: Boolean);
     procedure SetStyle(AValue: String);
@@ -49,6 +54,8 @@ type
     procedure MouseMove(Shift: TShiftState; X, Y: Integer); override;
     procedure MouseLeave; override;
     procedure MouseEnter; override;
+    function DoMouseWheel(Shift: TShiftState; WheelDelta: Integer; MousePos: TPoint): Boolean; override;
+    function DoMouseWheelHorz(Shift: TShiftState; WheelDelta: Integer; MousePos: TPoint): Boolean; override;
   public
     constructor Create(AOwner: TComponent); override;
     destructor Destroy; override;
@@ -361,10 +368,124 @@ begin
   end;
 end;
 
+(*
+  Scroll deepest scrollable node at position (or its parent when it is at the end)
+*)
+function TCSSShape.ScrollAt(const APos: TPoint; DX, DY: Integer): Boolean;
+var
+  List: TList;
+  I: Integer;
+  procedure Collect(ANode: THtmlNode);
+  var
+    Children: THtmlNodeArray;
+    K: Integer;
+  begin
+    if not ANode.Visible then Exit;
+    if ANode.ClipsContent and ANode.HitTest(APos) then List.Add(ANode);
+    Children := ANode.PaintOrder;
+    for K := 0 to High(Children) do Collect(Children[K]);
+  end;
+begin
+  Result := False;
+  List := TList.Create;
+  try
+    Collect(FBodyNode);
+    for I := List.Count - 1 downto 0 do
+      if THtmlNode(List[I]).CanScroll(DX, DY) then begin
+        Result := THtmlNode(List[I]).ScrollBy(DX, DY);
+        Break;
+      end;
+  finally
+    List.Free;
+  end;
+  if Result then ScrollChanged;
+end;
+
+(*
+  Scroll position was changed: only repaint and move aligned controls (layout is not changed)
+*)
+procedure TCSSShape.ScrollChanged;
+var
+  P: TPoint;
+begin
+  Body.AlignControlsTo(Left, Top);
+  P := ScreenToControl(Mouse.CursorPos);
+  if PtInRect(ClientRect, P) and (FDragNode = nil) then MouseMove([], P.X, P.Y);   // hover of content under mouse
+  Invalidate;
+end;
+
+function TCSSShape.DoMouseWheel(Shift: TShiftState; WheelDelta: Integer; MousePos: TPoint): Boolean;
+var
+  P: TPoint;
+  D: Integer;
+begin
+  Result := inherited DoMouseWheel(Shift, WheelDelta, MousePos);
+  if Result then Exit;
+  P := ScreenToControl(Mouse.CursorPos);
+  D := -Round(WheelDelta * 0.4);    // 120 = 48 px
+  if D = 0 then D := -Sign(WheelDelta);
+  if ssShift in Shift then Result := ScrollAt(P, D, 0) else Result := ScrollAt(P, 0, D);
+end;
+
+function TCSSShape.DoMouseWheelHorz(Shift: TShiftState; WheelDelta: Integer; MousePos: TPoint): Boolean;
+var
+  D: Integer;
+begin
+  Result := inherited DoMouseWheelHorz(Shift, WheelDelta, MousePos);
+  if Result then Exit;
+  D := Round(WheelDelta * 0.4);
+  if D = 0 then D := Sign(WheelDelta);
+  Result := ScrollAt(ScreenToControl(Mouse.CursorPos), D, 0);
+end;
+
+(*
+  :focus and :focus-within for nodes with aligned LCL controls
+*)
+procedure TCSSShape.ActiveControlChanged(Sender: TObject; LastControl: TControl);
+var
+  Node: THtmlNode;
+  Active: TControl;
+  F, Modified: Boolean;
+begin
+  if csDestroying in ComponentState then Exit;
+  Active := Screen.ActiveControl;
+  Modified := False;
+  Node := FBodyNode;
+  while Assigned(Node) do begin
+    F := Assigned(Node.AlignControl) and Assigned(Active) and ((Node.AlignControl = Active) or
+      ((Node.AlignControl is TWinControl) and TWinControl(Node.AlignControl).ContainsControl(Active)));
+    if Node.Focused <> F then begin
+      Node.Focused := F;
+      Modified := True;
+    end;
+    Node := Node.GetNext(Node, True);
+  end;
+  if Modified then begin
+    Body.ApplyStyles;
+    Changed;
+  end;
+end;
+
 procedure TCSSShape.MouseDown(Button: TMouseButton; Shift: TShiftState; X,
   Y: Integer);
+var
+  Node: THtmlNode;
 begin
   inherited MouseDown(Button, Shift, X, Y);
+  // dragging of scrollbar thumb
+  if Button = mbLeft then begin
+    Node := FBodyNode;
+    while Assigned(Node) do begin
+      if Node.Visible and (Node.ThumbAt(Point(X, Y)) > 0) then begin
+        FDragNode := Node;
+        FDragAxis := Node.ThumbAt(Point(X, Y));
+        if FDragAxis = 1 then begin FDragStart := Y; FDragScroll := Node.ScrollY; end
+          else begin FDragStart := X; FDragScroll := Node.ScrollX; end;
+        Exit;
+      end;
+      Node := Node.GetNext(Node, True);
+    end;
+  end;
   FMouseDownNode := FBodyNode.NodeAtPosition( Point(X, Y));
   if Button = mbLeft then SetActiveNodes(X, Y, True);
 end;
@@ -375,6 +496,10 @@ var
   Node: THtmlNode;
 begin
   inherited MouseUp(Button, Shift, X, Y);
+  if Assigned(FDragNode) then begin
+    FDragNode := nil;
+    Exit;
+  end;
   if Button = mbLeft then SetActiveNodes(X, Y, False);
   if Assigned(FMouseDownNode) then begin
     Node := FMouseDownNode;
@@ -393,6 +518,12 @@ var
   NewCursor: TCursor;
 begin
   inherited MouseMove(Shift, X, Y);
+  if Assigned(FDragNode) then begin
+    if FDragAxis = 1 then Modified := FDragNode.ScrollByThumb(1, FDragScroll, Y - FDragStart)
+      else Modified := FDragNode.ScrollByThumb(2, FDragScroll, X - FDragStart);
+    if Modified then ScrollChanged;
+    Exit;
+  end;
   Node :=  GetBodyNode;
   Modified := False;
   NewCursor :=  crNone;
@@ -460,11 +591,13 @@ begin
   FBodyNode.ParentControl := Self;
   FIsChanged := True;
   FScaleByDPI := True;
+  if not (csDesigning in ComponentState) then Screen.AddHandlerActiveControlChanged(ActiveControlChanged);
   SetBounds(0,0, 150, 150);  // default size
 end;
 
 destructor TCSSShape.Destroy;
 begin
+  Screen.RemoveHandlerActiveControlChanged(ActiveControlChanged);
   FBodyNode.Free;
   inherited Destroy;
 end;

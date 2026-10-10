@@ -105,7 +105,8 @@ begin
     TPaint := 0;
     for I := 1 to FRAMES do begin
       T0 := GetTickCount64;
-      Body.LayoutTo(0, 0, AWidth + I * 3, -1);
+      if AScene.Height > 0 then Body.LayoutTo(0, 0, AWidth + I * 3, AScene.Height)
+        else Body.LayoutTo(0, 0, AWidth + I * 3, -1);
       T1 := GetTickCount64;
       Inc(TLayout, T1 - T0);
       Body.PaintTo(Bmp.Canvas);
@@ -136,7 +137,8 @@ begin
     Body.ViewportWidth := AWidth;
     AScene.Build(Body, Sheet);
     Body.ApplyStyles;
-    Body.LayoutTo(0, 0, AWidth, -1);
+    if AScene.Height > 0 then Body.LayoutTo(0, 0, AWidth, AScene.Height)   // app like scene (h-full)
+      else Body.LayoutTo(0, 0, AWidth, -1);
     H := Body.CompSize.MarginRect.Bottom;
     if H < 10 then H := 10;
     Bmp.SetSize(AWidth, H);

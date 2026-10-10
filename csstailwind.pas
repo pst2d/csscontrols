@@ -20,11 +20,13 @@
     borders:    border(-x,-y,-t,-r,-b,-l)(-0,-2,-4,-8) border-{color} border-solid/dashed/dotted/none
                 rounded(-t,-r,-b,-l,-tl,-tr,-br,-bl)(-none,-sm,-md,-lg,-xl,-2xl,-3xl,-full)
     shadows:    shadow-sm shadow shadow-md shadow-lg shadow-xl shadow-2xl shadow-none shadow-{color}
+    rings:      ring ring-0 ring-1 ring-2 ring-4 ring-8 ring-{color} (box-shadow with spread, composed with shadow)
+    overflow:   overflow-auto overflow-x-auto overflow-y-auto ... (scrolling), z-*
     transforms: translate-x-* translate-y-* rotate-* scale-* scale-x-* scale-y-* skew-x-* skew-y-* origin-*
                 (also hover:scale-105, -translate-x-1/2 ...)
     other:      cursor-*
     values:     arbitrary values eg. w-[200px] bg-[#ff8800] p-[3px] text-[13px]
-    variants:   hover: active: first: last: odd: even: group-hover: sm: md: lg: xl: 2xl: (see cssbase.pas)
+    variants:   hover: active: focus: focus-within: first: last: odd: even: group-hover: sm: md: lg: xl: 2xl: (see cssbase.pas)
 
     gradients:  bg-gradient-to-{t,tr,r,br,b,bl,l,tl} from-{color} via-{color} to-{color}
     images:     bg-[url(file.png)] bg-none bg-cover bg-contain bg-auto bg-center bg-top ... bg-no-repeat bg-repeat
@@ -310,15 +312,20 @@ const
   O_BG_SIZE = 305; O_BG_POSITION = 306; O_BG_REPEAT = 307; O_BORDER_W = 310; O_BORDER_W_AXIS = 311; O_BORDER_W_SIDE = 312; O_BORDER_STYLE = 313;
   O_BORDER_COLOR = 314; O_ROUNDED = 320; O_ROUNDED_SIDE = 321; O_ROUNDED_CORNER = 322; O_SHADOW = 350;
   O_SHADOW_COLOR = 351; O_TRANSFORM = 360; O_ORIGIN = 361; O_CURSOR = 400;
+  O_OVERFLOW_AXIS = 46; O_ZINDEX = 25;
 
   TW_DEFAULT_BORDER_COLOR = '#e5e7eb';  // gray-200
 
   TW_SHADOW = 'var(--tw-shadow-color, rgb(0 0 0 / 0.1))';
+  // shadow and ring are composed (like Tailwind v3)
+  TW_BOX_SHADOW = 'box-shadow:var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow)';
+  TW_RING_BOX = 'box-shadow:var(--tw-ring-shadow), var(--tw-shadow, 0 0 #0000)';
+  TW_RING_COLOR = 'var(--tw-ring-color, rgb(59 130 246 / 0.5))';
   // composed transform (like Tailwind v3), each utility sets one variable
   TW_TRANSFORM = 'transform:translate(var(--tw-translate-x, 0), var(--tw-translate-y, 0)) rotate(var(--tw-rotate, 0)) ' +
     'skewX(var(--tw-skew-x, 0)) skewY(var(--tw-skew-y, 0)) scaleX(var(--tw-scale-x, 1)) scaleY(var(--tw-scale-y, 1))';
 
-  TW_STATIC: array[0..121] of record N, D: String; O: Integer; end = (
+  TW_STATIC: array[0..131] of record N, D: String; O: Integer; end = (
     (N: 'transform'; D: TW_TRANSFORM; O: O_TRANSFORM),
     (N: 'transform-none'; D: 'transform:none'; O: O_TRANSFORM),
     (N: 'origin-center'; D: 'transform-origin:center'; O: O_ORIGIN),
@@ -329,14 +336,24 @@ const
     (N: 'origin-bottom'; D: 'transform-origin:bottom'; O: O_ORIGIN),
     (N: 'origin-bottom-left'; D: 'transform-origin:bottom left'; O: O_ORIGIN),
     (N: 'origin-left'; D: 'transform-origin:left'; O: O_ORIGIN),
-    (N: 'shadow-sm'; D: 'box-shadow:0 1px 2px 0 var(--tw-shadow-color, rgb(0 0 0 / 0.05))'; O: O_SHADOW),
-    (N: 'shadow'; D: 'box-shadow:0 1px 3px 0 ' + TW_SHADOW + ', 0 1px 2px -1px ' + TW_SHADOW; O: O_SHADOW),
-    (N: 'shadow-md'; D: 'box-shadow:0 4px 6px -1px ' + TW_SHADOW + ', 0 2px 4px -2px ' + TW_SHADOW; O: O_SHADOW),
-    (N: 'shadow-lg'; D: 'box-shadow:0 10px 15px -3px ' + TW_SHADOW + ', 0 4px 6px -4px ' + TW_SHADOW; O: O_SHADOW),
-    (N: 'shadow-xl'; D: 'box-shadow:0 20px 25px -5px ' + TW_SHADOW + ', 0 8px 10px -6px ' + TW_SHADOW; O: O_SHADOW),
-    (N: 'shadow-2xl'; D: 'box-shadow:0 25px 50px -12px var(--tw-shadow-color, rgb(0 0 0 / 0.25))'; O: O_SHADOW),
-    (N: 'shadow-inner'; D: 'box-shadow:inset 0 2px 4px 0 var(--tw-shadow-color, rgb(0 0 0 / 0.05))'; O: O_SHADOW),
-    (N: 'shadow-none'; D: 'box-shadow:none'; O: O_SHADOW),
+    (N: 'shadow-sm'; D: '--tw-shadow:0 1px 2px 0 var(--tw-shadow-color, rgb(0 0 0 / 0.05));' + TW_BOX_SHADOW; O: O_SHADOW),
+    (N: 'shadow'; D: '--tw-shadow:0 1px 3px 0 ' + TW_SHADOW + ', 0 1px 2px -1px ' + TW_SHADOW + ';' + TW_BOX_SHADOW; O: O_SHADOW),
+    (N: 'shadow-md'; D: '--tw-shadow:0 4px 6px -1px ' + TW_SHADOW + ', 0 2px 4px -2px ' + TW_SHADOW + ';' + TW_BOX_SHADOW; O: O_SHADOW),
+    (N: 'shadow-lg'; D: '--tw-shadow:0 10px 15px -3px ' + TW_SHADOW + ', 0 4px 6px -4px ' + TW_SHADOW + ';' + TW_BOX_SHADOW; O: O_SHADOW),
+    (N: 'shadow-xl'; D: '--tw-shadow:0 20px 25px -5px ' + TW_SHADOW + ', 0 8px 10px -6px ' + TW_SHADOW + ';' + TW_BOX_SHADOW; O: O_SHADOW),
+    (N: 'shadow-2xl'; D: '--tw-shadow:0 25px 50px -12px var(--tw-shadow-color, rgb(0 0 0 / 0.25));' + TW_BOX_SHADOW; O: O_SHADOW),
+    (N: 'shadow-inner'; D: '--tw-shadow:inset 0 2px 4px 0 var(--tw-shadow-color, rgb(0 0 0 / 0.05));' + TW_BOX_SHADOW; O: O_SHADOW),
+    (N: 'shadow-none'; D: '--tw-shadow:0 0 #0000;' + TW_BOX_SHADOW; O: O_SHADOW),
+    (N: 'overflow-x-auto'; D: 'overflow-x:auto'; O: O_OVERFLOW_AXIS),
+    (N: 'overflow-x-hidden'; D: 'overflow-x:hidden'; O: O_OVERFLOW_AXIS),
+    (N: 'overflow-x-scroll'; D: 'overflow-x:scroll'; O: O_OVERFLOW_AXIS),
+    (N: 'overflow-x-visible'; D: 'overflow-x:visible'; O: O_OVERFLOW_AXIS),
+    (N: 'overflow-y-auto'; D: 'overflow-y:auto'; O: O_OVERFLOW_AXIS),
+    (N: 'overflow-y-hidden'; D: 'overflow-y:hidden'; O: O_OVERFLOW_AXIS),
+    (N: 'overflow-y-scroll'; D: 'overflow-y:scroll'; O: O_OVERFLOW_AXIS),
+    (N: 'overflow-y-visible'; D: 'overflow-y:visible'; O: O_OVERFLOW_AXIS),
+    (N: 'z-auto'; D: 'z-index:0'; O: O_ZINDEX),
+    (N: 'ring'; D: '--tw-ring-shadow:0 0 0 3px ' + TW_RING_COLOR + ';' + TW_RING_BOX; O: O_SHADOW),
     (N: 'bg-none'; D: 'background-image:none'; O: O_BG_IMAGE),
     (N: 'bg-gradient-to-t'; D: 'background-image:linear-gradient(to top, var(--tw-gradient-stops))'; O: O_BG_IMAGE),
     (N: 'bg-gradient-to-tr'; D: 'background-image:linear-gradient(to top right, var(--tw-gradient-stops))'; O: O_BG_IMAGE),
@@ -679,9 +696,11 @@ begin
     if HasPrefix(Name, V + '-', C) and Spacing(C, True, True, True, R) then
       Exit(Done(V + ':' + Negate(R), O_INSET_SIDE));
 
-  // order
+  // order, z-index
   if HasPrefix(Name, 'order-', V) and TryStrToInt(V, I) then
     Exit(Done('order:' + Negate(V), O_ORDER));
+  if HasPrefix(Name, 'z-', V) and TryStrToInt(V, I) then
+    Exit(Done('z-index:' + Negate(V), O_ZINDEX));
 
   // transforms
   if HasPrefix(Name, 'translate-x-', V) and Spacing(V, True, False, True, R) then
@@ -812,6 +831,14 @@ begin
 
   // colored shadow
   if HasPrefix(Name, 'shadow-', V) and TailwindColor(V, C) then Exit(Done('--tw-shadow-color:' + C, O_SHADOW_COLOR));
+  // ring: ring-2, ring-[3px], ring-{color}
+  if HasPrefix(Name, 'ring-', V) then begin
+    if IsArbitrary(V, R) and (R <> '') and (R[1] in ['0'..'9']) then
+      Exit(Done('--tw-ring-shadow:0 0 0 ' + R + ' ' + TW_RING_COLOR + ';' + TW_RING_BOX, O_SHADOW));
+    if (V = '0') or (V = '1') or (V = '2') or (V = '4') or (V = '8') then
+      Exit(Done('--tw-ring-shadow:0 0 0 ' + V + 'px ' + TW_RING_COLOR + ';' + TW_RING_BOX, O_SHADOW));
+    if TailwindColor(V, C) then Exit(Done('--tw-ring-color:' + C, O_SHADOW_COLOR));
+  end;
   // cursor
   if HasPrefix(Name, 'cursor-', V) and FindIn(V, TW_CURSORS) then Exit(Done('cursor:' + V, O_CURSOR));
 end;

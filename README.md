@@ -26,7 +26,11 @@ CSSShape1.Changed;
 - `TCSSShape` component (palette page *CSS*) that paints a node tree and handles hover, active state,
   clicks and cursors
 - Box model: margin, padding, border, `box-sizing`, `min-*`/`max-*` sizes, `px`, `pt`, `em`, `rem`, `%`
-- Layout: block, inline, `float`, `position` (relative, absolute), `overflow: hidden`, `margin: auto`
+- Layout: block, inline, `float`, `position` (relative, absolute), `z-index`, `margin: auto`
+- Scrolling: `overflow: auto | scroll | hidden` (also `overflow-x`, `overflow-y`) with thin overlay
+  scrollbars, mouse wheel and dragging of the scrollbar thumb. Scrolling only repaints the control, the
+  layout is not recalculated. Content that overflows at the top (for example a chat list with
+  `justify-content: flex-end`) starts at the bottom.
 - Flexbox: `flex-direction`, `flex-wrap`, `gap`, `flex-grow`/`flex-shrink`/`flex-basis`, `justify-content`,
   `align-items`, `align-self`, auto margins, `order`
 - Text: font size, family, weight, style, decoration, alignment, wrapping
@@ -47,7 +51,11 @@ CSSShape1.Changed;
 - Stylesheets with selectors: element, `*`, `.class`, `#id`, `:hover`, `:active`, `:first-child`,
   `:last-child`, descendant and child (`>`) combinators, cascade by specificity and order
 - Utility classes (`csstailwind.pas`), see below
-- LCL controls can be placed inside nodes (`SetAlignControl`), so a `TEdit` follows the CSS layout
+- LCL controls can be placed inside nodes (`SetAlignControl`), so a `TEdit` follows the CSS layout. A
+  borderless `TEdit` inside a styled node gives rounded inputs with shadows, inner buttons and so on.
+  `TCSSShape` tracks the focused control, so `focus:` and `focus-within:` styles work
+  (for example `focus-within:ring-4 focus-within:ring-indigo-100`). Controls in scrolled content are
+  moved, and hidden while they are not fully visible.
 - High DPI: CSS pixels are scaled by screen DPI on Windows and Linux (`TCSSShape.ScaleByDPI`)
 
 ## Utility classes
@@ -67,12 +75,13 @@ don't need a generated stylesheet. It covers a subset of Tailwind CSS v3:
 | Shadows | `shadow-sm` `shadow` `shadow-md` `shadow-lg` `shadow-xl` `shadow-2xl` `shadow-none` `shadow-{color}` |
 | Transforms | `translate-x-*` `-translate-y-1/2` `rotate-45` `scale-105` `scale-x-*` `skew-x-*` `origin-*` |
 | Images | `object-cover` `object-contain` `object-fill` `object-center` ... |
-| Other | `cursor-*` |
+| Rings | `ring` `ring-2` `ring-{color}` (composed with `shadow-*`) |
+| Other | `cursor-*` `z-*` `overflow-x-auto` `overflow-y-auto` |
 
 - Full Tailwind color palette (`slate` ... `rose`, shades `50` to `950`)
 - Arbitrary values: `w-[200px]`, `bg-[#ff8800]`, `text-[13px]`, `bg-[length:60px_40px]`
 - Opacity modifiers: `bg-black/50`, `text-white/70`, `border-slate-900/10`
-- Variants: `hover:`, `active:`, `first:`, `last:`, `odd:`, `even:`, `group-hover:`
+- Variants: `hover:`, `active:`, `focus:`, `focus-within:`, `first:`, `last:`, `odd:`, `even:`, `group-hover:`
 - Responsive variants `sm:` `md:` `lg:` `xl:` `2xl:` use the width of the `TCSSShape` control, so they act
   like container queries
 - Utility classes can be mixed with a regular stylesheet. Utilities are applied after stylesheet rules.
@@ -127,8 +136,11 @@ Open `csspckg_lazarus.lpk` in Lazarus, compile it and install it (*Use > Install
 
 ## Demo and tests
 
-- `demo/csscontrols_demo.lpi`: demo application with several scenes (cards, buttons, flexbox, responsive
-  layout, typography, dashboard, stylesheet, borders, backgrounds, LCL controls)
+- `demo/csscontrols_demo.lpi`: demo application with several scenes: cards, buttons, flexbox, responsive
+  layout, typography, dashboard, stylesheet, borders, backgrounds, shadows, HTML, transforms, drop zone,
+  and app-like UIs (chat, settings, shop, calendar). The Forms scene shows LCL inputs (`TEdit`, `TMemo`,
+  `TComboBox`) inside styled nodes. The demo application builds these from `data-lcl` attributes in
+  the markup. Toggles and selections are wired the same way with `data-active` and `data-group`.
 - `demo/renderdemo.lpi`: renders the demo scenes to PNG files, which is handy for checking changes visually
   (`renderdemo out 720 Borders 4` renders one scene zoomed 4x, `renderdemo bench` measures paint time)
 - `tests/csstests.lpi`: fpcunit tests (console runner)
@@ -141,6 +153,8 @@ lazbuild demo/renderdemo.lpi && demo/renderdemo demo/out 720
 ## Limitations
 
 - Delphi/FMX is not supported yet. Some code paths exist, but they are incomplete.
+- Native LCL controls are always painted above the CSS content, so a dropdown drawn by the renderer can't
+  overlap a `TEdit`.
 - Scaled and rotated nodes are painted through a bitmap. Content overflowing the node (except shadows)
   is clipped.
 - Colors with alpha are blended with the nearest background color for text and borders. Backgrounds

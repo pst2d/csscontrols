@@ -27,6 +27,8 @@
              - transform (translate, scale, rotate, skew, matrix, transform-origin, translate/rotate/scale properties),
                HitTest with inverse transformation, dashed and dotted borders, <img> element, element default styles,
                basic html markup (csshtml.pas)
+             - scrolling (overflow auto/scroll, overlay scrollbars, mouse wheel, thumb dragging), z-index,
+               :focus and :focus-within, automatic minimum height of flex items in column
   2020.05.01 - Align LCL controls working again
   2020.04.17 - TCSSShape fixes, "0" length fixed
   2020.02.22 - baseline align fix, added: display:inline-flex; basic owerflow support
@@ -278,7 +280,9 @@ type
     Padding: array[TCSSSide] of TCSSLength;
     JustifyContent: TCSSJustifyContent;
     Order: TCSSInteger; // default 0
-    Overflow: TCSSOverflowType;
+    Overflow,                   // overflow-x
+    OverflowY: TCSSOverflowType;
+    ZIndex: Integer;            // paint order of siblings (positioned nodes), default 0
     Position: TCSSPosition;
     RadiusTopLeft,
     RadiusTopRight,
@@ -413,6 +417,10 @@ type
     FStyleSheet: TCSSStyleSheet;
     FClassList: TCSSClassList;
     FAttributes: TStringList;     // html attributes (src ...)
+    FScrollX, FScrollY: Integer;  // scroll position of content (overflow auto/scroll/hidden)
+    FScrollMin, FScrollMax: TPoint;
+    FVThumb, FHThumb: TRect;      // scrollbar thumbs (last paint)
+    FFocused: Boolean;            // :focus (set by application or TCSSShape for aligned controls)
     FTransform: TCSSMatrix2D;     // transformation relative to border box (see ComputeTransform)
     FTransformKind: TCSSTransformKind;
     FTransformBmp: TBitmap;       // cached painted node for scale, rotate
@@ -471,6 +479,8 @@ type
     procedure PaintTransformed(ACanvas: TCanvas; const AClipRect: TRect);
     procedure SaveLayout(var AStates: TCSSLayoutStates);
     procedure PlaceAbsolute(AWidth, AHeight: Integer);
+    procedure UpdateScrollRange;
+    procedure PaintScrollbars(ACanvas: TCanvas);
   public
     constructor Create(AInlineStyle: String = '');virtual;
     destructor Destroy; override;
@@ -502,6 +512,22 @@ type
     function LayoutToScreen(const P: TPointF): TPointF;
     function TransformedBounds(const ARect: TRect): TRect;
     property TransformKind: TCSSTransformKind read FTransformKind;
+    function ClipsContent: Boolean;
+    function PaddingBox: TRect;
+    function CanScroll(DX, DY: Integer): Boolean;
+    function ScrollBy(DX, DY: Integer): Boolean;
+    function SetScroll(AX, AY: Integer): Boolean;
+    function ThumbAt(const APos: TPoint): Integer;
+    function ScrollByThumb(AAxis, AStartScroll, ADelta: Integer): Boolean;
+    function PaintOrder: THtmlNodeArray;
+    function HasFocusWithin: Boolean;
+    function ScreenToLayoutClip(const P: TPointF; out AVisible: Boolean): TPointF;
+    function ScreenClipRect: TRect;
+    property ScrollX: Integer read FScrollX;
+    property ScrollY: Integer read FScrollY;
+    property ScrollMin: TPoint read FScrollMin;
+    property ScrollMax: TPoint read FScrollMax;
+    property Focused: Boolean read FFocused write FFocused;
     function GetAttribute(const AName: String): String;
     procedure SetAttribute(const AName, AValue: String);
     property Attributes[const AName: String]: String read GetAttribute write SetAttribute;
@@ -2090,6 +2116,8 @@ begin
   JustifyContent := cjcFlexStart;
   Order := 0;
   Overflow := cotVisible;
+  OverflowY := cotVisible;
+  ZIndex := 0;
   Position := cpStatic;
   ResetRadius(RadiusTopLeft);
   ResetRadius(RadiusTopRight);
@@ -2286,9 +2314,10 @@ begin
         Background.Position := Trim(Background.Position + ' ' + T);
     end;
   end else
-  if (AName = 'overflow') then
-    AddParsedProperty(AName, Parts[0])
-  else AddParsedProperty(AName, AValue);
+  if (AName = 'overflow') then begin     // overflow: x [y]
+    AddParsedProperty('overflow-x', Parts[0]);
+    if Length(Parts) > 1 then AddParsedProperty('overflow-y', Parts[1]) else AddParsedProperty('overflow-y', Parts[0]);
+  end else AddParsedProperty(AName, AValue);
 end;
 
 function CSSToFontSize(const AValue: String): TCSSLength;  // https://developer.mozilla.org/en-US/docs/Web/CSS/font-size
@@ -2486,8 +2515,11 @@ begin
       if AName = 'object-position' then
         ObjectPosition := AValue
       else
-      if AName = 'overflow' then
+      if AName = 'overflow-x' then
         Overflow := CSSToOverflowType(AValue)
+      else
+      if AName = 'overflow-y' then
+        OverflowY := CSSToOverflowType(AValue)
       else
       if AName = 'order' then
         Order := StrToIntDef(AValue, 0);
@@ -2536,6 +2568,9 @@ begin
       else
       if AName = 'text-decoration' then
         Font.TextDecoration := CSSToTextDecoration(AValue);
+    'z':
+      if AName = 'z-index' then
+        ZIndex := StrToIntDef(AValue, 0);
     'w':
       if AName = 'width' then
         Width := CSSToLength(AValue)
@@ -2585,6 +2620,8 @@ begin
     JustifyContent := Src.JustifyContent;
     Order := Src.Order;
     Overflow := Src.Overflow;
+    OverflowY := Src.OverflowY;
+    ZIndex := Src.ZIndex;
     Position := Src.Position;
     RadiusTopLeft := Src.RadiusTopLeft;
     RadiusTopRight := Src.RadiusTopRight;
@@ -4488,6 +4525,230 @@ begin
   {$endif}
 end;
 
+{ scrolling }
+
+function THtmlNode.ClipsContent: Boolean;
+begin
+  Result := (FCompStyle.Overflow <> cotVisible) or (FCompStyle.OverflowY <> cotVisible);
+end;
+
+(*
+  Padding box (border box without borders): viewport of scrolled content
+*)
+function THtmlNode.PaddingBox: TRect;
+begin
+  with FCompSize do
+    Result := Rect(ContentRect.Left + Border.Left, ContentRect.Top + Border.Top, ContentRect.Right - Border.Right, ContentRect.Bottom - Border.Bottom);
+end;
+
+(*
+  Scroll range from children positions (after layout). Content which overflows top/left (eg. justify-content: flex-end)
+  has negative scroll position, so scroll position 0 is always initial position of content.
+*)
+procedure THtmlNode.UpdateScrollRange;
+var
+  VP, CB: TRect;
+  N: THtmlNode;
+  Any: Boolean;
+begin
+  FScrollMin := Point(0, 0);
+  FScrollMax := Point(0, 0);
+  if ClipsContent and (FChildCount > 0) then begin
+    VP := PaddingBox;
+    Any := False;
+    CB := VP;
+    N := FFirstChild;
+    while Assigned(N) do begin
+      if N.FCompStyle.Display <> cdtNone then begin
+        if not Any then CB := N.FCompSize.MarginRect else CB.Union(N.FCompSize.MarginRect);
+        Any := True;
+      end;
+      N := N.FNextSibling;
+    end;
+    if Any then begin
+      Dec(CB.Top, FCompSize.Padding.Top);
+      Dec(CB.Left, FCompSize.Padding.Left);
+      Inc(CB.Bottom, FCompSize.Padding.Bottom);
+      Inc(CB.Right, FCompSize.Padding.Right);
+      if FCompStyle.OverflowY <> cotVisible then begin
+        FScrollMin.Y := Min(0, CB.Top - VP.Top);
+        FScrollMax.Y := Max(0, CB.Bottom - VP.Bottom);
+      end;
+      if FCompStyle.Overflow <> cotVisible then begin
+        FScrollMin.X := Min(0, CB.Left - VP.Left);
+        FScrollMax.X := Max(0, CB.Right - VP.Right);
+      end;
+    end;
+  end;
+  FScrollX := EnsureRange(FScrollX, FScrollMin.X, FScrollMax.X);
+  FScrollY := EnsureRange(FScrollY, FScrollMin.Y, FScrollMax.Y);
+end;
+
+(*
+  User can scroll in this direction (overflow auto or scroll and position is not at the end)
+*)
+function THtmlNode.CanScroll(DX, DY: Integer): Boolean;
+begin
+  Result := False;
+  if (DY <> 0) and (FCompStyle.OverflowY in [cotAuto, cotScroll]) then
+    Result := ((DY < 0) and (FScrollY > FScrollMin.Y)) or ((DY > 0) and (FScrollY < FScrollMax.Y));
+  if (DX <> 0) and (FCompStyle.Overflow in [cotAuto, cotScroll]) then
+    Result := Result or ((DX < 0) and (FScrollX > FScrollMin.X)) or ((DX > 0) and (FScrollX < FScrollMax.X));
+end;
+
+function THtmlNode.ScrollBy(DX, DY: Integer): Boolean;
+begin
+  Result := SetScroll(FScrollX + DX, FScrollY + DY);
+end;
+
+(*
+  Set scroll position (clamped to scroll range), returns True if position is changed
+*)
+function THtmlNode.SetScroll(AX, AY: Integer): Boolean;
+var
+  OX, OY: Integer;
+begin
+  OX := FScrollX;
+  OY := FScrollY;
+  FScrollX := EnsureRange(AX, FScrollMin.X, FScrollMax.X);
+  FScrollY := EnsureRange(AY, FScrollMin.Y, FScrollMax.Y);
+  Result := (OX <> FScrollX) or (OY <> FScrollY);
+end;
+
+(*
+  Children in paint order (z-index, then order in tree)
+*)
+function THtmlNode.PaintOrder: THtmlNodeArray;
+var
+  N, T: THtmlNode;
+  I, J: Integer;
+  Sorted: Boolean;
+begin
+  SetLength(Result, FChildCount);
+  I := 0;
+  Sorted := True;
+  N := FFirstChild;
+  while Assigned(N) and (I < Length(Result)) do begin
+    Result[I] := N;
+    if N.FCompStyle.ZIndex <> 0 then Sorted := False;
+    Inc(I);
+    N := N.FNextSibling;
+  end;
+  SetLength(Result, I);
+  if Sorted then Exit;
+  for I := 1 to High(Result) do begin    // stable insertion sort
+    T := Result[I];
+    J := I - 1;
+    while (J >= 0) and (Result[J].FCompStyle.ZIndex > T.FCompStyle.ZIndex) do begin
+      Result[J + 1] := Result[J];
+      Dec(J);
+    end;
+    Result[J + 1] := T;
+  end;
+end;
+
+(*
+  Overlay scrollbars (thin rounded thumbs like on macOS)
+*)
+procedure THtmlNode.PaintScrollbars(ACanvas: TCanvas);
+const
+  SIZE = 6;
+  GAP = 2;
+var
+  VP: TRect;
+  Len, Range, TL, TP: Integer;
+  procedure DrawThumb(const ARect: TRect);
+  var
+    S: TCSSPaintShape;
+    Colors: array[0..4] of TCSSRGBA;
+    Pat: TCSSSidePatterns;
+    I: Integer;
+    Sc: Single;
+    D: TRect;
+  begin
+    if (ARect.Width <= 0) or (ARect.Height <= 0) then Exit;
+    Sc := RootNode.FPaintScale;
+    if Sc <= 0 then Sc := 1;
+    D := Rect(0, 0, Round(ARect.Width * Sc), Round(ARect.Height * Sc));
+    S := Default(TCSSPaintShape);
+    S.R := D.Right;
+    S.B := D.Bottom;
+    for I := 0 to 3 do begin
+      S.RX[I] := Min(D.Right, D.Bottom) / 2;
+      S.RY[I] := S.RX[I];
+    end;
+    Colors[0] := RGBAFromColor(clBlack, 0.35);
+    for I := 1 to 4 do Colors[I] := RGBAFromColor(0, 0);
+    Pat := Default(TCSSSidePatterns);
+    ACanvas.StretchDraw(ARect, CornerBitmap(Format('SB%d,%d', [D.Right, D.Bottom]), S, -1, D, Colors, Pat));
+  end;
+begin
+  FVThumb := Rect(0, 0, 0, 0);
+  FHThumb := Rect(0, 0, 0, 0);
+  VP := PaddingBox;
+  if (FCompStyle.OverflowY in [cotAuto, cotScroll]) and (FScrollMax.Y > FScrollMin.Y) and (VP.Height > 4 * SIZE) then begin
+    Len := VP.Height - 2 * GAP;
+    Range := FScrollMax.Y - FScrollMin.Y;
+    TL := Max(3 * SIZE, Round(Len * Len / (Len + Range)));
+    TP := VP.Top + GAP + Round((FScrollY - FScrollMin.Y) / Range * (Len - TL));
+    FVThumb := Rect(VP.Right - SIZE - GAP, TP, VP.Right - GAP, TP + TL);
+    DrawThumb(FVThumb);
+  end;
+  if (FCompStyle.Overflow in [cotAuto, cotScroll]) and (FScrollMax.X > FScrollMin.X) and (VP.Width > 4 * SIZE) then begin
+    Len := VP.Width - 2 * GAP;
+    Range := FScrollMax.X - FScrollMin.X;
+    TL := Max(3 * SIZE, Round(Len * Len / (Len + Range)));
+    TP := VP.Left + GAP + Round((FScrollX - FScrollMin.X) / Range * (Len - TL));
+    FHThumb := Rect(TP, VP.Bottom - SIZE - GAP, TP + TL, VP.Bottom - GAP);
+    DrawThumb(FHThumb);
+  end;
+end;
+
+(*
+  Position of scroll thumb for dragging: 1 = vertical, 2 = horizontal, 0 = not on thumb
+*)
+function THtmlNode.ThumbAt(const APos: TPoint): Integer;
+begin
+  if PtInRect(FVThumb, APos) then Result := 1
+  else if PtInRect(FHThumb, APos) then Result := 2
+  else Result := 0;
+end;
+
+(*
+  Scroll by moving thumb by ADelta pixels
+*)
+function THtmlNode.ScrollByThumb(AAxis, AStartScroll, ADelta: Integer): Boolean;
+var
+  VP: TRect;
+  Len, Range, TL: Integer;
+begin
+  VP := PaddingBox;
+  if AAxis = 1 then begin
+    Len := VP.Height - 4;
+    Range := FScrollMax.Y - FScrollMin.Y;
+  end else begin
+    Len := VP.Width - 4;
+    Range := FScrollMax.X - FScrollMin.X;
+  end;
+  TL := Max(18, Round(Len * Len / Max(1, Len + Range)));
+  if Len - TL <= 0 then Exit(False);
+  if AAxis = 1 then Result := SetScroll(FScrollX, AStartScroll + Round(ADelta * Range / (Len - TL)))
+    else Result := SetScroll(AStartScroll + Round(ADelta * Range / (Len - TL)), FScrollY);
+end;
+
+function THtmlNode.HasFocusWithin: Boolean;
+var
+  N: THtmlNode;
+begin
+  if FFocused then Exit(True);
+  N := FFirstChild;
+  while Assigned(N) do begin
+    if N.HasFocusWithin then Exit(True);
+    N := N.FNextSibling;
+  end;
+  Result := False;
+end;
+
 { transforms }
 
 function MatIdentity: TCSSMatrix2D;
@@ -4723,9 +4984,21 @@ end;
 *)
 function THtmlNode.ScreenToLayout(const P: TPointF): TPointF;
 var
+  InClip: Boolean;
+begin
+  Result := ScreenToLayoutClip(P, InClip);
+end;
+
+(*
+  Point on screen to layout coordinates of this node: inverse transformations and scroll positions of parents
+  AVisible is False if point is outside of clipped (overflow) area of some parent
+*)
+function THtmlNode.ScreenToLayoutClip(const P: TPointF; out AVisible: Boolean): TPointF;
+var
   Chain: array of THtmlNode;
   N: THtmlNode;
   I: Integer;
+  VP: TRect;
 begin
   Chain := nil;
   N := Self;
@@ -4735,13 +5008,55 @@ begin
     N := N.ParentNode;
   end;
   Result := P;
-  for I := High(Chain) downto 0 do     // from root to node
-    Result := Chain[I].UntransformPoint(Result);
+  AVisible := True;
+  for I := High(Chain) downto 0 do begin    // from root to node
+    N := Chain[I];
+    Result := N.UntransformPoint(Result);
+    if I > 0 then begin                     // parent: clipping and scrolling of its children
+      if N.ClipsContent then begin
+        VP := N.PaddingBox;
+        if (Result.x < VP.Left) or (Result.x >= VP.Right) or (Result.y < VP.Top) or (Result.y >= VP.Bottom) then AVisible := False;
+      end;
+      Result.x := Result.x + N.FScrollX;
+      Result.y := Result.y + N.FScrollY;
+    end;
+  end;
 end;
 
 (*
-  Point in layout coordinates of this node to screen (transformations of node and all parents)
+  Point in layout coordinates of this node to screen (transformations of node and parents, scroll positions)
 *)
+function THtmlNode.LayoutToScreen(const P: TPointF): TPointF;
+var
+  N: THtmlNode;
+begin
+  Result := P;
+  N := Self;
+  while Assigned(N) do begin
+    Result := N.TransformPoint(Result);
+    if Assigned(N.ParentNode) then begin
+      Result.x := Result.x - N.ParentNode.FScrollX;
+      Result.y := Result.y - N.ParentNode.FScrollY;
+    end;
+    N := N.ParentNode;
+  end;
+end;
+
+(*
+  Visible area of node on screen (clipped by parents with overflow)
+*)
+function THtmlNode.ScreenClipRect: TRect;
+var
+  N: THtmlNode;
+begin
+  Result := Rect(-MaxInt div 2, -MaxInt div 2, MaxInt div 2, MaxInt div 2);
+  N := ParentNode;
+  while Assigned(N) do begin
+    if N.ClipsContent then Result := TRect.Intersect(Result, N.TransformedBounds(N.PaddingBox));
+    N := N.ParentNode;
+  end;
+end;
+
 (*
   Bounding box of transformed rectangle
 *)
@@ -4757,17 +5072,6 @@ begin
     Round(Max(Max(P[0].x, P[1].x), Max(P[2].x, P[3].x))), Round(Max(Max(P[0].y, P[1].y), Max(P[2].y, P[3].y))));
 end;
 
-function THtmlNode.LayoutToScreen(const P: TPointF): TPointF;
-var
-  N: THtmlNode;
-begin
-  Result := P;
-  N := Self;
-  while Assigned(N) do begin
-    Result := N.TransformPoint(Result);
-    N := N.ParentNode;
-  end;
-end;
 
 procedure THtmlNode.OffsetSubtree(DX, DY: Integer);
 var
@@ -4788,8 +5092,9 @@ end;
 procedure THtmlNode.PaintNodeTree(ACanvas: TCanvas; const AClipRect: TRect);
 var
   N: THtmlNode;
-  DX, DY: Integer;
+  DX, DY, I: Integer;
   Clip: TRect;
+  Children: THtmlNodeArray;
 begin
   if not FVisible then Exit;
   case FTransformKind of
@@ -4813,12 +5118,24 @@ begin
   end;
   DrawNode(ACanvas, AClipRect);
   if FChildCount > 0 then begin
-    if FCompStyle.Overflow = cotHidden then Clip := TRect.Intersect(FCompSize.RealContentRect, AClipRect)
+    if ClipsContent then Clip := TRect.Intersect(PaddingBox, AClipRect)
       else Clip := AClipRect;
-    N := FFirstChild;
-    while Assigned(N) do begin
-      N.PaintNodeTree(ACanvas, Clip);
-      N := N.FNextSibling;
+    Children := PaintOrder;
+    for I := 0 to High(Children) do begin
+      N := Children[I];
+      if (FScrollX <> 0) or (FScrollY <> 0) then begin   // scrolled content
+        N.OffsetSubtree(-FScrollX, -FScrollY);
+        try
+          N.PaintNodeTree(ACanvas, Clip);
+        finally
+          N.OffsetSubtree(FScrollX, FScrollY);
+        end;
+      end else
+        N.PaintNodeTree(ACanvas, Clip);
+    end;
+    if (FScrollMax.X > FScrollMin.X) or (FScrollMax.Y > FScrollMin.Y) then begin
+      ACanvas.ClipRect := AClipRect;
+      PaintScrollbars(ACanvas);
     end;
   end;
 end;
@@ -5113,6 +5430,11 @@ var
   CRect: TRect;    // border box
 begin
   CRect := CompSize.ContentRect;
+  // nothing is visible (empty clip rect means "no clipping" for canvas, so it must not be set)
+  if AClipRect.IsEmpty then Exit;
+  R := CRect;
+  if FCompStyle.BoxShadow <> '' then InflateRect(R, 100, 100);   // shadow can be outside of node
+  if not R.IntersectsWith(AClipRect) then Exit;
   {$ifndef fmx}
   ACanvas.Clipping := True;
   ACanvas.ClipRect := AClipRect;
@@ -5124,7 +5446,7 @@ begin
   {$else}
   ACanvas.Pen.Style := psClear;
   // Paint Text
-  if Text <> '' then begin
+  if (Text <> '') and FCompSize.RealContentRect.IntersectsWith(AClipRect) then begin
     ACanvas.Brush.Style := bsClear;
     {$ifdef fpc} ACanvas.Font.BeginUpdate; {$endif}
     AssignFontTo(ACanvas.Font);
@@ -5672,6 +5994,12 @@ begin
     if Variant = 'active' then begin
       if not FActive then Exit;
     end else
+    if Variant = 'focus' then begin
+      if not FFocused then Exit;
+    end else
+    if Variant = 'focus-within' then begin
+      if not HasFocusWithin then Exit;
+    end else
     if Variant = 'first' then begin
       if Assigned(FPrevSibling) then Exit;
     end else
@@ -5746,6 +6074,12 @@ begin
     end else
     if P = 'active' then begin
       if not FActive then Exit;
+    end else
+    if P = 'focus' then begin
+      if not FFocused then Exit;
+    end else
+    if P = 'focus-within' then begin
+      if not HasFocusWithin then Exit;
     end else
     if P = 'first-child' then begin
       if Assigned(FPrevSibling) then Exit;
@@ -6097,6 +6431,7 @@ type
     MarginMainStart, MarginMainEnd, MarginCrossStart, MarginCrossEnd: Integer;
     AutoMainStart, AutoMainEnd, AutoCrossStart, AutoCrossEnd: Boolean;
     Base: Integer;                // flex base size (border box)
+    AutoMin: Integer;             // automatic minimum size (min-content width, content height)
     Pos, CrossPos: Integer;       // margin box position in line
     Frozen: Boolean;
   end;
@@ -6168,9 +6503,9 @@ var
       Space := AItem.Node.FCompSize.Padding.Top + AItem.Node.FCompSize.Padding.Bottom + AItem.Node.FCompSize.Border.Top + AItem.Node.FCompSize.Border.Bottom;
     end;
     Result := Max(AValue, Space);
-    // automatic minimum size of flex items (min-width: auto) is min-content width
-    if IsRow and (Mn.LengthType in [cltUndefined, cltAuto]) and (cs.Overflow = cotVisible) then
-      Result := Max(Result, AItem.Node.MinContentWidth(True));
+    // automatic minimum size of flex items (min-width/min-height: auto) is min-content size
+    if (Mn.LengthType in [cltUndefined, cltAuto]) and (cs.Overflow = cotVisible) and (cs.OverflowY = cotVisible) then
+      Result := Max(Result, AItem.AutoMin);
     if not ((Mx.LengthType = cltPercentage) and (Parent < 0)) and (Mx.LengthType in [cltPx, cltPt, cltEm, cltRem, cltPercentage]) then begin
       V := AItem.Node.CalcLength(Mx, Parent);
       if cs.BoxSizing = cbxContentBox then Inc(V, Space);
@@ -6315,6 +6650,11 @@ begin
         LayoutItem(Items[I], -1, Max(0, CrossSize - Items[I].MarginCrossStart - Items[I].MarginCrossEnd));
         if Items[I].Node.FCompStyle.FlexBasis.LengthType in [cltAuto, cltUndefined] then Items[I].Base := Items[I].Main;
       end;
+  // automatic minimum: min-content width in row, content height in column (if height is not set)
+  for I := 0 to N - 1 do
+    if IsRow then Items[I].AutoMin := Items[I].Node.MinContentWidth(True)
+    else if Items[I].Node.FCompStyle.Height.LengthType in [cltUndefined, cltAuto] then Items[I].AutoMin := Items[I].Main
+    else Items[I].AutoMin := 0;
   for I := 0 to N - 1 do Items[I].Base := ClampMain(Items[I], Items[I].Base);
 
   // collect lines
@@ -6420,7 +6760,8 @@ begin
         cjcSpaceEvenly: X := FreeSpace div (Lines[L].Last - Lines[L].First + 2);
       end
     else
-    if (FreeSpace < 0) and (Justify in [cjcCenter]) then X := FreeSpace div 2;
+    if (FreeSpace < 0) and (Justify = cjcCenter) then X := FreeSpace div 2
+    else if (FreeSpace < 0) and (Justify = cjcFlexEnd) then X := FreeSpace;    // content overflows at start
     for I := Lines[L].First to Lines[L].Last do begin
       if Items[I].AutoMainStart then Inc(X, Step);
       Items[I].Pos := X;
@@ -6704,6 +7045,7 @@ var
     N: THtmlNode;
   begin
     ANode.ComputeTransform;
+    ANode.UpdateScrollRange;
     N := ANode.FFirstChild;
     while Assigned(N) do begin
       UpdateTransforms(N);
@@ -6792,6 +7134,8 @@ end;
 procedure THtmlNode.AlignControlsTo(ALeft, ATop: Integer);
 var
   DifX, DifY: Integer;
+  ClipR: TRect;
+  InView: Boolean;
   CtrlNode: THtmlNode;
   CtrlNewBounds,
   CtrlOldBounds: TRect;
@@ -6829,6 +7173,18 @@ begin
         CtrlNode.FCompSize.ContentRect.Bottom - CtrlNode.FCompSize.Border.Bottom - CtrlNode.FCompSize.Padding.Bottom
       );
       CtrlNewBounds := CtrlNode.TransformedBounds(CtrlNewBounds);   // controls can be moved and scaled, not rotated
+      // control can't be clipped: it is hidden when it is not whole in visible area (scrolled content)
+      ClipR := CtrlNode.ScreenClipRect;
+      InView := (CtrlNewBounds.Left >= ClipR.Left) and (CtrlNewBounds.Top >= ClipR.Top) and
+        (CtrlNewBounds.Right <= ClipR.Right) and (CtrlNewBounds.Bottom <= ClipR.Bottom);
+      if CtrlNode.FVisible and not InView and CtrlNode.AlignControl.Visible then begin
+        CtrlNode.FAlignControlWasHidden := True;
+        CtrlNode.AlignControl.Visible := False;
+      end else
+      if CtrlNode.FVisible and InView and CtrlNode.FAlignControlWasHidden then begin
+        CtrlNode.FAlignControlWasHidden := False;
+        CtrlNode.AlignControl.Visible := True;
+      end;
       OffsetRect(CtrlNewBounds, DifX, DifY);
 
       if (CtrlNode.AlignControl.Parent <> nil) and (not CompareRect(@CtrlNewBounds,@CtrlOldBounds)) then begin
@@ -6849,21 +7205,23 @@ end;
   Get Last node at position with OnClick
 *)
 function THtmlNode.NodeAtPosition(APos: TPoint): THtmlNode;
-  procedure Search(ANode: THtmlNode);
+  procedure Search(AParent: THtmlNode);
+  var
+    Children: THtmlNodeArray;
+    I: Integer;
   begin
-    while Assigned(ANode) do begin
-      if ANode.FVisible then begin
-        if Assigned(ANode.FOnClick) and ANode.HitTest(APos) then Result := ANode;   // last painted is on top
-        Search(ANode.FFirstChild);
+    Children := AParent.PaintOrder;
+    for I := 0 to High(Children) do
+      if Children[I].FVisible then begin
+        if Assigned(Children[I].FOnClick) and Children[I].HitTest(APos) then Result := Children[I];   // last painted is on top
+        Search(Children[I]);
       end;
-      ANode := ANode.FNextSibling;
-    end;
   end;
 begin
   Result := Nil;
   if not FVisible then Exit;
   if Assigned(FOnClick) and HitTest(APos) then Result := Self;
-  Search(FFirstChild);
+  Search(Self);
 end;
 
 (*
@@ -6872,9 +7230,10 @@ end;
 function THtmlNode.HitTest(const APos: TPoint): Boolean;
 var
   P: TPointF;
+  InClip: Boolean;
 begin
-  P := ScreenToLayout(PointF(APos.X + 0.5, APos.Y + 0.5));
-  Result := (P.x >= FCompSize.ContentRect.Left) and (P.x < FCompSize.ContentRect.Right) and
+  P := ScreenToLayoutClip(PointF(APos.X + 0.5, APos.Y + 0.5), InClip);
+  Result := InClip and (P.x >= FCompSize.ContentRect.Left) and (P.x < FCompSize.ContentRect.Right) and
     (P.y >= FCompSize.ContentRect.Top) and (P.y < FCompSize.ContentRect.Bottom);
 end;
 

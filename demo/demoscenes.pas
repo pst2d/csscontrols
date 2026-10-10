@@ -15,6 +15,7 @@ type
   TDemoScene = record
     Name: String;
     Build: TBuildSceneProc;
+    Height: Integer;       // height for PNG renderer (app like scenes use h-full), 0 = height of content
   end;
 
 procedure BuildCard(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
@@ -31,23 +32,31 @@ procedure BuildHtml(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
 procedure BuildTransforms(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
 procedure BuildDropzone(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
 procedure BuildChatApp(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
+procedure BuildForms(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
+procedure BuildSettings(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
+procedure BuildShop(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
+procedure BuildCalendar(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
 
 const
-  DEMO_SCENES: array[0..13] of TDemoScene = (
-    (Name: 'Card'; Build: @BuildCard),
-    (Name: 'Buttons'; Build: @BuildButtons),
-    (Name: 'Flexbox'; Build: @BuildFlex),
-    (Name: 'Responsive'; Build: @BuildResponsive),
-    (Name: 'Typography'; Build: @BuildTypography),
-    (Name: 'Dashboard'; Build: @BuildDashboard),
-    (Name: 'Stylesheet'; Build: @BuildStyleSheet),
-    (Name: 'Borders'; Build: @BuildBorders),
-    (Name: 'Backgrounds'; Build: @BuildBackgrounds),
-    (Name: 'Shadows'; Build: @BuildShadows),
-    (Name: 'HTML'; Build: @BuildHtml),
-    (Name: 'Transforms'; Build: @BuildTransforms),
-    (Name: 'Dropzone'; Build: @BuildDropzone),
-    (Name: 'Chat app'; Build: @BuildChatApp)
+  DEMO_SCENES: array[0..17] of TDemoScene = (
+    (Name: 'Card'; Build: @BuildCard; Height: 0),
+    (Name: 'Buttons'; Build: @BuildButtons; Height: 0),
+    (Name: 'Flexbox'; Build: @BuildFlex; Height: 0),
+    (Name: 'Responsive'; Build: @BuildResponsive; Height: 0),
+    (Name: 'Typography'; Build: @BuildTypography; Height: 0),
+    (Name: 'Dashboard'; Build: @BuildDashboard; Height: 0),
+    (Name: 'Stylesheet'; Build: @BuildStyleSheet; Height: 0),
+    (Name: 'Borders'; Build: @BuildBorders; Height: 0),
+    (Name: 'Backgrounds'; Build: @BuildBackgrounds; Height: 0),
+    (Name: 'Shadows'; Build: @BuildShadows; Height: 0),
+    (Name: 'HTML'; Build: @BuildHtml; Height: 0),
+    (Name: 'Transforms'; Build: @BuildTransforms; Height: 0),
+    (Name: 'Dropzone'; Build: @BuildDropzone; Height: 0),
+    (Name: 'Chat app'; Build: @BuildChatApp; Height: 680),
+    (Name: 'Forms'; Build: @BuildForms; Height: 0),
+    (Name: 'Settings'; Build: @BuildSettings; Height: 760),
+    (Name: 'Shop'; Build: @BuildShop; Height: 760),
+    (Name: 'Calendar'; Build: @BuildCalendar; Height: 720)
   );
 
 implementation
@@ -557,7 +566,7 @@ begin
   RegisterChatPattern;
   ABody.SetClass('bg-white');
   ABody.AppendHTML(
-    '<div class="flex h-[680px] text-slate-900">' +
+    '<div class="flex h-full min-h-[420px] text-slate-900">' +
     // navigation
     '<div class="hidden md:flex w-52 shrink-0 flex-col gap-1 p-3 bg-slate-50 border-r border-slate-200">' +
       NavItem(ICON_CHAT, 'Chats', True) + NavItem(ICON_UPDATES, 'Updates') + NavItem(ICON_COMMUNITY, 'Communities') +
@@ -571,8 +580,8 @@ begin
     '  </div>' +
     '</div>' +
     // chat list
-    '<div class="w-72 shrink-0 flex flex-col border-r border-slate-200">' +
-    '  <div class="flex items-center justify-between px-4 h-16">' +
+    '<div class="w-72 shrink-0 flex flex-col min-h-0 border-r border-slate-200">' +
+    '  <div class="flex items-center justify-between px-4 h-16 shrink-0">' +
     '    <div class="size-10 rounded-full border border-slate-200 shadow-sm flex items-center justify-center font-bold text-slate-600 hover:bg-slate-50 cursor-pointer">&middot;&middot;&middot;</div>' +
     '    <span class="text-lg font-semibold">Chats</span>' +
     '    <div class="size-11 rounded-full bg-green-600 hover:bg-green-700 shadow-md shadow-green-600/40 text-white text-2xl flex items-center justify-center cursor-pointer">+</div>' +
@@ -582,7 +591,7 @@ begin
     '      <div class="absolute bottom-0 right-0 w-1.5 h-0.5 bg-slate-400 rotate-45"></div></div>' +
     '    <span class="text-slate-400">Search</span>' +
     '  </div>' +
-    '  <div class="flex flex-col px-2 overflow-hidden">' +
+    '  <div class="grow min-h-0 flex flex-col px-2 overflow-y-auto">' +
       ChatItem(Avatar('DT', 'from-violet-400 to-indigo-500'), 'Design Team 2026', '<i class="text-green-600">Liam is typing...</i>', '09:58', True) +
       ChatItem(Avatar('SB', 'from-pink-400 to-rose-500'), 'Sophia Bennett', 'Sounds great, see you there!', 'Yesterday') +
       ChatItem(Avatar('EC', 'from-sky-400 to-blue-500'), 'Emma Carter', 'You reacted to "Look, it still works"', 'Yesterday') +
@@ -592,18 +601,31 @@ begin
       ChatItem(Avatar('LM', 'from-cyan-400 to-sky-500'), 'Lucas Meyer', 'Not the same. I do not censor anything', 'Wednesday', False,
         '<span class="text-sky-500 font-bold">&check;&check;</span>') +
       ChatItem(Avatar('MH', 'from-fuchsia-400 to-purple-500'), 'Mia Horvath', 'Good morning, no problem at all', 'Monday') +
+      ChatItem(Avatar('JW', 'from-lime-400 to-green-500'), 'James Walker', 'Photo', 'Sunday') +
+      ChatItem(Avatar('AK', 'from-orange-400 to-red-500'), 'Ava Kim', 'Thanks a lot!', 'Saturday') +
+      ChatItem(Avatar('BT', 'from-slate-400 to-slate-600'), 'Build server', 'Release 2.4 deployed', '10/01/26') +
+      ChatItem(Avatar('HR', 'from-teal-400 to-cyan-500'), 'Henry Ross', 'Let us talk on Monday', '09/29/26') +
     '  </div>' +
     '</div>' +
     // conversation
     '<div class="grow min-w-0 flex flex-col bg-[url(demo-chat-pattern)]">' +
-    '  <div class="flex items-center gap-3 px-4 h-16 bg-white/90 border-b border-slate-200">' +
+    '  <div class="flex items-center gap-3 px-4 h-16 shrink-0 bg-white/90 border-b border-slate-200">' +
          Avatar('DT', 'from-violet-400 to-indigo-500', 'size-10') +
     '    <div class="grow min-w-0 flex flex-col"><span class="font-semibold truncate">Design Team 2026</span><span class="text-xs text-slate-500">3 online</span></div>' +
     '    <div class="flex items-center gap-1 px-3 py-1.5 rounded-full border border-slate-200 bg-white hover:bg-slate-50 cursor-pointer">' +
     '      <div class="w-5 h-3.5 rounded border-2 border-slate-600"></div><span class="text-xs text-slate-600">&#9662;</span></div>' +
     '    <div class="px-2 font-bold text-slate-600 cursor-pointer">&middot;&middot;&middot;</div>' +
     '  </div>' +
-    '  <div class="grow min-h-0 overflow-hidden flex flex-col justify-end gap-3 px-6 py-4">' +
+    '  <div class="grow min-h-0 overflow-y-auto flex flex-col justify-end gap-3 px-6 py-4">' +
+    '    <div class="self-center px-3 py-1 rounded-lg bg-white/80 text-xs text-slate-500 shadow-sm">YESTERDAY</div>' +
+    '    <div class="flex justify-end"><div class="max-w-md px-3 py-2 bg-[#d9fdd3] rounded-2xl rounded-br-sm shadow-sm">Is everyone coming to the workshop?</div></div>' +
+    '    <div class="flex items-end gap-2">' + Avatar('SB', 'from-pink-400 to-rose-500', 'size-8') +
+    '      <div class="max-w-md flex flex-col px-3 py-2 bg-white rounded-2xl rounded-bl-sm shadow-sm"><span class="text-sm font-semibold text-pink-600">Sophia Bennett</span>' +
+    '      <span>Yes, I will be there at nine.</span></div></div>' +
+    '    <div class="flex items-end gap-2">' + Avatar('NF', 'from-emerald-400 to-teal-500', 'size-8') +
+    '      <div class="max-w-md flex flex-col px-3 py-2 bg-white rounded-2xl rounded-bl-sm shadow-sm"><span class="text-sm font-semibold text-emerald-600">Noah Fischer</span>' +
+    '      <span>Me too. Who brings the projector?</span></div></div>' +
+    '    <div class="self-center px-3 py-1 rounded-lg bg-white/80 text-xs text-slate-500 shadow-sm">TODAY</div>' +
     // message with quote
     '    <div class="flex items-end gap-2">' + Avatar('EC', 'from-sky-400 to-blue-500', 'size-8') +
     '      <div class="max-w-md flex flex-col gap-1.5 px-3 py-2 bg-white rounded-2xl rounded-bl-sm shadow-sm">' +
@@ -645,7 +667,7 @@ begin
     '    </div>' +
     '  </div>' +
     // composer
-    '  <div class="flex items-center gap-3 px-4 py-3 bg-slate-50 border-t border-slate-200">' +
+    '  <div class="flex items-center gap-3 px-4 py-3 shrink-0 bg-slate-50 border-t border-slate-200">' +
     '    <div class="size-11 shrink-0 rounded-full border border-slate-200 bg-white text-2xl text-slate-600 flex items-center justify-center hover:bg-slate-100 cursor-pointer">+</div>' +
     '    <div class="grow flex items-center px-4 h-11 rounded-full bg-white border border-slate-200">' +
     '      <span class="grow text-slate-400">Type a message</span><span class="text-xl text-slate-500">&#9786;</span></div>' +
@@ -654,6 +676,404 @@ begin
     '        <div class="w-4 h-2 -mt-1 rounded-b-full border-2 border-t-0 border-white"></div><div class="w-0.5 h-1 bg-white"></div></div></div>' +
     '  </div>' +
     '</div>' +
+    '</div>');
+end;
+
+(*
+  Input with label, wrapper (rounded border, shadow, focus ring) and LCL control placeholder.
+  data-lcl nodes are replaced by LCL controls in demo application (TEdit, TMemo, TComboBox),
+  the placeholder text is shown by PNG renderer.
+*)
+const
+  INPUT_WRAP = 'flex items-center gap-2 px-3 rounded-xl border border-slate-300 bg-white shadow-sm ' +
+    'focus-within:border-indigo-500 focus-within:ring-4 focus-within:ring-indigo-100';
+
+function Field(const ALabel, AInner: String; const AHint: String = ''; ARequired: Boolean = False; const AError: String = ''): String;
+begin
+  Result := '<div class="flex flex-col gap-1.5">' +
+    '<div class="flex gap-1 text-sm font-medium text-slate-700"><span>' + ALabel + '</span>';
+  if ARequired then Result := Result + '<span class="text-rose-500">*</span>';
+  Result := Result + '</div>' + AInner;
+  if AError <> '' then
+    Result := Result + '<div class="flex items-center gap-1.5 text-xs text-rose-600">' +
+      '<div class="size-4 rounded-full bg-rose-500 text-white text-[10px] font-bold flex items-center justify-center">!</div>' + AError + '</div>'
+  else if AHint <> '' then
+    Result := Result + '<div class="text-xs text-slate-500">' + AHint + '</div>';
+  Result := Result + '</div>';
+end;
+
+function Edit(const APlaceholder: String; const AExtra: String = ''): String;
+begin
+  Result := '<div class="grow text-slate-400" data-lcl="edit" placeholder="' + APlaceholder + '"' + AExtra + '>' + APlaceholder + '</div>';
+end;
+
+function Switch(AOn: Boolean): String;
+const
+  ON_CLS = 'bg-indigo-600 justify-end';
+begin
+  if AOn then
+    Result := '<div class="w-11 h-6 shrink-0 p-0.5 rounded-full flex cursor-pointer bg-slate-300 ' + ON_CLS + '" data-active="' + ON_CLS + '" data-checked="1">'
+  else
+    Result := '<div class="w-11 h-6 shrink-0 p-0.5 rounded-full flex cursor-pointer bg-slate-300" data-active="' + ON_CLS + '">';
+  Result := Result + '<div class="size-5 rounded-full bg-white shadow"></div></div>';
+end;
+
+function Checkbox(const AText: String; AChecked: Boolean): String;
+const
+  ON_CLS = 'bg-indigo-600 border-indigo-600 text-white';
+var
+  Cls: String;
+begin
+  Cls := 'size-5 shrink-0 rounded-md border-2 border-slate-300 bg-white text-transparent text-xs font-bold flex items-center justify-center cursor-pointer';
+  if AChecked then
+    Result := '<div class="flex items-center gap-2"><div class="' + Cls + ' ' + ON_CLS + '" data-active="' + ON_CLS + '" data-checked="1">&check;</div>'
+  else
+    Result := '<div class="flex items-center gap-2"><div class="' + Cls + '" data-active="' + ON_CLS + '">&check;</div>';
+  Result := Result + '<span class="text-sm text-slate-700">' + AText + '</span></div>';
+end;
+
+(*
+  Inputs: LCL controls inside of styled nodes
+*)
+procedure BuildForms(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
+begin
+  ABody.SetClass('p-8 bg-slate-50');
+  ABody.AppendHTML(
+    '<div class="max-w-2xl mx-auto flex flex-col gap-6">' +
+    '  <div class="flex flex-col gap-1"><span class="text-2xl font-bold text-slate-900">Inputs</span>' +
+    '    <span class="text-slate-500">Lazarus controls (TEdit, TMemo, TComboBox) inside of nodes styled with utility classes</span></div>' +
+    '  <div class="flex flex-col gap-5 p-6 bg-white rounded-2xl shadow-md">' +
+    '    <div class="flex flex-wrap gap-5">' +
+    '      <div class="grow basis-56">' + Field('First name', '<div class="h-11 ' + INPUT_WRAP + '">' + Edit('Jane') + '</div>', '', True) + '</div>' +
+    '      <div class="grow basis-56">' + Field('Last name', '<div class="h-11 ' + INPUT_WRAP + '">' + Edit('Doe') + '</div>', '', True) + '</div>' +
+    '    </div>' +
+    Field('E-mail', '<div class="h-11 ' + INPUT_WRAP + '"><span class="text-slate-400">@</span>' + Edit('name@example.com') + '</div>',
+      'We never share your e-mail address.', True) +
+    Field('Website', '<div class="h-11 flex items-stretch rounded-xl border border-slate-300 bg-white shadow-sm overflow-hidden ' +
+      'focus-within:border-indigo-500 focus-within:ring-4 focus-within:ring-indigo-100">' +
+      '<div class="flex items-center px-3 bg-slate-100 border-r border-slate-300 text-sm text-slate-500">https://</div>' +
+      '<div class="grow flex items-center px-3">' + Edit('www.example.com') + '</div></div>') +
+    Field('Password', '<div class="h-11 ' + INPUT_WRAP + '">' + Edit('Password', ' data-password="1" id="pwd"') +
+      '<div class="px-2 py-1 rounded-md text-sm font-medium text-indigo-600 hover:bg-indigo-50 cursor-pointer" data-action="toggle-password">Show</div></div>',
+      'At least 8 characters.', True) +
+    Field('Phone', '<div class="h-11 flex items-center gap-2 px-3 rounded-xl border border-rose-400 bg-white shadow-sm ' +
+      'focus-within:ring-4 focus-within:ring-rose-100">' + Edit('+1 555 0100') + '</div>', '', False, 'Phone number is not valid.') +
+    Field('Country', '<div class="h-11 ' + INPUT_WRAP + '"><div class="grow text-slate-700" data-lcl="combo" ' +
+      'data-items="Slovakia|Czech Republic|Austria|Germany|Poland">Slovakia</div></div>') +
+    Field('Message', '<div class="h-28 py-2 ' + INPUT_WRAP + ' items-start"><div class="grow self-stretch text-slate-400" data-lcl="memo" ' +
+      'placeholder="Write a few words...">Write a few words...</div></div>', 'Markdown is supported.') +
+    '    <div class="flex items-center gap-2 h-12 pl-4 pr-1.5 rounded-full border border-slate-300 bg-white shadow-sm focus-within:ring-4 focus-within:ring-indigo-100">' +
+    '      <div class="relative size-4 shrink-0"><div class="size-3 rounded-full border-2 border-slate-400"></div>' +
+    '        <div class="absolute bottom-0 right-0 w-1.5 h-0.5 bg-slate-400 rotate-45"></div></div>' +
+           Edit('Search with button inside') +
+    '      <div class="px-4 py-2 rounded-full bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold cursor-pointer">Search</div>' +
+    '    </div>' +
+    '    <div class="flex flex-wrap gap-6">' + Checkbox('Remember me', True) + Checkbox('Send newsletter', False) +
+    '      <div class="flex items-center gap-3">' + Switch(True) + '<span class="text-sm text-slate-700">Notifications</span></div></div>' +
+    '    <div class="flex justify-end gap-3 pt-2 border-t border-slate-100">' +
+    '      <div class="px-4 py-2 rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-50 cursor-pointer">Cancel</div>' +
+    '      <div class="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white font-semibold shadow-md shadow-indigo-600/30 cursor-pointer">Save</div>' +
+    '    </div>' +
+    '  </div>' +
+    '</div>');
+end;
+
+function SettingsRow(const ATitle, AText, AControl: String): String;
+begin
+  Result := '<div class="flex items-center gap-4 py-4 border-b border-slate-100 last:border-b-0">' +
+    '<div class="grow min-w-0 flex flex-col"><span class="font-medium text-slate-900">' + ATitle + '</span>' +
+    '<span class="text-sm text-slate-500">' + AText + '</span></div>' + AControl + '</div>';
+end;
+
+function ThemeCard(const AName, APreview: String; AChecked: Boolean): String;
+const
+  ON_CLS = 'border-indigo-500 ring-4 ring-indigo-100';
+var
+  Cls: String;
+begin
+  Cls := 'grow basis-32 flex flex-col gap-2 p-2 rounded-xl border-2 border-slate-200 cursor-pointer hover:border-slate-300';
+  if AChecked then Cls := Cls + ' ' + ON_CLS;
+  Result := '<div class="' + Cls + '" data-group="theme" data-active="' + ON_CLS + '"';
+  if AChecked then Result := Result + ' data-checked="1"';
+  Result := Result + '>' + APreview + '<span class="text-sm font-medium text-slate-700 px-1">' + AName + '</span></div>';
+end;
+
+(*
+  Settings page
+*)
+procedure BuildSettings(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
+const
+  MENU_ON = 'bg-indigo-50 text-indigo-700 font-semibold';
+  function MenuItem(const AText: String; AActive: Boolean): String;
+  begin
+    if AActive then
+      Result := '<div class="px-3 py-2 rounded-lg cursor-pointer text-slate-600 hover:bg-slate-100 ' + MENU_ON + '" data-group="menu" data-active="' + MENU_ON + '" data-checked="1">' + AText + '</div>'
+    else
+      Result := '<div class="px-3 py-2 rounded-lg cursor-pointer text-slate-600 hover:bg-slate-100" data-group="menu" data-active="' + MENU_ON + '">' + AText + '</div>';
+  end;
+begin
+  RegisterCoverImage;
+  ABody.SetClass('bg-slate-50');
+  ABody.AppendHTML(
+    '<div class="flex h-full min-h-[420px]">' +
+    '  <div class="hidden md:flex w-56 shrink-0 flex-col gap-1 p-4 border-r border-slate-200 bg-white">' +
+    '    <span class="px-3 pb-3 text-lg font-bold text-slate-900">Settings</span>' +
+         MenuItem('Account', True) + MenuItem('Notifications', False) + MenuItem('Appearance', False) +
+         MenuItem('Privacy', False) + MenuItem('Billing', False) +
+    '  </div>' +
+    '  <div class="grow min-w-0 overflow-y-auto">' +
+    '    <div class="max-w-2xl mx-auto p-8 flex flex-col gap-6">' +
+    // profile
+    '      <div class="p-6 bg-white rounded-2xl shadow-sm border border-slate-200 flex flex-col gap-5">' +
+    '        <div class="flex flex-col"><span class="text-lg font-semibold text-slate-900">Profile</span>' +
+    '          <span class="text-sm text-slate-500">This information is visible to your team.</span></div>' +
+    '        <div class="flex items-center gap-4">' +
+    '          <img class="size-16 rounded-full object-cover ring-4 ring-slate-100" src="/img/cover.png">' +
+    '          <div class="px-3 py-1.5 rounded-lg border border-slate-300 text-sm font-medium text-slate-700 hover:bg-slate-50 cursor-pointer">Change</div>' +
+    '          <div class="px-3 py-1.5 rounded-lg text-sm font-medium text-rose-600 hover:bg-rose-50 cursor-pointer">Remove</div>' +
+    '        </div>' +
+    '        <div class="flex flex-wrap gap-4">' +
+    '          <div class="grow basis-56">' + Field('Name', '<div class="h-10 ' + INPUT_WRAP + '">' + Edit('Jane Doe') + '</div>', '', True) + '</div>' +
+    '          <div class="grow basis-56">' + Field('E-mail', '<div class="h-10 ' + INPUT_WRAP + '">' + Edit('jane@example.com') + '</div>', '', True) + '</div>' +
+    '        </div>' +
+    // notifications
+    '      </div>' +
+    '      <div class="px-6 py-2 bg-white rounded-2xl shadow-sm border border-slate-200 flex flex-col">' +
+    '        <span class="pt-4 text-lg font-semibold text-slate-900">Notifications</span>' +
+           SettingsRow('Comments', 'Notify me when someone comments on my post.', Switch(True)) +
+           SettingsRow('Mentions', 'Notify me when someone mentions me.', Switch(True)) +
+           SettingsRow('Weekly summary', 'A short e-mail with activity of your team.', Switch(False)) +
+    '      </div>' +
+    // appearance
+    '      <div class="p-6 bg-white rounded-2xl shadow-sm border border-slate-200 flex flex-col gap-4">' +
+    '        <span class="text-lg font-semibold text-slate-900">Appearance</span>' +
+    '        <div class="flex flex-wrap gap-4">' +
+           ThemeCard('Light', '<div class="h-20 rounded-lg bg-slate-100 p-2 flex gap-1.5"><div class="w-6 rounded bg-white"></div>' +
+             '<div class="grow flex flex-col gap-1.5"><div class="h-3 rounded bg-white"></div><div class="h-3 w-2/3 rounded bg-white"></div></div></div>', True) +
+           ThemeCard('Dark', '<div class="h-20 rounded-lg bg-slate-800 p-2 flex gap-1.5"><div class="w-6 rounded bg-slate-600"></div>' +
+             '<div class="grow flex flex-col gap-1.5"><div class="h-3 rounded bg-slate-600"></div><div class="h-3 w-2/3 rounded bg-slate-600"></div></div></div>', False) +
+           ThemeCard('System', '<div class="h-20 rounded-lg bg-gradient-to-r from-slate-100 to-slate-800 p-2 flex gap-1.5"><div class="w-6 rounded bg-white/70"></div>' +
+             '<div class="grow flex flex-col gap-1.5"><div class="h-3 rounded bg-white/50"></div><div class="h-3 w-2/3 rounded bg-white/50"></div></div></div>', False) +
+    '        </div>' +
+    '      </div>' +
+    // danger zone
+    '      <div class="p-6 rounded-2xl border border-rose-200 bg-rose-50 flex flex-wrap items-center gap-4">' +
+    '        <div class="grow flex flex-col"><span class="font-semibold text-rose-700">Delete account</span>' +
+    '          <span class="text-sm text-rose-600/80">All your data will be removed. This cannot be undone.</span></div>' +
+    '        <div class="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-semibold shadow-sm cursor-pointer">Delete</div>' +
+    '      </div>' +
+    '    </div>' +
+    '  </div>' +
+    '</div>');
+end;
+
+(*
+  Generated product images for shop demo
+*)
+procedure RegisterProductImages;
+const
+  COLORS: array[0..5] of TColor = ($F6823B, $5EC522, $4444EF, $0B9EF5, $F75C8B, $8B5CF6);
+var
+  Bmp: TBitmap;
+  I, Y: Integer;
+begin
+  for I := 0 to 5 do begin
+    Bmp := TBitmap.Create;
+    try
+      Bmp.SetSize(160, 160);
+      for Y := 0 to 159 do begin
+        Bmp.Canvas.Pen.Color := RGBToColor(248 - Y div 8, 248 - Y div 10, 250 - Y div 12);
+        Bmp.Canvas.Line(0, Y, 160, Y);
+      end;
+      Bmp.Canvas.Pen.Style := psClear;
+      Bmp.Canvas.Brush.Color := COLORS[I];
+      case I mod 3 of
+        0: Bmp.Canvas.Ellipse(40, 40, 120, 120);
+        1: Bmp.Canvas.RoundRect(35, 45, 125, 115, 30, 30);
+        2: Bmp.Canvas.Polygon([Point(80, 30), Point(130, 120), Point(30, 120)]);
+      end;
+      Bmp.Canvas.Brush.Color := RGBToColor(255, 255, 255);
+      Bmp.Canvas.Ellipse(60, 55, 80, 75);
+      CSSRegisterImage('product-' + IntToStr(I), Bmp);
+    finally
+      Bmp.Free;
+    end;
+  end;
+end;
+
+function ProductCard(AIndex: Integer; const AName, APrice, AOldPrice: String; AStars: Integer; const ABadge: String): String;
+var
+  I: Integer;
+  Stars: String;
+begin
+  Stars := '';
+  for I := 1 to 5 do
+    if I <= AStars then Stars := Stars + '&#9733;' else Stars := Stars + '<span class="text-slate-300">&#9733;</span>';
+  Result :=
+    '<div class="grow basis-48 max-w-[260px] flex flex-col bg-white rounded-2xl border border-slate-200 overflow-hidden hover:shadow-xl hover:-translate-y-1 cursor-pointer">' +
+    '  <div class="relative h-40 bg-slate-100">' +
+    '    <img class="w-full h-full object-cover" src="product-' + IntToStr(AIndex) + '">';
+  if ABadge <> '' then
+    Result := Result + '<div class="absolute top-3 left-3 px-2 py-0.5 rounded-full bg-rose-500 text-white text-xs font-bold shadow">' + ABadge + '</div>';
+  Result := Result +
+    '    <div class="absolute top-3 right-3 size-8 rounded-full bg-white/90 shadow flex items-center justify-center text-rose-500 hover:scale-110">&#9825;</div>' +
+    '  </div>' +
+    '  <div class="flex flex-col gap-2 p-4">' +
+    '    <span class="font-semibold text-slate-900 truncate">' + AName + '</span>' +
+    '    <div class="flex items-center gap-1 text-sm text-amber-400">' + Stars + '<span class="text-xs text-slate-400 ml-1">(' + IntToStr(AStars * 23) + ')</span></div>' +
+    '    <div class="flex items-center gap-2 mt-1"><span class="text-lg font-bold text-slate-900">' + APrice + '</span>';
+  if AOldPrice <> '' then Result := Result + '<span class="text-sm text-slate-400 line-through">' + AOldPrice + '</span>';
+  Result := Result + '</div>' +
+    '    <div class="mt-1 py-2 rounded-lg bg-slate-900 hover:bg-indigo-600 text-white text-sm font-semibold text-center">Add to cart</div>' +
+    '  </div>' +
+    '</div>';
+end;
+
+(*
+  E-shop with product list
+*)
+procedure BuildShop(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
+  function Swatch(const AColor: String; AOn: Boolean): String;
+  begin
+    if AOn then
+      Result := '<div class="size-7 rounded-full border-2 border-white shadow cursor-pointer ' + AColor + ' ring-2 ring-slate-900" data-group="color" data-active="ring-2 ring-slate-900" data-checked="1"></div>'
+    else
+      Result := '<div class="size-7 rounded-full border-2 border-white shadow cursor-pointer ' + AColor + '" data-group="color" data-active="ring-2 ring-slate-900"></div>';
+  end;
+begin
+  RegisterProductImages;
+  ABody.SetClass('bg-slate-50');
+  ABody.AppendHTML(
+    '<div class="flex flex-col h-full min-h-[420px]">' +
+    // header
+    '  <div class="flex items-center gap-6 px-6 h-16 shrink-0 bg-white border-b border-slate-200">' +
+    '    <div class="flex items-center gap-2"><div class="size-8 rounded-lg bg-gradient-to-br from-indigo-500 to-fuchsia-500 rotate-12"></div>' +
+    '      <span class="text-lg font-bold text-slate-900">Lumen Store</span></div>' +
+    '    <div class="hidden md:flex gap-5 text-sm font-medium text-slate-600"><span class="text-slate-900">Shop</span><span>Collections</span><span>Sale</span></div>' +
+    '    <div class="grow max-w-md flex items-center gap-2 h-10 px-4 rounded-full bg-slate-100 focus-within:bg-white focus-within:ring-2 focus-within:ring-indigo-500">' +
+    '      <div class="relative size-4 shrink-0"><div class="size-3 rounded-full border-2 border-slate-400"></div>' +
+    '        <div class="absolute bottom-0 right-0 w-1.5 h-0.5 bg-slate-400 rotate-45"></div></div>' + Edit('Search products') + '</div>' +
+    '    <div class="grow"></div>' +
+    '    <div class="relative size-10 rounded-full hover:bg-slate-100 flex items-center justify-center cursor-pointer">' +
+    '      <div class="w-5 h-4 rounded-b-lg border-2 border-t-0 border-slate-700"></div>' +
+    '      <div class="absolute -top-0.5 -right-0.5 size-5 rounded-full bg-rose-500 text-white text-xs font-bold flex items-center justify-center ring-2 ring-white">3</div>' +
+    '    </div>' +
+    '  </div>' +
+    '  <div class="grow min-h-0 flex">' +
+    // filters
+    '    <div class="hidden md:flex w-60 shrink-0 flex-col gap-6 p-6 border-r border-slate-200 bg-white overflow-y-auto">' +
+    '      <div class="flex flex-col gap-3"><span class="text-sm font-semibold text-slate-900">Category</span>' +
+             Checkbox('Lamps', True) + Checkbox('Chairs', False) + Checkbox('Tables', True) + Checkbox('Decor', False) + '</div>' +
+    '      <div class="flex flex-col gap-3"><span class="text-sm font-semibold text-slate-900">Price</span>' +
+    '        <div class="relative h-6 flex items-center"><div class="w-full h-1.5 rounded-full bg-slate-200"></div>' +
+    '          <div class="absolute left-[20%] right-[30%] h-1.5 rounded-full bg-indigo-500"></div>' +
+    '          <div class="absolute left-[20%] -translate-x-1/2 size-5 rounded-full bg-white border-2 border-indigo-500 shadow"></div>' +
+    '          <div class="absolute left-[70%] -translate-x-1/2 size-5 rounded-full bg-white border-2 border-indigo-500 shadow"></div></div>' +
+    '        <div class="flex justify-between text-xs text-slate-500"><span>20 EUR</span><span>350 EUR</span></div></div>' +
+    '      <div class="flex flex-col gap-3"><span class="text-sm font-semibold text-slate-900">Color</span>' +
+    '        <div class="flex flex-wrap gap-3">' + Swatch('bg-slate-900', True) + Swatch('bg-amber-400', False) +
+               Swatch('bg-emerald-500', False) + Swatch('bg-sky-500', False) + Swatch('bg-rose-400', False) + '</div></div>' +
+    '    </div>' +
+    // products
+    '    <div class="grow min-w-0 overflow-y-auto p-6 flex flex-col gap-4">' +
+    '      <div class="flex items-center justify-between"><span class="text-xl font-bold text-slate-900">Lamps &amp; Tables</span>' +
+    '        <div class="flex p-1 rounded-lg bg-slate-200 text-sm"><span class="px-3 py-1 rounded-md bg-white shadow-sm font-medium">Popular</span>' +
+    '          <span class="px-3 py-1 text-slate-600">Newest</span><span class="px-3 py-1 text-slate-600">Price</span></div></div>' +
+    '      <div class="flex flex-wrap gap-5">' +
+             ProductCard(0, 'Orbit table lamp', '89 EUR', '', 4, 'New') +
+             ProductCard(1, 'Nordic side table', '149 EUR', '189 EUR', 5, '-20%') +
+             ProductCard(2, 'Prism floor lamp', '219 EUR', '', 4, '') +
+             ProductCard(3, 'Sun wall light', '59 EUR', '79 EUR', 3, 'Sale') +
+             ProductCard(4, 'Bloom vase set', '39 EUR', '', 5, '') +
+             ProductCard(5, 'Halo desk lamp', '119 EUR', '', 4, 'New') +
+    '      </div>' +
+    '    </div>' +
+    '  </div>' +
+    '</div>');
+end;
+
+(*
+  Month calendar
+*)
+procedure BuildCalendar(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
+  function Event(const AText, AColor: String): String;
+  begin
+    Result := '<div class="px-1.5 py-0.5 rounded-md text-xs font-medium truncate ' + AColor + '">' + AText + '</div>';
+  end;
+  function Cell(ADay: Integer; AOther, AToday: Boolean; const AEvents: String): String;
+  var
+    Num: String;
+  begin
+    if AToday then Num := '<div class="size-7 rounded-full bg-indigo-600 text-white text-sm font-semibold flex items-center justify-center">' + IntToStr(ADay) + '</div>'
+    else if AOther then Num := '<div class="size-7 text-sm text-slate-300 flex items-center justify-center">' + IntToStr(ADay) + '</div>'
+    else Num := '<div class="size-7 text-sm text-slate-700 flex items-center justify-center">' + IntToStr(ADay) + '</div>';
+    Result := '<div class="grow basis-0 min-w-0 flex flex-col gap-1 p-1.5 border-r border-b border-slate-200 last:border-r-0 hover:bg-slate-50">' + Num + AEvents + '</div>';
+  end;
+var
+  Grid, Ev: String;
+  W, D, Day: Integer;
+begin
+  ABody.SetClass('bg-white');
+  // October 2026 starts on Thursday: first week begins Monday September 28
+  Grid := '';
+  for W := 0 to 4 do begin
+    Grid := Grid + '<div class="grow basis-0 min-h-[84px] flex">';
+    for D := 0 to 6 do begin
+      Day := W * 7 + D - 2;       // 1 = October 1
+      Ev := '';
+      case Day of
+        1: Ev := Event('Sprint planning', 'bg-sky-100 text-sky-700');
+        5: Ev := Event('Design review', 'bg-violet-100 text-violet-700');
+        8: Ev := Event('Release 2.4', 'bg-emerald-100 text-emerald-700') + Event('Retro', 'bg-amber-100 text-amber-700');
+        10: Ev := Event('Workshop 9:00', 'bg-rose-100 text-rose-700');
+        14: Ev := Event('Customer call', 'bg-sky-100 text-sky-700');
+        16: Ev := Event('Team lunch', 'bg-amber-100 text-amber-700');
+        21: Ev := Event('Conference', 'bg-fuchsia-100 text-fuchsia-700') + Event('Talk: CSS in Pascal', 'bg-indigo-100 text-indigo-700');
+        22: Ev := Event('Conference', 'bg-fuchsia-100 text-fuchsia-700');
+        27: Ev := Event('Board meeting', 'bg-slate-200 text-slate-700');
+        30: Ev := Event('Halloween party', 'bg-orange-100 text-orange-700');
+      end;
+      if Day < 1 then Grid := Grid + Cell(30 + Day, True, False, '')
+      else if Day > 31 then Grid := Grid + Cell(Day - 31, True, False, '')
+      else Grid := Grid + Cell(Day, False, Day = 10, Ev);
+    end;
+    Grid := Grid + '</div>';
+  end;
+  ABody.AppendHTML(
+    '<div class="flex h-full min-h-[420px]">' +
+    '  <div class="grow min-w-0 flex flex-col">' +
+    '    <div class="flex flex-wrap items-center gap-3 px-6 py-4 border-b border-slate-200">' +
+    '      <span class="text-xl font-bold text-slate-900">October 2026</span>' +
+    '      <div class="flex rounded-lg border border-slate-300 overflow-hidden">' +
+    '        <div class="px-2.5 py-1 hover:bg-slate-50 cursor-pointer text-slate-600">&lsaquo;</div>' +
+    '        <div class="px-3 py-1 border-x border-slate-300 text-sm font-medium hover:bg-slate-50 cursor-pointer">Today</div>' +
+    '        <div class="px-2.5 py-1 hover:bg-slate-50 cursor-pointer text-slate-600">&rsaquo;</div></div>' +
+    '      <div class="grow"></div>' +
+    '      <div class="flex p-1 rounded-lg bg-slate-100 text-sm">' +
+    '        <span class="px-3 py-1 text-slate-600 cursor-pointer" data-group="view" data-active="bg-white shadow-sm text-slate-900 font-medium">Day</span>' +
+    '        <span class="px-3 py-1 text-slate-600 cursor-pointer" data-group="view" data-active="bg-white shadow-sm text-slate-900 font-medium">Week</span>' +
+    '        <span class="px-3 py-1 text-slate-600 cursor-pointer bg-white shadow-sm text-slate-900 font-medium" data-group="view" data-active="bg-white shadow-sm text-slate-900 font-medium" data-checked="1">Month</span></div>' +
+    '      <div class="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold shadow-sm cursor-pointer">+ New event</div>' +
+    '    </div>' +
+    '    <div class="flex border-b border-slate-200 bg-slate-50">' +
+    '      <div class="grow basis-0 py-2 text-center text-xs font-semibold text-slate-500">MON</div><div class="grow basis-0 py-2 text-center text-xs font-semibold text-slate-500">TUE</div>' +
+    '      <div class="grow basis-0 py-2 text-center text-xs font-semibold text-slate-500">WED</div><div class="grow basis-0 py-2 text-center text-xs font-semibold text-slate-500">THU</div>' +
+    '      <div class="grow basis-0 py-2 text-center text-xs font-semibold text-slate-500">FRI</div><div class="grow basis-0 py-2 text-center text-xs font-semibold text-slate-500">SAT</div>' +
+    '      <div class="grow basis-0 py-2 text-center text-xs font-semibold text-slate-500">SUN</div></div>' +
+    '    <div class="grow min-h-0 flex flex-col overflow-y-auto">' + Grid + '</div>' +
+    '  </div>' +
+    // upcoming
+    '  <div class="hidden lg:flex w-72 shrink-0 flex-col gap-4 p-6 border-l border-slate-200 bg-slate-50 overflow-y-auto">' +
+    '    <span class="font-semibold text-slate-900">Upcoming</span>' +
+    '    <div class="flex flex-col gap-1 p-3 rounded-xl bg-white shadow-sm border-l-4 border-rose-500"><span class="text-sm font-semibold">Workshop</span>' +
+    '      <span class="text-xs text-slate-500">Today, 9:00 - 12:00</span></div>' +
+    '    <div class="flex flex-col gap-1 p-3 rounded-xl bg-white shadow-sm border-l-4 border-sky-500"><span class="text-sm font-semibold">Customer call</span>' +
+    '      <span class="text-xs text-slate-500">Wed, Oct 14, 14:30</span></div>' +
+    '    <div class="flex flex-col gap-1 p-3 rounded-xl bg-white shadow-sm border-l-4 border-amber-500"><span class="text-sm font-semibold">Team lunch</span>' +
+    '      <span class="text-xs text-slate-500">Fri, Oct 16, 12:00</span></div>' +
+    '    <div class="flex flex-col gap-1 p-3 rounded-xl bg-white shadow-sm border-l-4 border-fuchsia-500"><span class="text-sm font-semibold">Conference</span>' +
+    '      <span class="text-xs text-slate-500">Oct 21 - 22</span></div>' +
+    '  </div>' +
     '</div>');
 end;
 

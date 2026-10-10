@@ -148,8 +148,12 @@ end;
 
 procedure TTestTailwind.TestShadows;
 begin
-  CheckResolve('shadow-md', 'box-shadow:0 4px 6px -1px var(--tw-shadow-color, rgb(0 0 0 / 0.1)), 0 2px 4px -2px var(--tw-shadow-color, rgb(0 0 0 / 0.1))');
-  CheckResolve('shadow-none', 'box-shadow:none');
+  CheckResolve('shadow-md', '--tw-shadow:0 4px 6px -1px var(--tw-shadow-color, rgb(0 0 0 / 0.1)), 0 2px 4px -2px var(--tw-shadow-color, rgb(0 0 0 / 0.1));' +
+    'box-shadow:var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow)');
+  CheckResolve('ring-2', '--tw-ring-shadow:0 0 0 2px var(--tw-ring-color, rgb(59 130 246 / 0.5));box-shadow:var(--tw-ring-shadow), var(--tw-shadow, 0 0 #0000)');
+  CheckResolve('ring-indigo-500', '--tw-ring-color:#6366f1');
+  CheckResolve('z-10', 'z-index:10');
+  CheckResolve('overflow-y-auto', 'overflow-y:auto');
   CheckResolve('shadow-blue-500/50', '--tw-shadow-color:rgba(59,130,246,0.5)');
 end;
 

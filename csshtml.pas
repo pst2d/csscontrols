@@ -46,12 +46,13 @@ implementation
 const
   VOID_ELEMENTS: array[0..9] of String = ('img', 'br', 'hr', 'input', 'meta', 'link', 'area', 'base', 'col', 'wbr');
 
-  ENTITIES: array[0..19] of record N, V: String; end = (
+  ENTITIES: array[0..21] of record N, V: String; end = (
     (N: 'amp'; V: '&'), (N: 'lt'; V: '<'), (N: 'gt'; V: '>'), (N: 'quot'; V: '"'), (N: 'apos'; V: ''''),
     (N: 'nbsp'; V: #$C2#$A0), (N: 'middot'; V: #$C2#$B7), (N: 'copy'; V: #$C2#$A9), (N: 'reg'; V: #$C2#$AE),
     (N: 'hellip'; V: #$E2#$80#$A6), (N: 'mdash'; V: #$E2#$80#$94), (N: 'ndash'; V: #$E2#$80#$93),
     (N: 'bull'; V: #$E2#$80#$A2), (N: 'times'; V: #$C3#$97), (N: 'euro'; V: #$E2#$82#$AC),
     (N: 'rarr'; V: #$E2#$86#$92), (N: 'larr'; V: #$E2#$86#$90), (N: 'uarr'; V: #$E2#$86#$91), (N: 'darr'; V: #$E2#$86#$93),
+    (N: 'lsaquo'; V: #$E2#$80#$B9), (N: 'rsaquo'; V: #$E2#$80#$BA),
     (N: 'check'; V: #$E2#$9C#$93)
   );
 
