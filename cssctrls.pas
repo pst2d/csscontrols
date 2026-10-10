@@ -339,16 +339,24 @@ begin
 end;
 
 procedure TCSSShape.Paint;
+var
+  R: TRect;
 begin
   if Assigned(Parent) then Body.PaintScale := Parent.GetCanvasScaleFactor;   // 2 on macOS Retina
   if not FLayoutValid then begin     // layout was changed by CalculatePreferredSize
     Body.LayoutTo(0, 0, Width, Height);
     FLayoutValid := True;
   end;
-  Body.PaintTo(Self.Canvas, ClientRect);
+  // only invalidated area is painted (nodes outside of it are skipped)
+  R := TRect.Intersect(Canvas.ClipRect, ClientRect);
+  if R.IsEmpty then R := ClientRect;
+  Body.PaintTo(Self.Canvas, R);
   if FInspect and Assigned(FInspectNode) then PaintInspector(Canvas, FInspectNode);
   if Assigned(FOnPaint) then FOnPaint(Self);
-  if not (csDesigning in ComponentState) and not FAnimTimer.Enabled and Body.Animating then FAnimTimer.Enabled := True;
+  if not (csDesigning in ComponentState) and not FAnimTimer.Enabled and Body.Animating then begin
+    FAnimTimer.Interval := 15;
+    FAnimTimer.Enabled := True;
+  end;
 end;
 
 (*
@@ -356,24 +364,32 @@ end;
 *)
 procedure TCSSShape.AnimTimer(Sender: TObject);
 var
-  R, R2: TRect;
+  Before, After: TCSSRectArray;
+  I: Integer;
 begin
-  R := Body.AnimationBounds;
+  Before := Body.AnimationRects;
   if not Body.AnimationTick(GetTickCount64) then begin
     FAnimTimer.Enabled := False;
     Exit;
   end;
-  R2 := Body.AnimationBounds;
-  if R.IsEmpty then R := R2
-    else if not R2.IsEmpty then R := TRect.Union(R, R2);
-  if FInspect then Invalidate else InvalidateArea(R);
+  if FInspect then begin
+    Invalidate;
+    Exit;
+  end;
+  // transitions are smooth (60 fps), endless built-in animations (spinner ...) use 30 fps to save CPU
+  if Body.AnimatingTransitions then FAnimTimer.Interval := 15 else FAnimTimer.Interval := 33;
+  // every animated node is repainted separately (old and new position), not union of all nodes
+  After := Body.AnimationRects;
+  for I := 0 to High(Before) do InvalidateArea(Before[I]);
+  for I := 0 to High(After) do InvalidateArea(After[I]);
 end;
 
 procedure TCSSShape.InvalidateArea(const ARect: TRect);
 var
   R: TRect;
 begin
-  if ARect.IsEmpty or (Parent = nil) or not Parent.HandleAllocated then begin
+  if ARect.IsEmpty then Exit;
+  if (Parent = nil) or not Parent.HandleAllocated then begin
     Invalidate;
     Exit;
   end;

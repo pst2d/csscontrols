@@ -226,7 +226,8 @@ type
   TCSSTiming = record                    // cubic-bezier() timing function
     X1, Y1, X2, Y2: Single;
   end;
-  TCSSColorChannels = array[0..5] of TCSSColor;   // background, color, border top, right, bottom, left
+  TCSSColorChannels = array[0..5] of TCSSColor;
+  TCSSRectArray = array of TRect;   // background, color, border top, right, bottom, left
   PCSSAnim = ^TCSSAnim;
   TCSSAnim = record                      // running transition and/or built-in animation of node
     Start: QWord;
@@ -553,6 +554,8 @@ type
     function Animating: Boolean;                        // root: some nodes are animated (transition or animation)
     function AnimationTick(ANow: QWord): Boolean;      // root: next frame of animations, True = repaint
     function AnimationBounds: TRect;                    // root: painted area of animated nodes
+    function AnimationRects: TCSSRectArray;             // root: painted areas of animated nodes (one per node)
+    function AnimatingTransitions: Boolean;             // root: some transitions run (built-in animations need less fps)
     function TransformPoint(const P: TPointF): TPointF;
     function UntransformPoint(const P: TPointF): TPointF;
     function ScreenToLayout(const P: TPointF): TPointF;
@@ -4407,6 +4410,8 @@ type
   TBgKind = (bkNone, bkColor, bkAlphaColor, bkImage, bkAxisGradient, bkSoftware);
 const
   KIND_SIDE: array[0..3] of TCSSSide = (csTop, csLeft, csBottom, csRight);   // order of colors in RasterizeShape
+  CORNER_SIDE1: array[0..3] of TCSSSide = (csLeft, csTop, csRight, csBottom);  // adjacent sides of corners
+  CORNER_SIDE2: array[0..3] of TCSSSide = (csTop, csRight, csBottom, csLeft);
 var
   cs: TCSSItem;
   Box, R, ClipSave: TRect;
@@ -4550,6 +4555,7 @@ var
     C: TCSSRGBA;
   begin
     C := CSSColorToRGBA(cs.Background.Color);
+    if ToByte(C.A) = 0 then Exit;     // fully transparent bitmap is painted black on Windows (no alpha)
     ACanvas.StretchDraw(ARect, CSSAlphaBitmap(ToByte(C.R), ToByte(C.G), ToByte(C.B), ToByte(C.A)));
   end;
 begin
@@ -4578,7 +4584,7 @@ begin
   if SameText(BgImage, 'none') then BgImage := '';
   Src := nil;
   Kind := bkNone;
-  if cs.Background.Color.ColorType = cctNormal then begin
+  if (cs.Background.Color.ColorType = cctNormal) and (cs.Background.Color.Alpha > 0) then begin
     if cs.Background.Color.Alpha = 255 then Kind := bkColor else Kind := bkAlphaColor;
   end;
   if BgImage <> '' then begin
@@ -4763,6 +4769,8 @@ begin
   if (Kind = bkColor) or AnyBorder then
     for I := 0 to 3 do begin
       if (CW[I] <= 0) or (CH[I] <= 0) then Continue;
+      // empty corner (no background, no adjacent border): fully transparent bitmap would be black on Windows
+      if (Kind <> bkColor) and not (SideVisible[CORNER_SIDE1[I]] or SideVisible[CORNER_SIDE2[I]]) then Continue;
       R := CornerRect(I);
       // key: corner geometry and colors of background and both adjacent sides
       Key := Format('%d,%d,%d,%d,%d,%d,%f', [I, CW[I], CH[I], P[I].x, P[I].y, Ord(CSSAntialiasing), Sc]);
@@ -5454,6 +5462,43 @@ begin
   end;
 end;
 
+function THtmlNode.AnimatingTransitions: Boolean;
+var
+  I, J: Integer;
+  A: PCSSAnim;
+begin
+  Result := False;
+  if CSSAnimNodes = nil then Exit;
+  for I := 0 to CSSAnimNodes.Count - 1 do
+    if THtmlNode(CSSAnimNodes[I]).RootNode = Self then begin
+      A := THtmlNode(CSSAnimNodes[I]).FAnim;
+      if A^.OpacityOn or A^.MatrixOn or A^.MatrixPending then Exit(True);
+      for J := 0 to 5 do
+        if A^.ColorOn[J] then Exit(True);
+    end;
+end;
+
+function THtmlNode.AnimationRects: TCSSRectArray;
+var
+  I: Integer;
+  N: THtmlNode;
+  R: TRect;
+begin
+  Result := nil;
+  if CSSAnimNodes = nil then Exit;
+  for I := 0 to CSSAnimNodes.Count - 1 do begin
+    N := THtmlNode(CSSAnimNodes[I]);
+    if (N.RootNode <> Self) or not N.FVisible then Continue;
+    R := N.FCompSize.ContentRect;
+    if N.FCompStyle.BoxShadow <> '' then InflateRect(R, 60, 60) else InflateRect(R, 2, 2);
+    R := TRect.Intersect(N.TransformedBounds(R), N.ScreenClipRect);    // scrolled out part is not repainted
+    if not R.IsEmpty then begin
+      SetLength(Result, Length(Result) + 1);
+      Result[High(Result)] := R;
+    end;
+  end;
+end;
+
 procedure THtmlNode.StopAnimation;
 begin
   if FAnim = nil then Exit;
@@ -5925,6 +5970,7 @@ var
   Key, SrcKey: String;
   Black, White: TLazIntfImage;
   Opa: Single;
+  NonEmpty: Boolean;
   Pts: array[0..3] of TPointF;
   MAbs, Inv: TCSSMatrix2D;
   Img: TLazIntfImage;
@@ -6105,6 +6151,7 @@ begin
     DW := Round(CB.Width * Sc);
     DH := Round(CB.Height * Sc);
     Img := NewAlphaImage(DW, DH);
+    NonEmpty := False;
     try
       Wr := PixelWriter(Img);
       // only moved (opacity, translate): source pixels are copied (fast path, eg. animated opacity)
@@ -6117,9 +6164,12 @@ begin
           for X := 0 to DW - 1 do begin
             C00 := Sample(X0 + X, Y0 + Y);
             A := C00 shr 24;
-            if A = 0 then WritePixel(Wr, X, 0, 0, 0, 0)
-              else WritePixel(Wr, X, Min(255, ((C00 shr 16) and $FF) * 255 div A), Min(255, ((C00 shr 8) and $FF) * 255 div A),
+            if Round(A * Opa) = 0 then WritePixel(Wr, X, 0, 0, 0, 0)
+            else begin
+              WritePixel(Wr, X, Min(255, ((C00 shr 16) and $FF) * 255 div A), Min(255, ((C00 shr 8) and $FF) * 255 div A),
                 Min(255, (C00 and $FF) * 255 div A), Round(A * Opa));
+              NonEmpty := True;
+            end;
           end;
         end;
       end else
@@ -6151,13 +6201,16 @@ begin
           PG := Ch(C00, 8) * W00 + Ch(C10, 8) * W10 + Ch(C01, 8) * W01 + Ch(C11, 8) * W11;
           PB := Ch(C00, 0) * W00 + Ch(C10, 0) * W10 + Ch(C01, 0) * W01 + Ch(C11, 0) * W11;
           WritePixel(Wr, X, Min(255, Round(PR * 255 / PA)), Min(255, Round(PG * 255 / PA)), Min(255, Round(PB * 255 / PA)), Round(PA * Opa));
+          if Round(PA * Opa) > 0 then NonEmpty := True;
         end;
       end;
-      FTransformBmp := IntfImageToBitmap(Img);
+      // nothing visible: empty bitmap (fully transparent bitmap is painted black on Windows)
+      if NonEmpty then FTransformBmp := IntfImageToBitmap(Img) else FTransformBmp := TBitmap.Create;
     finally
       Img.Free;
     end;
   end;
+  if FTransformBmp.Width = 0 then Exit;
   ACanvas.ClipRect := AClipRect;
   if (FTransformBmp.Width = CB.Width) and (FTransformBmp.Height = CB.Height) then ACanvas.Draw(CB.Left, CB.Top, FTransformBmp)
     else ACanvas.StretchDraw(CB, FTransformBmp);

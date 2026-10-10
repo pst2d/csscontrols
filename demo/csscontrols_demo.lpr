@@ -14,7 +14,6 @@ begin
   RequireDerivedFormResource := False;
   Application.Scaled := True;
   Application.Initialize;
-  DemoForm := TDemoForm.CreateNew(Application);
-  DemoForm.Show;
+  Application.CreateForm(TDemoForm, DemoForm);   // main form: closing it terminates application
   Application.Run;
 end.
