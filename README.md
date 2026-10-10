@@ -21,6 +21,22 @@ CSSShape1.Changed;
 
 > Work in progress: the API can still change.
 
+## Screenshots
+
+Scenes of the demo application (`demo/csscontrols_demo.lpi`), painted by the engine:
+
+<p>
+<img src="docs/images/chat-app.png" width="49%" alt="Chat app">
+<img src="docs/images/shop.png" width="49%" alt="Shop">
+<img src="docs/images/settings.png" width="49%" alt="Settings">
+<img src="docs/images/calendar.png" width="49%" alt="Calendar">
+<img src="docs/images/dashboard.png" width="49%" alt="Dashboard">
+<img src="docs/images/grid.png" width="49%" alt="Grid">
+<img src="docs/images/forms.png" width="32%" alt="Inputs">
+<img src="docs/images/transforms.png" width="32%" alt="Transforms">
+<img src="docs/images/borders.png" width="32%" alt="Borders">
+</p>
+
 ## Features
 
 - `TCSSShape` component (palette page *CSS*) that paints a node tree and handles hover, active state,
