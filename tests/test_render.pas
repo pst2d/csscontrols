@@ -51,6 +51,13 @@ type
     procedure TestTailwindGradient;
   end;
 
+  { TTestRenderRetina - same tests with bitmaps rendered in 2x resolution }
+
+  TTestRenderRetina = class(TTestRender)
+  protected
+    procedure SetUp; override;
+  end;
+
 implementation
 
 const
@@ -238,6 +245,7 @@ procedure TTestRender.TestAntialiasing;
 var
   C: TFPColor;
 begin
+  if FRoot.PaintScale <> 1 then Exit;   // 2x bitmap is downsampled to 1x test bitmap
   // circle edge crosses pixel [6,5] (about 77 % covered)
   Render('background-color: blue; border-radius: 20px', 100, 60);
   C := FImage.Colors[6, 5];
@@ -366,6 +374,15 @@ begin
   end;
 end;
 
+{ TTestRenderRetina }
+
+procedure TTestRenderRetina.SetUp;
+begin
+  inherited SetUp;
+  FRoot.PaintScale := 2;     // bitmaps in 2x resolution (macOS Retina), drawn by StretchDraw
+end;
+
 initialization
   RegisterTest(TTestRender);
+  RegisterTest(TTestRenderRetina);
 end.

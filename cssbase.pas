@@ -356,6 +356,7 @@ type
     FBgLayerKey: String;
     FVisible: Boolean;
     FPixelRatio: Single;          // root node only: scale factor for high dpi
+    FPaintScale: Single;          // root node only: device pixels per canvas pixel (2 on macOS Retina)
     FLayoutRoot: Boolean;         // LayoutTo was called for this node
     FLayoutWidth,                 // size for root node set by LayoutTo (-1 = auto)
     FLayoutHeight: Integer;
@@ -392,7 +393,7 @@ type
     procedure PaintBackgroundAndBorder(ACanvas: TCanvas);
     procedure BackgroundImageRect(AImage: TLazIntfImage; AWidth, AHeight: Integer; out ARect: TRectF);
     function BackgroundLayer(const S: TCSSPaintShape; AWidth, AHeight: Integer; const AImage: String;
-      const ACornerW, ACornerH: array of Integer): TBitmap;
+      const ACornerW, ACornerH: array of Integer; AScale: Single): TBitmap;
   public
     constructor Create(AInlineStyle: String = '');virtual;
     destructor Destroy; override;
@@ -450,6 +451,7 @@ type
     property ChildCount: Integer read FChildCount;
     property Visible: Boolean read FVisible;     // computed by layout (display:none node or parent)
     property PixelRatio: Single read FPixelRatio write FPixelRatio;  // used from RootNode only
+    property PaintScale: Single read FPaintScale write FPaintScale;  // used from RootNode only, bitmaps are rendered in this resolution
   published
     property AlignControl: TControl read FAlignControl write IntSetAlignControl;
     property InlineStyle: String read FInlineStyle write SetInlineStyle;
@@ -3158,8 +3160,11 @@ end;
 (*
   Background with gradient, image or color with alpha is rendered to one bitmap (with rounded corners)
 *)
+(*
+  AWidth, AHeight, S, ACornerW, ACornerH are in device pixels (scaled by AScale)
+*)
 function THtmlNode.BackgroundLayer(const S: TCSSPaintShape; AWidth, AHeight: Integer; const AImage: String;
-  const ACornerW, ACornerH: array of Integer): TBitmap;
+  const ACornerW, ACornerH: array of Integer; AScale: Single): TBitmap;
 var
   Key, Url: String;
   Img: TLazIntfImage;
@@ -3173,8 +3178,9 @@ var
   Local: TCSSPaintShape;
   InCorner: Boolean;
 begin
-  Key := Format('%d,%d,%s,%s,%s,%s,%s,%d,%d', [AWidth, AHeight, AImage, RGBAKey(CSSColorToRGBA(FCompStyle.Background.Color)),
-    FCompStyle.Background.Size, FCompStyle.Background.Position, FCompStyle.Background.RepeatMode, Ord(CSSAntialiasing), Round(RootNode.FPixelRatio * 100)]);
+  Key := Format('%d,%d,%s,%s,%s,%s,%s,%d,%d,%f', [AWidth, AHeight, AImage, RGBAKey(CSSColorToRGBA(FCompStyle.Background.Color)),
+    FCompStyle.Background.Size, FCompStyle.Background.Position, FCompStyle.Background.RepeatMode, Ord(CSSAntialiasing),
+    Round(RootNode.FPixelRatio * 100), AScale]);
   for I := 0 to 3 do Key := Key + Format(',%f,%f', [S.RX[I], S.RY[I]]);
   if Assigned(FBgLayer) and (FBgLayerKey = Key) then Exit(FBgLayer);
   FreeAndNil(FBgLayer);
@@ -3183,14 +3189,17 @@ begin
   Local := S;   // shape relative to layer
   Local.L := 0; Local.T := 0; Local.R := AWidth; Local.B := AHeight;
   Base := CSSColorToRGBA(FCompStyle.Background.Color);
-  HasGrad := ParseLinearGradient(AImage, AWidth, AHeight, Grad);
+  HasGrad := ParseLinearGradient(AImage, Round(AWidth / AScale), Round(AHeight / AScale), Grad);
   Src := nil;
   if not HasGrad and SameText(Copy(Trim(AImage), 1, 4), 'url(') then begin
     Url := Trim(StrBetween(Trim(AImage), '(', ')'));
     Url := StringReplace(StringReplace(Url, '"', '', [rfReplaceAll]), '''', '', [rfReplaceAll]);
     Src := CSSLoadImage(Url);
   end;
-  if Assigned(Src) then BackgroundImageRect(Src, AWidth, AHeight, Dst);
+  if Assigned(Src) then begin
+    BackgroundImageRect(Src, Round(AWidth / AScale), Round(AHeight / AScale), Dst);
+    Dst := RectF(Dst.Left * AScale, Dst.Top * AScale, Dst.Right * AScale, Dst.Bottom * AScale);
+  end;
   Repeating := not SameText(Trim(FCompStyle.Background.RepeatMode), 'no-repeat');
   N := SamplesPerAxis;
   Step := 1 / N;
@@ -3258,6 +3267,18 @@ var
   BgImage, Key: String;
   LayerMode, HasBg, Full: Boolean;
   Ys: array[0..5] of Integer;
+  Sc: Single;
+  SS: TCSSPaintShape;          // shape in device pixels
+  SCW, SCH: array[0..3] of Integer;
+  function ScaleRect(const ARect: TRect): TRect;
+  begin
+    Result := Rect(Round(ARect.Left * Sc), Round(ARect.Top * Sc), Round(ARect.Right * Sc), Round(ARect.Bottom * Sc));
+  end;
+  procedure DrawBitmap(const ARect: TRect; ABitmap: TBitmap);
+  begin
+    if (ABitmap.Width = ARect.Width) and (ABitmap.Height = ARect.Height) then ACanvas.Draw(ARect.Left, ARect.Top, ABitmap)
+      else ACanvas.StretchDraw(ARect, ABitmap);   // high resolution bitmap (Retina)
+  end;
   procedure SortYs;
   var
     A, B, T: Integer;
@@ -3312,13 +3333,30 @@ begin
       CW[I] := 0;
       CH[I] := 0;
     end;
+  // bitmaps are rendered in device resolution
+  Sc := RootNode.FPaintScale;
+  if Sc <= 0 then Sc := 1;
+  SS := S;
+  SS.L := S.L * Sc; SS.T := S.T * Sc; SS.R := S.R * Sc; SS.B := S.B * Sc;
+  for Side := Low(TCSSSide) to High(TCSSSide) do SS.BW[Side] := S.BW[Side] * Sc;
+  for I := 0 to 3 do begin
+    SS.RX[I] := S.RX[I] * Sc;
+    SS.RY[I] := S.RY[I] * Sc;
+  end;
   // corners overlap (small node, big borders), whole node is rasterized
   Full := (CW[0] + CW[1] > W) or (CW[3] + CW[2] > W) or (CH[0] + CH[3] > H) or (CH[1] + CH[2] > H) or
     (BW[csTop] + BW[csBottom] > H) or (BW[csLeft] + BW[csRight] > W);
 
   if LayerMode then begin
-    if Full then for I := 0 to 3 do begin CW[I] := W; CH[I] := H; end;
-    ACanvas.Draw(Box.Left, Box.Top, BackgroundLayer(S, W, H, BgImage, CW, CH));
+    for I := 0 to 3 do
+      if Full then begin
+        SCW[I] := Round(W * Sc);
+        SCH[I] := Round(H * Sc);
+      end else begin
+        SCW[I] := Round(CW[I] * Sc);
+        SCH[I] := Round(CH[I] * Sc);
+      end;
+    DrawBitmap(Box, BackgroundLayer(SS, Round(W * Sc), Round(H * Sc), BgImage, SCW, SCH, Sc));
   end;
 
   // colors for rasterized parts: background, top, left, bottom, right
@@ -3329,10 +3367,10 @@ begin
 
   if Full then begin
     if HasBg or SideVisible[csTop] or SideVisible[csLeft] or SideVisible[csBottom] or SideVisible[csRight] then begin
-      Key := Format('F%d,%d,%d,%d,%d,%d,%d', [W, H, BW[csTop], BW[csLeft], BW[csBottom], BW[csRight], Ord(CSSAntialiasing)]);
+      Key := Format('F%d,%d,%d,%d,%d,%d,%d,%f', [W, H, BW[csTop], BW[csLeft], BW[csBottom], BW[csRight], Ord(CSSAntialiasing), Sc]);
       for I := 0 to 3 do Key := Key + Format(',%d,%d', [P[I].x, P[I].y]);
       for I := 0 to 4 do Key := Key + ',' + RGBAKey(Colors[I]);
-      ACanvas.Draw(Box.Left, Box.Top, CornerBitmap(Key, S, -1, Box, Colors));
+      DrawBitmap(Box, CornerBitmap(Key, SS, -1, ScaleRect(Box), Colors));
     end;
     Exit;
   end;
@@ -3370,7 +3408,7 @@ begin
     end;
     if not (HasBg or SideVisible[csTop] or SideVisible[csLeft] or SideVisible[csBottom] or SideVisible[csRight]) then Continue;
     // key: corner geometry and colors of background and both adjacent sides
-    Key := Format('%d,%d,%d,%d,%d,%d', [I, CW[I], CH[I], P[I].x, P[I].y, Ord(CSSAntialiasing)]);
+    Key := Format('%d,%d,%d,%d,%d,%d,%f', [I, CW[I], CH[I], P[I].x, P[I].y, Ord(CSSAntialiasing), Sc]);
     case I of
       0: Key := Key + Format(',%d,%d,%s,%s', [BW[csLeft], BW[csTop], RGBAKey(Colors[2]), RGBAKey(Colors[1])]);
       1: Key := Key + Format(',%d,%d,%s,%s', [BW[csRight], BW[csTop], RGBAKey(Colors[4]), RGBAKey(Colors[1])]);
@@ -3378,7 +3416,7 @@ begin
       3: Key := Key + Format(',%d,%d,%s,%s', [BW[csLeft], BW[csBottom], RGBAKey(Colors[2]), RGBAKey(Colors[3])]);
     end;
     Key := Key + ',' + RGBAKey(Colors[0]);
-    ACanvas.Draw(R.Left, R.Top, CornerBitmap(Key, S, I, R, Colors));
+    DrawBitmap(R, CornerBitmap(Key, SS, I, ScaleRect(R), Colors));
   end;
   {$endif}
 end;
@@ -3706,6 +3744,7 @@ begin
   FCachedFont.Size.Value := -1;
   RootNode := Self;
   FPixelRatio := 1;
+  FPaintScale := 1;
   FViewportWidth := -1;
   FElementName := 'div';    // default
   FFreeMe := True;

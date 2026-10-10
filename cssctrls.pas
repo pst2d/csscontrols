@@ -154,11 +154,18 @@ end;
 { THTMLFaNode }
 
 procedure THTMLFaNode.DrawNode(ACanvas: TCanvas; AClipRect: TRect);
+var
+  X, Y: Integer;
+  Scale: Single;
 begin
   inherited DrawNode(ACanvas, AClipRect);
-  ACanvas.Draw(CompSize.ContentRect.Left + CompSize.Border.Left + CompSize.Padding.Left,
-    CompSize.ContentRect.Top + CompSize.Border.Top + CompSize.Padding.Top,
-    FA.Icon(Icon, FIconSize, CompStyle.Color.Value));
+  X := CompSize.ContentRect.Left + CompSize.Border.Left + CompSize.Padding.Left;
+  Y := CompSize.ContentRect.Top + CompSize.Border.Top + CompSize.Padding.Top;
+  Scale := RootNode.PaintScale;
+  if Scale > 1 then     // icon in device resolution (Retina)
+    ACanvas.StretchDraw(Rect(X, Y, X + FIconSize, Y + FIconSize), FA.Icon(Icon, Round(FIconSize * Scale), CompStyle.Color.Value))
+  else
+    ACanvas.Draw(X, Y, FA.Icon(Icon, FIconSize, CompStyle.Color.Value));
 end;
 
 procedure THTMLFaNode.CalculateSize(out AWidth, AHeight, ABaseLine: Integer);
@@ -312,6 +319,7 @@ end;
 
 procedure TCSSShape.Paint;
 begin
+  if Assigned(Parent) then Body.PaintScale := Parent.GetCanvasScaleFactor;   // 2 on macOS Retina
   if not FLayoutValid then begin     // layout was changed by CalculatePreferredSize
     Body.LayoutTo(0, 0, Width, Height);
     FLayoutValid := True;
