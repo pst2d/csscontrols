@@ -50,6 +50,8 @@ type
     procedure TestNestedFlexGrowLayoutsChildren;
     procedure TestFlexMaxWidth;
     procedure TestFlexMinContent;
+    procedure TestAbsoluteBottomInAutoHeight;
+    procedure TestAbsoluteInPaddingBox;
   end;
 
 implementation
@@ -447,6 +449,35 @@ begin
   Layout(300);
   CheckBox('A min-width 0', A, 0, 0, 50, -1);
   CheckBox('B min-width 0', B, 50, 0, 50, -1);
+end;
+
+procedure TTestLayout.TestAbsoluteInPaddingBox;
+var
+  P, A, B: THtmlNode;
+begin
+  // containing block of absolute node is padding box of parent
+  P := Add(FRoot, 'position: relative; padding: 10px; height: 50px');
+  A := Add(P, 'position: absolute; left: 0; top: 0; width: 5px; height: 5px');
+  B := Add(P, 'position: absolute; right: 0; bottom: 0; width: 5px; height: 5px');
+  Layout(300);
+  CheckBox('left top', A, 0, 0, 5, 5);
+  CheckBox('right bottom', B, 295, 65, 5, 5);
+end;
+
+procedure TTestLayout.TestAbsoluteBottomInAutoHeight;
+var
+  F, A, P, C: THtmlNode;
+begin
+  // container height depends on content, absolute child with bottom is placed after height is known
+  F := Add(FRoot, 'display: flex; flex-direction: column; position: relative');
+  Add(F, 'height: 50px');
+  A := Add(F, 'position: absolute; bottom: 0; right: 10px; width: 20px; height: 10px');
+  P := Add(FRoot, 'position: relative');
+  Add(P, 'height: 40px');
+  C := Add(P, 'position: absolute; bottom: 5px; left: 3px; width: 20px; height: 10px');
+  Layout(300);
+  CheckBox('flex absolute', A, 270, 40, 20, 10);
+  CheckBox('block absolute', C, 3, 50 + 25, 20, 10);
 end;
 
 initialization

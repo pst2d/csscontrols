@@ -470,6 +470,7 @@ type
     procedure PaintNodeTree(ACanvas: TCanvas; const AClipRect: TRect);
     procedure PaintTransformed(ACanvas: TCanvas; const AClipRect: TRect);
     procedure SaveLayout(var AStates: TCSSLayoutStates);
+    procedure PlaceAbsolute(AWidth, AHeight: Integer);
   public
     constructor Create(AInlineStyle: String = '');virtual;
     destructor Destroy; override;
@@ -5939,7 +5940,7 @@ var
   childHeight,
   cW, cH, cB: Integer;
   HorzSpace, VertSpace: Integer;   // padding + border
-  TextW, TextH, AvailW: Integer;
+  TextW, TextH, AvailW, PW, PH: Integer;
   R: TRect;
   cs: TCSSItem;
   function AutoToZero(AValue: Integer): Integer; inline;
@@ -5973,10 +5974,17 @@ begin
   cs := ANode.FCompStyle;
   ANode.ResolveInheritedStyle;
 
-  ANode.FCompSize.Position.Left := AutoToZero(ANode.CalcLength(cs.Left, ParentWidth));
-  ANode.FCompSize.Position.Top := AutoToZero(ANode.CalcLength(cs.Top, ParentHeight));
-  ANode.FCompSize.Position.Right := AutoToZero(ANode.CalcLength(cs.Right, ParentWidth));
-  ANode.FCompSize.Position.Bottom := AutoToZero(ANode.CalcLength(cs.Bottom, ParentHeight));
+  // insets of absolute node are relative to padding box of parent
+  PW := ParentWidth;
+  PH := ParentHeight;
+  if (cs.Position in [cpAbsolute, cpFixed]) and Assigned(ANode.ParentNode) then begin
+    if PW >= 0 then Inc(PW, ANode.ParentNode.FCompSize.Padding.Left + ANode.ParentNode.FCompSize.Padding.Right);
+    if PH >= 0 then Inc(PH, ANode.ParentNode.FCompSize.Padding.Top + ANode.ParentNode.FCompSize.Padding.Bottom);
+  end;
+  ANode.FCompSize.Position.Left := AutoToZero(ANode.CalcLength(cs.Left, PW));
+  ANode.FCompSize.Position.Top := AutoToZero(ANode.CalcLength(cs.Top, PH));
+  ANode.FCompSize.Position.Right := AutoToZero(ANode.CalcLength(cs.Right, PW));
+  ANode.FCompSize.Position.Bottom := AutoToZero(ANode.CalcLength(cs.Bottom, PH));
 
   // margins (percentage is relative to width also for top and bottom), auto margins are 0 here
   R.Top := AutoToZero(ANode.CalcLength(cs.Margin[csTop], ParentWidth));
@@ -6238,7 +6246,9 @@ var
   Align: TCSSAlignItems;
   Temp: TFlexItem;
   R: TRect;
+  AbsNodes: array of THtmlNode;
 begin
+  AbsNodes := nil;
   ps := AParentNode.FCompStyle;
   IsRow := ps.FlexDirection in [cfdRow, cfdRowReverse];
   IsReverse := ps.FlexDirection in [cfdRowReverse, cfdColumnReverse];
@@ -6260,17 +6270,9 @@ begin
     Node := THtmlNode(AList[I]);
     if Node.FCompStyle.Display = cdtNone then Continue;
     LayoutGetNodeSize(Node, AWidth, AHeight, True);
-    if Node.FCompStyle.Position in [cpAbsolute, cpFixed] then begin    // absolute nodes are positioned relative to container
-      sz := Node.FCompSize;
-      X := sz.Position.Left;
-      Y := sz.Position.Top;
-      if (Node.FCompStyle.Left.LengthType in [cltUndefined, cltAuto]) and not (Node.FCompStyle.Right.LengthType in [cltUndefined, cltAuto]) and (AWidth >= 0) then
-        X := AWidth - sz.Position.Right - sz.ContentWidth - sz.Margin.Left - sz.Margin.Right;
-      if (Node.FCompStyle.Top.LengthType in [cltUndefined, cltAuto]) and not (Node.FCompStyle.Bottom.LengthType in [cltUndefined, cltAuto]) and (AHeight >= 0) then
-        Y := AHeight - sz.Position.Bottom - sz.ContentHeight - sz.Margin.Top - sz.Margin.Bottom;
-      sz.MarginRect := Rect(X, Y, X + sz.ContentWidth + sz.Margin.Left + sz.Margin.Right, Y + sz.ContentHeight + sz.Margin.Top + sz.Margin.Bottom);
-      sz.ContentRect := Rect(sz.MarginRect.Left + sz.Margin.Left, sz.MarginRect.Top + sz.Margin.Top,
-        sz.MarginRect.Right - sz.Margin.Right, sz.MarginRect.Bottom - sz.Margin.Bottom);
+    if Node.FCompStyle.Position in [cpAbsolute, cpFixed] then begin    // positioned when size of container is known
+      SetLength(AbsNodes, Length(AbsNodes) + 1);
+      AbsNodes[High(AbsNodes)] := Node;
       Continue;
     end;
     SetLength(Items, Length(Items) + 1);
@@ -6461,6 +6463,37 @@ begin
   if (CrossSize >= 0) then begin
     if IsRow then NewHeight := Max(NewHeight, CrossSize) else NewWidth := Max(NewWidth, CrossSize);
   end;
+  // absolute nodes are positioned relative to container
+  for I := 0 to High(AbsNodes) do begin
+    if AWidth >= 0 then X := AWidth else X := NewWidth;
+    if AHeight >= 0 then Y := AHeight else Y := NewHeight;
+    AbsNodes[I].PlaceAbsolute(X, Y);
+  end;
+end;
+
+(*
+  Position of absolute node in container with inner size AWidth x AHeight (left, top, right, bottom)
+*)
+procedure THtmlNode.PlaceAbsolute(AWidth, AHeight: Integer);
+var
+  sz: THtmlSize;
+  X, Y: Integer;
+  Pad: TRect;
+begin
+  sz := FCompSize;
+  // containing block is padding box of parent (coordinates are relative to its content box)
+  if Assigned(ParentNode) then Pad := ParentNode.FCompSize.Padding else Pad := Rect(0, 0, 0, 0);
+  X := 0;
+  Y := 0;
+  if not (FCompStyle.Left.LengthType in [cltUndefined, cltAuto]) then X := sz.Position.Left - Pad.Left
+  else if not (FCompStyle.Right.LengthType in [cltUndefined, cltAuto]) then
+    X := AWidth + Pad.Right - sz.Position.Right - sz.ContentWidth - sz.Margin.Left - sz.Margin.Right;
+  if not (FCompStyle.Top.LengthType in [cltUndefined, cltAuto]) then Y := sz.Position.Top - Pad.Top
+  else if not (FCompStyle.Bottom.LengthType in [cltUndefined, cltAuto]) then
+    Y := AHeight + Pad.Bottom - sz.Position.Bottom - sz.ContentHeight - sz.Margin.Top - sz.Margin.Bottom;
+  sz.MarginRect := Rect(X, Y, X + sz.ContentWidth + sz.Margin.Left + sz.Margin.Right, Y + sz.ContentHeight + sz.Margin.Top + sz.Margin.Bottom);
+  sz.ContentRect := Rect(sz.MarginRect.Left + sz.Margin.Left, sz.MarginRect.Top + sz.Margin.Top,
+    sz.MarginRect.Right - sz.Margin.Right, sz.MarginRect.Bottom - sz.Margin.Bottom);
 end;
 
 procedure THtmlNode.LayoutCalcPosition(ANode: THtmlNode; TargetWidth, TargetHeight: Integer; out NewWidth, NewHeight: Integer);
@@ -6480,6 +6513,7 @@ var
   GapList: TList;
   ParentIsFlex: Boolean;
   X, Y: Integer;
+  Pad: TRect;
 begin
   if not Assigned(ANode) then begin
     Exit;
@@ -6539,14 +6573,16 @@ begin
           // absolute position is relative to parent node, static position is used if left/top is not set
           X := Dx + RealMargin.Left;
           Y := Dy + RealMargin.Top;
+          // containing block is padding box of parent
+          if Assigned(ANode.ParentNode) then Pad := ANode.ParentNode.FCompSize.Padding else Pad := Rect(0, 0, 0, 0);
           if not (cs.Left.LengthType in [cltUndefined, cltAuto]) then
-            X := ANode.FCompSize.Position.Left + RealMargin.Left
+            X := ANode.FCompSize.Position.Left - Pad.Left + RealMargin.Left
           else if not (cs.Right.LengthType in [cltUndefined, cltAuto]) and (TargetWidth >= 0) then
-            X := TargetWidth - ANode.FCompSize.Position.Right - PrefWidth - RealMargin.Right;
+            X := TargetWidth + Pad.Right - ANode.FCompSize.Position.Right - PrefWidth - RealMargin.Right;
           if not (cs.Top.LengthType in [cltUndefined, cltAuto]) then
-            Y := ANode.FCompSize.Position.Top + RealMargin.Top
+            Y := ANode.FCompSize.Position.Top - Pad.Top + RealMargin.Top
           else if not (cs.Bottom.LengthType in [cltUndefined, cltAuto]) and (TargetHeight >= 0) then
-            Y := TargetHeight - ANode.FCompSize.Position.Bottom - PrefHeight - RealMargin.Bottom;
+            Y := TargetHeight + Pad.Bottom - ANode.FCompSize.Position.Bottom - PrefHeight - RealMargin.Bottom;
           ContentBounds := Rect(X, Y, X + PrefWidth, Y + PrefHeight);
         end else begin
           if (cs.Float = cftRight) and (TargetWidth >= 0) then begin   // float right: stack from right side
@@ -6619,6 +6655,20 @@ begin
       not (cs.Position in [cpAbsolute, cpFixed]) and not ANode.FLayoutRoot then begin // fix block alignment  (eg. first node is block and next is inline, and block width is not correct)
       ANode.FCompSize.MarginRect.Right := TargetWidth;
       ANode.FCompSize.ContentRect.Right := ANode.FCompSize.MarginRect.Right - ANode.CompSize.Margin.Right;
+    end;
+    if (cs.Position in [cpAbsolute, cpFixed]) and (ANode.FCompStyle.Display <> cdtNone) and
+      ((not (cs.Right.LengthType in [cltUndefined, cltAuto]) and (cs.Left.LengthType in [cltUndefined, cltAuto])) or
+       (not (cs.Bottom.LengthType in [cltUndefined, cltAuto]) and (cs.Top.LengthType in [cltUndefined, cltAuto]))) then begin
+      // right/bottom: size of container is known now
+      X := ANode.FCompSize.MarginRect.Left;
+      Y := ANode.FCompSize.MarginRect.Top;
+      ANode.PlaceAbsolute(TargetWidth, TargetHeight);
+      if not (cs.Left.LengthType in [cltUndefined, cltAuto]) or (cs.Right.LengthType in [cltUndefined, cltAuto]) then
+        OffsetRect(ANode.FCompSize.MarginRect, X - ANode.FCompSize.MarginRect.Left, 0);
+      if not (cs.Top.LengthType in [cltUndefined, cltAuto]) or (cs.Bottom.LengthType in [cltUndefined, cltAuto]) then
+        OffsetRect(ANode.FCompSize.MarginRect, 0, Y - ANode.FCompSize.MarginRect.Top);
+      with ANode.FCompSize do
+        ContentRect := Rect(MarginRect.Left + Margin.Left, MarginRect.Top + Margin.Top, MarginRect.Right - Margin.Right, MarginRect.Bottom - Margin.Bottom);
     end;
     if cs.Position = cpRelative then begin
       if cs.Left.LengthType in [cltUndefined, cltAuto] then X := -ANode.FCompSize.Position.Right else X := ANode.FCompSize.Position.Left;

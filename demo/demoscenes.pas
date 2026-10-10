@@ -30,9 +30,10 @@ procedure BuildShadows(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
 procedure BuildHtml(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
 procedure BuildTransforms(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
 procedure BuildDropzone(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
+procedure BuildChatApp(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
 
 const
-  DEMO_SCENES: array[0..12] of TDemoScene = (
+  DEMO_SCENES: array[0..13] of TDemoScene = (
     (Name: 'Card'; Build: @BuildCard),
     (Name: 'Buttons'; Build: @BuildButtons),
     (Name: 'Flexbox'; Build: @BuildFlex),
@@ -45,7 +46,8 @@ const
     (Name: 'Shadows'; Build: @BuildShadows),
     (Name: 'HTML'; Build: @BuildHtml),
     (Name: 'Transforms'; Build: @BuildTransforms),
-    (Name: 'Dropzone'; Build: @BuildDropzone)
+    (Name: 'Dropzone'; Build: @BuildDropzone),
+    (Name: 'Chat app'; Build: @BuildChatApp)
   );
 
 implementation
@@ -471,6 +473,187 @@ begin
     '</div>' +
     '<div class="max-w-lg mx-auto w-full p-4 rounded-xl border-2 border-dotted border-amber-400 bg-amber-50 text-amber-800 text-sm">' +
     '  Dotted border: <code>border-2 border-dotted</code>' +
+    '</div>');
+end;
+
+(*
+  Generated wallpaper pattern for chat demo
+*)
+procedure RegisterChatPattern;
+var
+  Bmp: TBitmap;
+  I, X, Y: Integer;
+begin
+  Bmp := TBitmap.Create;
+  try
+    Bmp.SetSize(120, 120);
+    Bmp.Canvas.Brush.Color := RGBToColor($EF, $EA, $E2);
+    Bmp.Canvas.FillRect(0, 0, 120, 120);
+    Bmp.Canvas.Pen.Color := RGBToColor($E2, $DC, $D2);
+    Bmp.Canvas.Pen.Width := 2;
+    Bmp.Canvas.Brush.Style := bsClear;
+    RandSeed := 7;
+    for I := 1 to 9 do begin
+      X := Random(110);
+      Y := Random(110);
+      case I mod 3 of
+        0: Bmp.Canvas.Ellipse(X, Y, X + 14, Y + 14);
+        1: Bmp.Canvas.Rectangle(X, Y, X + 12, Y + 12);
+        2: begin Bmp.Canvas.MoveTo(X, Y + 10); Bmp.Canvas.LineTo(X + 6, Y); Bmp.Canvas.LineTo(X + 12, Y + 10); end;
+      end;
+    end;
+    CSSRegisterImage('demo-chat-pattern', Bmp);
+  finally
+    Bmp.Free;
+  end;
+end;
+
+function Avatar(const AInitials, AGradient: String; const ASize: String = 'size-12'): String;
+begin
+  Result := '<div class="' + ASize + ' shrink-0 rounded-full bg-gradient-to-br ' + AGradient +
+    ' text-white font-semibold flex items-center justify-center">' + AInitials + '</div>';
+end;
+
+function ChatItem(const AAvatar, AName, AMessage, ATime: String; AActive: Boolean = False; const AExtra: String = ''): String;
+var
+  Cls: String;
+begin
+  if AActive then Cls := 'bg-slate-100' else Cls := 'hover:bg-slate-50';
+  Result :=
+    '<div class="flex items-center gap-3 px-3 py-3 rounded-2xl cursor-pointer ' + Cls + '">' + AAvatar +
+    '  <div class="grow min-w-0 flex flex-col gap-0.5 border-b border-slate-100 pb-2">' +
+    '    <div class="flex items-center gap-2"><span class="grow truncate font-semibold text-slate-900">' + AName + '</span>' +
+    '      <span class="text-xs text-slate-500">' + ATime + '</span></div>' +
+    '    <div class="flex items-center gap-1 text-sm text-slate-500">' + AExtra + '<span class="truncate">' + AMessage + '</span></div>' +
+    '  </div>' +
+    '</div>';
+end;
+
+function NavItem(const AIcon, AText: String; AActive: Boolean = False; const ABadge: String = ''): String;
+var
+  Cls: String;
+begin
+  if AActive then Cls := 'bg-slate-200 font-semibold' else Cls := 'hover:bg-slate-200';
+  Result := '<div class="flex items-center gap-3 px-3 py-2 rounded-xl cursor-pointer text-slate-800 ' + Cls + '">' +
+    '<div class="w-6 flex items-center justify-center text-slate-700">' + AIcon + '</div><span class="grow">' + AText + '</span>';
+  if ABadge <> '' then Result := Result + '<span class="text-sm text-slate-500">' + ABadge + '</span>';
+  Result := Result + '</div>';
+end;
+
+(*
+  Messaging app UI built with utility classes (fictional names)
+*)
+procedure BuildChatApp(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
+const
+  ICON_CHAT = '<div class="w-5 h-4 rounded-full border-2 border-slate-700"></div>';
+  ICON_UPDATES = '<div class="relative size-5 rounded-full border-2 border-dashed border-slate-700">' +
+    '<div class="absolute -top-1 -right-1 size-2 rounded-full bg-green-500"></div></div>';
+  ICON_COMMUNITY = '<div class="flex -space-x-1 gap-0.5"><div class="size-2.5 rounded-full border-2 border-slate-700"></div>' +
+    '<div class="size-2.5 rounded-full border-2 border-slate-700"></div><div class="size-2.5 rounded-full border-2 border-slate-700"></div></div>';
+  ICON_CALLS = '<span class="text-lg">&#9742;</span>';
+  ICON_MEDIA = '<div class="w-5 h-4 rounded border-2 border-slate-700 flex items-end p-px"><div class="w-2 h-1 bg-slate-700 rounded-sm"></div></div>';
+  ICON_STAR = '<span class="text-lg">&#9734;</span>';
+begin
+  RegisterChatPattern;
+  ABody.SetClass('bg-white');
+  ABody.AppendHTML(
+    '<div class="flex h-[680px] text-slate-900">' +
+    // navigation
+    '<div class="hidden md:flex w-52 shrink-0 flex-col gap-1 p-3 bg-slate-50 border-r border-slate-200">' +
+      NavItem(ICON_CHAT, 'Chats', True) + NavItem(ICON_UPDATES, 'Updates') + NavItem(ICON_COMMUNITY, 'Communities') +
+      NavItem(ICON_CALLS, 'Calls', False, '2') + NavItem(ICON_MEDIA, 'Media') +
+    '  <div class="flex items-center justify-between px-3 pt-6 pb-2 text-xs font-semibold text-slate-400"><span>MORE</span><span>&#9662;</span></div>' +
+      NavItem(ICON_STAR, 'Starred') +
+    '  <div class="grow"></div>' +
+    '  <div class="flex items-center gap-3 px-2 py-2 rounded-xl hover:bg-slate-200 cursor-pointer">' +
+         Avatar('Y', 'from-amber-300 to-orange-400', 'size-9') +
+    '    <span class="grow font-semibold">You</span><span class="text-slate-400">&#9998;</span>' +
+    '  </div>' +
+    '</div>' +
+    // chat list
+    '<div class="w-72 shrink-0 flex flex-col border-r border-slate-200">' +
+    '  <div class="flex items-center justify-between px-4 h-16">' +
+    '    <div class="size-10 rounded-full border border-slate-200 shadow-sm flex items-center justify-center font-bold text-slate-600 hover:bg-slate-50 cursor-pointer">&middot;&middot;&middot;</div>' +
+    '    <span class="text-lg font-semibold">Chats</span>' +
+    '    <div class="size-11 rounded-full bg-green-600 hover:bg-green-700 shadow-md shadow-green-600/40 text-white text-2xl flex items-center justify-center cursor-pointer">+</div>' +
+    '  </div>' +
+    '  <div class="mx-4 mb-3 flex items-center gap-3 px-4 py-2.5 rounded-full border border-slate-200 bg-slate-50">' +
+    '    <div class="relative size-4"><div class="size-3 rounded-full border-2 border-slate-400"></div>' +
+    '      <div class="absolute bottom-0 right-0 w-1.5 h-0.5 bg-slate-400 rotate-45"></div></div>' +
+    '    <span class="text-slate-400">Search</span>' +
+    '  </div>' +
+    '  <div class="flex flex-col px-2 overflow-hidden">' +
+      ChatItem(Avatar('DT', 'from-violet-400 to-indigo-500'), 'Design Team 2026', '<i class="text-green-600">Liam is typing...</i>', '09:58', True) +
+      ChatItem(Avatar('SB', 'from-pink-400 to-rose-500'), 'Sophia Bennett', 'Sounds great, see you there!', 'Yesterday') +
+      ChatItem(Avatar('EC', 'from-sky-400 to-blue-500'), 'Emma Carter', 'You reacted to "Look, it still works"', 'Yesterday') +
+      ChatItem(Avatar('NF', 'from-emerald-400 to-teal-500'), 'Noah Fischer', 'Okay', 'Thursday') +
+      ChatItem(Avatar('OB', 'from-amber-400 to-orange-500'), 'Olivia Brooks', '<span class="text-rose-500">Missed video call</span>', 'Thursday', False,
+        '<div class="w-3.5 h-2.5 rounded-sm bg-rose-500"></div>') +
+      ChatItem(Avatar('LM', 'from-cyan-400 to-sky-500'), 'Lucas Meyer', 'Not the same. I do not censor anything', 'Wednesday', False,
+        '<span class="text-sky-500 font-bold">&check;&check;</span>') +
+      ChatItem(Avatar('MH', 'from-fuchsia-400 to-purple-500'), 'Mia Horvath', 'Good morning, no problem at all', 'Monday') +
+    '  </div>' +
+    '</div>' +
+    // conversation
+    '<div class="grow min-w-0 flex flex-col bg-[url(demo-chat-pattern)]">' +
+    '  <div class="flex items-center gap-3 px-4 h-16 bg-white/90 border-b border-slate-200">' +
+         Avatar('DT', 'from-violet-400 to-indigo-500', 'size-10') +
+    '    <div class="grow min-w-0 flex flex-col"><span class="font-semibold truncate">Design Team 2026</span><span class="text-xs text-slate-500">3 online</span></div>' +
+    '    <div class="flex items-center gap-1 px-3 py-1.5 rounded-full border border-slate-200 bg-white hover:bg-slate-50 cursor-pointer">' +
+    '      <div class="w-5 h-3.5 rounded border-2 border-slate-600"></div><span class="text-xs text-slate-600">&#9662;</span></div>' +
+    '    <div class="px-2 font-bold text-slate-600 cursor-pointer">&middot;&middot;&middot;</div>' +
+    '  </div>' +
+    '  <div class="grow min-h-0 overflow-hidden flex flex-col justify-end gap-3 px-6 py-4">' +
+    // message with quote
+    '    <div class="flex items-end gap-2">' + Avatar('EC', 'from-sky-400 to-blue-500', 'size-8') +
+    '      <div class="max-w-md flex flex-col gap-1.5 px-3 py-2 bg-white rounded-2xl rounded-bl-sm shadow-sm">' +
+    '        <span class="text-sm font-semibold text-teal-700">Emma Carter</span>' +
+    '        <div class="flex flex-col px-3 py-2 rounded-lg bg-slate-100 border-l-4 border-rose-500">' +
+    '          <div class="flex justify-between gap-4 text-sm"><b class="text-rose-600">Liam Novak</b><span class="text-slate-400">+1 555 0142</span></div>' +
+    '          <span class="text-sm text-slate-600">He does not live in the city anymore</span>' +
+    '        </div>' +
+    '        <span>Were you a police officer? So we actually know each other! Officers used to come to our town festival.</span>' +
+    '        <span class="self-end text-[11px] text-slate-400">09:49</span>' +
+    '      </div>' +
+    '    </div>' +
+    // message with reaction
+    '    <div class="flex items-end gap-2 pb-3">' + Avatar('LN', 'from-rose-400 to-red-500', 'size-8') +
+    '      <div class="relative min-w-0 max-w-md flex flex-col gap-1.5 px-3 py-2 bg-white rounded-2xl rounded-bl-sm shadow-sm">' +
+    '        <span class="text-sm font-semibold text-rose-600">Liam Novak</span>' +
+    '        <div class="flex flex-col px-3 py-2 rounded-lg bg-slate-100 border-l-4 border-teal-600">' +
+    '          <b class="text-sm text-teal-700">Emma Carter</b>' +
+    '          <span class="text-sm text-slate-600 truncate">Were you a police officer? So we actually know each other!</span>' +
+    '        </div>' +
+    '        <div class="flex items-end gap-6"><span>Not me, that was my brother</span><span class="text-[11px] text-slate-400">09:52</span></div>' +
+    '        <div class="absolute bottom-0 left-4 translate-y-1/2 px-1.5 rounded-full bg-white shadow border border-slate-100 text-sm text-rose-500">&#9829; 2</div>' +
+    '      </div>' +
+    '    </div>' +
+    // own message
+    '    <div class="flex justify-end">' +
+    '      <div class="max-w-md flex flex-col gap-1 px-3 py-2 bg-[#d9fdd3] rounded-2xl rounded-br-sm shadow-sm">' +
+    '        <span>Great, I will bring the slides tomorrow.</span>' +
+    '        <div class="self-end flex items-center gap-1 text-[11px] text-slate-500">09:53 <span class="text-sky-500 font-bold">&check;&check;</span></div>' +
+    '      </div>' +
+    '    </div>' +
+    // last message
+    '    <div class="flex items-end gap-2">' + Avatar('EC', 'from-sky-400 to-blue-500', 'size-8') +
+    '      <div class="max-w-md flex flex-col gap-1 px-3 py-2 bg-white rounded-2xl rounded-bl-sm shadow-sm">' +
+    '        <span class="text-sm font-semibold text-teal-700">Emma Carter</span>' +
+    '        <span>Perfect, then you can also take care of the rest &#128588;</span>' +
+    '        <span class="self-end text-[11px] text-slate-400">09:54</span>' +
+    '      </div>' +
+    '    </div>' +
+    '  </div>' +
+    // composer
+    '  <div class="flex items-center gap-3 px-4 py-3 bg-slate-50 border-t border-slate-200">' +
+    '    <div class="size-11 shrink-0 rounded-full border border-slate-200 bg-white text-2xl text-slate-600 flex items-center justify-center hover:bg-slate-100 cursor-pointer">+</div>' +
+    '    <div class="grow flex items-center px-4 h-11 rounded-full bg-white border border-slate-200">' +
+    '      <span class="grow text-slate-400">Type a message</span><span class="text-xl text-slate-500">&#9786;</span></div>' +
+    '    <div class="size-11 shrink-0 rounded-full bg-green-600 hover:bg-green-700 shadow-md text-white flex items-center justify-center cursor-pointer">' +
+    '      <div class="flex flex-col items-center"><div class="w-2.5 h-3.5 rounded-full bg-white"></div>' +
+    '        <div class="w-4 h-2 -mt-1 rounded-b-full border-2 border-t-0 border-white"></div><div class="w-0.5 h-1 bg-white"></div></div></div>' +
+    '  </div>' +
+    '</div>' +
     '</div>');
 end;
 
