@@ -8,7 +8,7 @@ unit csspckg_lazarus;
 interface
 
 uses
-  CSSCtrls, cssbase, csstailwind, LazarusPackageIntf;
+  CSSCtrls, cssbase, csstailwind, csshtml, LazarusPackageIntf;
 
 implementation
 

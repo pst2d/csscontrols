@@ -20,6 +20,8 @@
     borders:    border(-x,-y,-t,-r,-b,-l)(-0,-2,-4,-8) border-{color} border-solid/dashed/dotted/none
                 rounded(-t,-r,-b,-l,-tl,-tr,-br,-bl)(-none,-sm,-md,-lg,-xl,-2xl,-3xl,-full)
     shadows:    shadow-sm shadow shadow-md shadow-lg shadow-xl shadow-2xl shadow-none shadow-{color}
+    transforms: translate-x-* translate-y-* rotate-* scale-* scale-x-* scale-y-* skew-x-* skew-y-* origin-*
+                (also hover:scale-105, -translate-x-1/2 ...)
     other:      cursor-*
     values:     arbitrary values eg. w-[200px] bg-[#ff8800] p-[3px] text-[13px]
     variants:   hover: active: first: last: odd: even: group-hover: sm: md: lg: xl: 2xl: (see cssbase.pas)
@@ -28,7 +30,7 @@
     images:     bg-[url(file.png)] bg-none bg-cover bg-contain bg-auto bg-center bg-top ... bg-no-repeat bg-repeat
     opacity:    color modifiers eg. bg-black/50 text-white/70 border-slate-900/10
 
-  Not supported: inset shadows (shadow-inner), transitions, transforms, grid, space-x/y, dark mode.
+  Not supported: inset shadows (shadow-inner), transitions, grid, space-x/y, dark mode.
 *)
 unit csstailwind;
 
@@ -307,13 +309,26 @@ const
   O_BG = 300; O_GRADIENT_FROM = 301; O_GRADIENT_VIA = 302; O_GRADIENT_TO = 303; O_BG_IMAGE = 304;
   O_BG_SIZE = 305; O_BG_POSITION = 306; O_BG_REPEAT = 307; O_BORDER_W = 310; O_BORDER_W_AXIS = 311; O_BORDER_W_SIDE = 312; O_BORDER_STYLE = 313;
   O_BORDER_COLOR = 314; O_ROUNDED = 320; O_ROUNDED_SIDE = 321; O_ROUNDED_CORNER = 322; O_SHADOW = 350;
-  O_SHADOW_COLOR = 351; O_CURSOR = 400;
+  O_SHADOW_COLOR = 351; O_TRANSFORM = 360; O_ORIGIN = 361; O_CURSOR = 400;
 
   TW_DEFAULT_BORDER_COLOR = '#e5e7eb';  // gray-200
 
   TW_SHADOW = 'var(--tw-shadow-color, rgb(0 0 0 / 0.1))';
+  // composed transform (like Tailwind v3), each utility sets one variable
+  TW_TRANSFORM = 'transform:translate(var(--tw-translate-x, 0), var(--tw-translate-y, 0)) rotate(var(--tw-rotate, 0)) ' +
+    'skewX(var(--tw-skew-x, 0)) skewY(var(--tw-skew-y, 0)) scaleX(var(--tw-scale-x, 1)) scaleY(var(--tw-scale-y, 1))';
 
-  TW_STATIC: array[0..111] of record N, D: String; O: Integer; end = (
+  TW_STATIC: array[0..121] of record N, D: String; O: Integer; end = (
+    (N: 'transform'; D: TW_TRANSFORM; O: O_TRANSFORM),
+    (N: 'transform-none'; D: 'transform:none'; O: O_TRANSFORM),
+    (N: 'origin-center'; D: 'transform-origin:center'; O: O_ORIGIN),
+    (N: 'origin-top'; D: 'transform-origin:top'; O: O_ORIGIN),
+    (N: 'origin-top-right'; D: 'transform-origin:top right'; O: O_ORIGIN),
+    (N: 'origin-right'; D: 'transform-origin:right'; O: O_ORIGIN),
+    (N: 'origin-bottom-right'; D: 'transform-origin:bottom right'; O: O_ORIGIN),
+    (N: 'origin-bottom'; D: 'transform-origin:bottom'; O: O_ORIGIN),
+    (N: 'origin-bottom-left'; D: 'transform-origin:bottom left'; O: O_ORIGIN),
+    (N: 'origin-left'; D: 'transform-origin:left'; O: O_ORIGIN),
     (N: 'shadow-sm'; D: 'box-shadow:0 1px 2px 0 var(--tw-shadow-color, rgb(0 0 0 / 0.05))'; O: O_SHADOW),
     (N: 'shadow'; D: 'box-shadow:0 1px 3px 0 ' + TW_SHADOW + ', 0 1px 2px -1px ' + TW_SHADOW; O: O_SHADOW),
     (N: 'shadow-md'; D: 'box-shadow:0 4px 6px -1px ' + TW_SHADOW + ', 0 2px 4px -2px ' + TW_SHADOW; O: O_SHADOW),
@@ -667,6 +682,32 @@ begin
   // order
   if HasPrefix(Name, 'order-', V) and TryStrToInt(V, I) then
     Exit(Done('order:' + Negate(V), O_ORDER));
+
+  // transforms
+  if HasPrefix(Name, 'translate-x-', V) and Spacing(V, True, False, True, R) then
+    Exit(Done('--tw-translate-x:' + Negate(R) + ';' + TW_TRANSFORM, O_TRANSFORM));
+  if HasPrefix(Name, 'translate-y-', V) and Spacing(V, True, False, True, R) then
+    Exit(Done('--tw-translate-y:' + Negate(R) + ';' + TW_TRANSFORM, O_TRANSFORM));
+  if HasPrefix(Name, 'rotate-', V) then begin
+    if IsArbitrary(V, R) then Exit(Done('--tw-rotate:' + Negate(R) + ';' + TW_TRANSFORM, O_TRANSFORM));
+    if TryStrToInt(V, I) then Exit(Done('--tw-rotate:' + Negate(V + 'deg') + ';' + TW_TRANSFORM, O_TRANSFORM));
+  end;
+  for C in TStringArray.Create('skew-x-', 'skew-y-') do
+    if HasPrefix(Name, C, V) then begin
+      if IsArbitrary(V, R) then else if TryStrToInt(V, I) then R := V + 'deg' else Continue;
+      Exit(Done('--tw-skew-' + C[6] + ':' + Negate(R) + ';' + TW_TRANSFORM, O_TRANSFORM));
+    end;
+  if HasPrefix(Name, 'scale-', V) then begin
+    W := '';
+    if HasPrefix(V, 'x-', R) then begin W := 'x'; V := R; end
+    else if HasPrefix(V, 'y-', R) then begin W := 'y'; V := R; end;
+    if IsArbitrary(V, R) then else if TryStrToInt(V, I) then R := FloatToCSS(I / 100) else R := '';
+    if R <> '' then begin
+      if Neg then R := '-' + R;
+      if W = '' then Exit(Done('--tw-scale-x:' + R + ';--tw-scale-y:' + R + ';' + TW_TRANSFORM, O_TRANSFORM))
+        else Exit(Done('--tw-scale-' + W + ':' + R + ';' + TW_TRANSFORM, O_TRANSFORM));
+    end;
+  end;
   if Neg then Exit;     // other utilities can't be negative
 
   // flexbox

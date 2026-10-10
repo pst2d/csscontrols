@@ -8,7 +8,7 @@ unit demoscenes;
 interface
 
 uses
-  Classes, SysUtils, Math, Graphics, cssbase;
+  Classes, SysUtils, Math, Graphics, cssbase, csshtml;
 
 type
   TBuildSceneProc = procedure(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
@@ -27,9 +27,12 @@ procedure BuildStyleSheet(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
 procedure BuildBorders(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
 procedure BuildBackgrounds(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
 procedure BuildShadows(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
+procedure BuildHtml(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
+procedure BuildTransforms(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
+procedure BuildDropzone(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
 
 const
-  DEMO_SCENES: array[0..9] of TDemoScene = (
+  DEMO_SCENES: array[0..12] of TDemoScene = (
     (Name: 'Card'; Build: @BuildCard),
     (Name: 'Buttons'; Build: @BuildButtons),
     (Name: 'Flexbox'; Build: @BuildFlex),
@@ -39,7 +42,10 @@ const
     (Name: 'Stylesheet'; Build: @BuildStyleSheet),
     (Name: 'Borders'; Build: @BuildBorders),
     (Name: 'Backgrounds'; Build: @BuildBackgrounds),
-    (Name: 'Shadows'; Build: @BuildShadows)
+    (Name: 'Shadows'; Build: @BuildShadows),
+    (Name: 'HTML'; Build: @BuildHtml),
+    (Name: 'Transforms'; Build: @BuildTransforms),
+    (Name: 'Dropzone'; Build: @BuildDropzone)
   );
 
 implementation
@@ -222,7 +228,13 @@ end;
 
 procedure BuildBorders(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
 const
-  STYLES: array[0..15] of String = (
+  STYLES: array[0..21] of String = (
+    'border: 2px dashed #94a3b8; border-radius: 12px; background-color: #f8fafc',
+    'border: 1px dashed #64748b',
+    'border: 4px dashed #6366f1; border-radius: 20px',
+    'border: 3px dotted #0ea5e9; border-radius: 16px',
+    'border: 2px dotted #ef4444',
+    'border-bottom: 3px dotted #22c55e; border-top: 3px dashed #f97316',
     'border-radius: 20px; border-top: 10px solid #ef4444',
     'border-radius: 20px; border-top: 10px solid #ef4444; border-left: 4px solid #22c55e',
     'border-radius: 24px; border: 6px solid; border-color: #ef4444 #22c55e #3b82f6 #eab308',
@@ -322,6 +334,137 @@ begin
   N(Row, 'size-16 rounded-full bg-amber-400 shadow-lg shadow-amber-500/60');
   HTMLDiv('width: 120px; height: 60px; background-color: white; border-radius: 12px; box-shadow: 8px 8px 0 #0f172a').AppendTo(Row);
   HTMLDiv('width: 120px; height: 60px; background-color: white; border-radius: 12px; box-shadow: 0 0 0 4px #6366f1, 0 0 20px 6px rgba(99,102,241,0.5)').AppendTo(Row);
+end;
+
+(*
+  Generated album cover for html demo
+*)
+procedure RegisterCoverImage;
+var
+  Bmp: TBitmap;
+  X, Y, I: Integer;
+  F: Double;
+begin
+  Bmp := TBitmap.Create;
+  try
+    Bmp.SetSize(192, 192);
+    for Y := 0 to 191 do
+      for X := 0 to 191 do begin
+        F := (X + Y) / 382;
+        Bmp.Canvas.Pixels[X, Y] := RGBToColor(Round(30 + 200 * F), Round(40 + 30 * (1 - F)), Round(120 + 100 * (1 - F)));
+      end;
+    Bmp.Canvas.Pen.Style := psClear;
+    for I := 0 to 5 do begin
+      Bmp.Canvas.Brush.Color := RGBToColor(255, 200 - I * 25, 80 + I * 20);
+      Bmp.Canvas.Ellipse(30 + I * 18, 40 + I * 12, 110 + I * 18, 120 + I * 12);
+    end;
+    Bmp.Canvas.Brush.Style := bsClear;
+    Bmp.Canvas.Font.Color := clWhite;
+    Bmp.Canvas.Font.Size := 20;
+    Bmp.Canvas.Font.Style := [fsBold];
+    Bmp.Canvas.TextOut(14, 150, 'CLASS WARFARE');
+    CSSRegisterImage('/img/cover.png', Bmp);
+  finally
+    Bmp.Free;
+  end;
+end;
+
+procedure BuildHtml(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
+begin
+  RegisterCoverImage;
+  ABody.SetClass('p-8 bg-slate-100 flex flex-col gap-8');
+  // example from tailwindcss.com
+  ABody.AppendHTML(
+    '<div class="flex flex-col items-center p-7 rounded-2xl bg-white shadow-lg max-w-md mx-auto">' +
+    '  <div>' +
+    '    <img class="size-48 shadow-xl rounded-md" alt="" src="/img/cover.png" />' +
+    '  </div>' +
+    '  <div class="flex flex-col items-center mt-6">' +
+    '    <span class="text-2xl font-medium">Class Warfare</span>' +
+    '    <span class="font-medium text-sky-500">The Anti-Patterns</span>' +
+    '    <span class="flex gap-2 font-medium text-gray-600">' +
+    '      <span>No. 4</span>' +
+    '      <span>&middot;</span>' +
+    '      <span>2025</span>' +
+    '    </span>' +
+    '  </div>' +
+    '</div>');
+  // notification list
+  ABody.AppendHTML(
+    '<div class="max-w-md mx-auto w-full bg-white rounded-xl shadow-md overflow-hidden">' +
+    '  <div class="px-5 py-3 border-b border-slate-100 flex justify-between items-center">' +
+    '    <b class="text-slate-900">Notifications</b>' +
+    '    <span class="px-2 py-0.5 rounded-full bg-rose-500 text-white text-xs font-bold">3</span>' +
+    '  </div>' +
+    '  <div class="flex gap-3 px-5 py-3 hover:bg-slate-50 cursor-pointer">' +
+    '    <div class="size-9 shrink-0 rounded-full bg-gradient-to-br from-sky-400 to-indigo-500"></div>' +
+    '    <div class="flex flex-col"><span><b>Anna</b> commented on your design</span><span class="text-xs text-slate-500">2 minutes ago</span></div>' +
+    '  </div>' +
+    '  <div class="flex gap-3 px-5 py-3 hover:bg-slate-50 cursor-pointer">' +
+    '    <div class="size-9 shrink-0 rounded-full bg-gradient-to-br from-amber-400 to-rose-500"></div>' +
+    '    <div class="flex flex-col"><span><b>Peter</b> shared <i>Dashboard.fig</i></span><span class="text-xs text-slate-500">1 hour ago</span></div>' +
+    '  </div>' +
+    '</div>');
+end;
+
+procedure BuildTransforms(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
+begin
+  RegisterCoverImage;
+  ABody.SetClass('p-8 bg-white flex flex-col gap-12');
+  ABody.AppendHTML(
+    // rotated photos
+    '<div class="flex justify-center gap-6 pt-6">' +
+    '  <div class="p-2 pb-6 bg-white shadow-lg -rotate-6"><img class="size-32" src="/img/cover.png"></div>' +
+    '  <div class="p-2 pb-6 bg-white shadow-xl rotate-3 translate-y-2"><img class="size-32" src="/img/cover.png"></div>' +
+    '  <div class="p-2 pb-6 bg-white shadow-lg rotate-12"><img class="size-32" src="/img/cover.png"></div>' +
+    '</div>' +
+    // hover effects
+    '<div class="flex flex-wrap justify-center gap-6">' +
+    '  <div class="w-40 p-4 rounded-xl bg-indigo-500 text-white font-semibold shadow-md hover:scale-110 cursor-pointer">hover:scale-110</div>' +
+    '  <div class="w-40 p-4 rounded-xl bg-emerald-500 text-white font-semibold shadow-md hover:-rotate-3 cursor-pointer">hover:-rotate-3</div>' +
+    '  <div class="w-40 p-4 rounded-xl bg-amber-500 text-white font-semibold shadow-md hover:-translate-y-2 hover:shadow-xl cursor-pointer">hover:-translate-y-2</div>' +
+    '</div>' +
+    // badge and centering
+    '<div class="flex justify-center gap-10 items-center">' +
+    '  <div class="relative w-48 h-24 rounded-xl border-2 border-dashed border-slate-300">' +
+    '    <div class="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 px-3 py-1 rounded-full bg-slate-900 text-white text-sm">centered</div>' +
+    '    <div class="absolute top-0 right-0 translate-x-1/2 -translate-y-1/2 size-6 rounded-full bg-rose-500 text-white text-xs font-bold flex items-center justify-center">9</div>' +
+    '  </div>' +
+    '  <div class="px-4 py-2 bg-yellow-300 font-bold -skew-x-12">skew-x</div>' +
+    '  <div class="size-16 rounded-lg bg-gradient-to-br from-pink-500 to-violet-600 rotate-45 shadow-lg"></div>' +
+    '  <div class="px-3 py-1 rounded bg-sky-500 text-white origin-top-left rotate-12">origin</div>' +
+    '</div>');
+end;
+
+procedure BuildDropzone(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
+begin
+  ABody.SetClass('p-8 bg-slate-50 flex flex-col gap-6');
+  ABody.AppendHTML(
+    '<div class="max-w-lg mx-auto w-full flex flex-col items-center justify-center gap-3 p-10 rounded-2xl ' +
+    '  border-2 border-dashed border-slate-300 bg-white hover:border-indigo-400 hover:bg-indigo-50 cursor-pointer">' +
+    '  <div class="size-14 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-600 text-2xl font-bold">&uarr;</div>' +
+    '  <div><b class="text-indigo-600">Click to upload</b> <span class="text-slate-600">or drag and drop</span></div>' +
+    '  <div class="text-xs text-slate-400">PNG, JPG or GIF (max. 10 MB)</div>' +
+    '</div>' +
+    '<div class="max-w-lg mx-auto w-full flex flex-col gap-3">' +
+    '  <div class="flex items-center gap-3 p-3 rounded-xl bg-white border border-slate-200">' +
+    '    <div class="size-10 rounded-lg bg-sky-100 text-sky-600 text-xs font-bold flex items-center justify-center">PNG</div>' +
+    '    <div class="grow flex flex-col gap-1">' +
+    '      <div class="flex justify-between text-sm"><span class="font-medium text-slate-800">design.png</span><span class="text-slate-500">72 %</span></div>' +
+    '      <div class="h-2 rounded-full bg-slate-100"><div class="h-2 w-[72%] rounded-full bg-sky-500"></div></div>' +
+    '    </div>' +
+    '  </div>' +
+    '  <div class="flex items-center gap-3 p-3 rounded-xl bg-white border border-slate-200">' +
+    '    <div class="size-10 rounded-lg bg-emerald-100 text-emerald-600 text-xs font-bold flex items-center justify-center">JPG</div>' +
+    '    <div class="grow flex flex-col gap-1">' +
+    '      <div class="flex justify-between text-sm"><span class="font-medium text-slate-800">photo.jpg</span><span class="text-emerald-600">&check; done</span></div>' +
+    '      <div class="h-2 rounded-full bg-emerald-500"></div>' +
+    '    </div>' +
+    '  </div>' +
+    '</div>' +
+    '<div class="max-w-lg mx-auto w-full p-4 rounded-xl border-2 border-dotted border-amber-400 bg-amber-50 text-amber-800 text-sm">' +
+    '  Dotted border: <code>border-2 border-dotted</code>' +
+    '</div>');
 end;
 
 end.
