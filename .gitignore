@@ -1,0 +1,20 @@
+# Lazarus / FPC build output
+lib/
+backup/
+*.compiled
+*.o
+*.ppu
+*.rsj
+*.lps
+*.dbg
+*.app/
+
+# Binaries built from demo/ and tests/
+demo/csscontrols_demo
+tests/csstests
+tests/out/
+
+.DS_Store
+
+# lazbuild generated (contains local paths)
+packagefiles.xml

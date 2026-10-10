@@ -45,7 +45,7 @@ interface
 uses
   Classes, SysUtils, Types,
   {$ifdef fpc}
-  Controls,  Graphics,
+  Controls,  Graphics, Forms,
   LCLIntf, LCLProc, LMessages, LCLType,  contnrs, LazCanvas,
   {$else}
   // delphi
@@ -58,22 +58,31 @@ const
   CSS_DEBUG_MODE: Boolean = False;
   HTMLInterface = '{DD8167E4-D923-407A-AE4C-14BB93E254E3}';
   CSS_DEG_RAD = Pi / 180;
+  CSS_DEFAULT_FONT_SIZE = 16;   // px, browser default font size
+  CSS_UTILITY_ORDER_BASE = 100000000;       // utility classes are after stylesheet rules
+  CSS_UTILITY_BREAKPOINT_ORDER = 1000000;   // responsive utilities (sm:, md: ...) are after base utilities
 type
   TCSSBorderStyle = (cbsUndefined, cbsNone, cbsHidden, cbsDotted, cbsDashed, cbsSolid, cbsDouble, cbsGroove, cbsRidge, cbsInset, cbsOutset); // https://developer.mozilla.org/en-US/docs/Web/CSS/border-style
   TCSSFontStyle = (cfsUndefined, cfsNormal, cfsItalic, cfsOblique, cfsInherit, cfsUnset); // https://developer.mozilla.org/en-US/docs/Web/CSS/font-style
   TCSSFontWeightType = (cfwUndefined, cfwNormal, cfwBold, cfwLighter, cfwBolder, cfwInherit, cfwUnset); // https://developer.mozilla.org/en-US/docs/Web/CSS/font-weight
-  TCSSLengthType = (cltUndefined, cltPx, cltPt, cltAuto, cltEm, cltPercentage);
+  TCSSLengthType = (cltUndefined, cltPx, cltPt, cltAuto, cltEm, cltPercentage, cltRem);
   TCSSTextAlign = (ctaUndefined, ctaLeft, ctaRight, ctaCenter, ctaJustify);   // https://developer.mozilla.org/en-US/docs/Web/CSS/text-align
-  TCSSColorType = (cctUndefined, cctNormal);
-  TCSSTextDecoration = (ctdUndefined, ctdUnderline, ctdNone);   // https://developer.mozilla.org/en-US/docs/Web/CSS/text-decoration
+  TCSSColorType = (cctUndefined, cctNormal, cctTransparent, cctCurrentColor);
+  TCSSTextDecoration = (ctdUndefined, ctdUnderline, ctdNone, ctdLineThrough);   // https://developer.mozilla.org/en-US/docs/Web/CSS/text-decoration
   TCSSDisplayType = (cdtBlock, cdtInline, cdtFlex, cdtInlineFlex, cdtNone);         // https://developer.mozilla.org/en-US/docs/Web/CSS/display
   TCSSFloatType = (cftUndefined, cftNone, cftLeft, cftRight);        // https://developer.mozilla.org/en-US/docs/Web/CSS/float
   TCSSSide = (csTop, csLeft, csBottom, csRight);        // for margin, padding etc.
   TCSSFlexWrap = (cfwNoWrap, cfwWrap, cfwWrapReverse);  // https://developer.mozilla.org/en-US/docs/Web/CSS/flex-wrap
-  TCSSFlexDirection = (cfdRow, cfdColumn, cfdColumnReverse); // https://developer.mozilla.org/en-US/docs/Web/CSS/flex-direction
+  TCSSFlexDirection = (cfdRow, cfdRowReverse, cfdColumn, cfdColumnReverse); // https://developer.mozilla.org/en-US/docs/Web/CSS/flex-direction
   TCSSPosition = (cpStatic, cpRelative, cpAbsolute, cpFixed, cpSticky); // https://developer.mozilla.org/en-US/docs/Web/CSS/position
-  TCSSAlignItems = (caiStretch, caiBaseline, caiCenter, caiFlexStart, caiFlexEnd);  // https://developer.mozilla.org/en-US/docs/Web/CSS/CSS_Flexible_Box_Layout/Aligning_Items_in_a_Flex_Container
+  TCSSAlignItems = (caiStretch, caiBaseline, caiCenter, caiFlexStart, caiFlexEnd, caiAuto);  // https://developer.mozilla.org/en-US/docs/Web/CSS/CSS_Flexible_Box_Layout/Aligning_Items_in_a_Flex_Container
+  TCSSJustifyContent = (cjcFlexStart, cjcFlexEnd, cjcCenter, cjcSpaceBetween, cjcSpaceAround, cjcSpaceEvenly); // https://developer.mozilla.org/en-US/docs/Web/CSS/justify-content
   TCSSOverflowType = (cotVisible, cotHidden, cotScroll, cotAuto);          // https://developer.mozilla.org/en-US/docs/Web/CSS/overflow
+  TCSSBoxSizing = (cbxContentBox, cbxBorderBox);                          // https://developer.mozilla.org/en-US/docs/Web/CSS/box-sizing
+  TCSSWhiteSpace = (cwsNormal, cwsNoWrap);                                // https://developer.mozilla.org/en-US/docs/Web/CSS/white-space
+  // inherited properties explicitly set by style (others are inherited from parent node)
+  TCSSInheritedProp = (cipColor, cipFontSize, cipFontFamily, cipFontStyle, cipFontWeight, cipTextDecoration, cipTextAlign, cipWhiteSpace);
+  TCSSInheritedProps = set of TCSSInheritedProp;
   {$ifndef fpc}
   TStringArray = array of String;
   {$endif}
@@ -150,28 +159,44 @@ type
     CachedWidth,
     CachedHeight,
     CachedBaseLine: Integer;
+    CachedPixelRatio: Single;
   end;
   TCSSStyleSheet = class;
+
+  TCSSCombinator = (ccNone, ccDescendant, ccChild);
+  { TCSSCompoundSelector - one part of selector eg. "div.button:hover" }
+  TCSSCompoundSelector = record
+    Element: String;            // '' or '*' = any element
+    Id: String;
+    Classes: TStringArray;
+    Pseudos: TStringArray;      // hover, active, first-child, last-child
+    Combinator: TCSSCombinator; // relation to previous (left) compound
+  end;
+  TCSSCompoundSelectors = array of TCSSCompoundSelector;
 
   { TCSSItem }
   TCSSItem = class(TPersistent)
   public
     Attributes: String;
-    AlignSelf,
+    AlignSelf,                  // default auto
     AlignItems: TCSSAlignItems;
     Background: TCSSBackground;
+    BoxSizing: TCSSBoxSizing;
     Color: TCSSColor;
     Cursor: TCursor;
     Changed: Boolean;
     Display: TCSSDisplayType;
     Font: TCSSFont;
     Float: TCSSFloatType;
+    FlexBasis: TCSSLength;      // default auto
     FlexDirection: TCSSFlexDirection;
     FlexGrow: TCSSNumber;       // default 0
+    FlexShrink: TCSSNumber;     // default 1
     FlexWrap: TCSSFlexWrap;
     Border: array[TCSSSide] of TCSSBorder;
     Margin: array[TCSSSide] of TCSSLength;
     Padding: array[TCSSSide] of TCSSLength;
+    JustifyContent: TCSSJustifyContent;
     Order: TCSSInteger; // default 0
     Overflow: TCSSOverflowType;
     Position: TCSSPosition;
@@ -179,12 +204,28 @@ type
     RadiusTopRight,
     RadiusBottomLeft,
     RadiusBottomRight: TCSSBorderRadius;
+    RowGap,
+    ColumnGap: TCSSLength;
+    Specified: TCSSInheritedProps; // inherited properties set by this style
     TextAlign: TCSSTextAlign;
+    WhiteSpace: TCSSWhiteSpace;
     Height,
-    Width: TCSSLength;
+    Width,
+    MinHeight,
+    MinWidth,
+    MaxHeight,
+    MaxWidth: TCSSLength;
     Top,
-    Left: TCSSLength;
+    Left,
+    Right,
+    Bottom: TCSSLength;
     Weight: Integer;        // "order" in CSS stylesheet
+    Specificity: Integer;   // selector specificity (id * 10000 + class * 100 + element)
+    SelectorText: String;   // selector of this rule (stylesheet items only)
+    Selector: TCSSCompoundSelectors;  // parsed SelectorText (see CompileSelector)
+    SelectorCompiled,
+    SelectorValid: Boolean;
+    procedure CompileSelector;
     constructor Create;
     destructor Destroy; override;
     procedure Reset;
@@ -202,11 +243,15 @@ type
     FList: TStringList;
     FStyle: String;
     function GetSelectorByName(AName: String): TCSSItem;
+    function GetCount: Integer;
+    function GetItem(AIndex: Integer): TCSSItem;
     procedure SetStyle(AValue: String);
   public
     constructor Create(AOwner: TComponent); override;
     destructor Destroy; override;
     property Selector[AName: String]: TCSSItem read GetSelectorByName;
+    property Count: Integer read GetCount;
+    property Items[AIndex: Integer]: TCSSItem read GetItem;
     function Append(const AValue: String): TCSSStyleSheet;
   published
     property Style: String read FStyle write SetStyle;
@@ -227,6 +272,7 @@ type
     function Remove(AName: String): TCSSClassList;
     function Replace(AFrom, ATo: String): TCSSClassList;
     function Toggle(AName: String): TCSSClassList;
+    function Contains(const AName: String): Boolean;
     property Count: Integer read GetCount;     // length
     property Name: String read GetName write SetName;
     property Item[AIndex: Integer]: String read GetItem;
@@ -244,6 +290,7 @@ type
     Margin: TRect;
     ContentWidth,                // content + border + padding
     ContentHeight: Integer;      // content + border + padding
+    FontSize: Single;            // computed font size in px (0 = default font)
     function TopSpace: Integer; inline;
     function LeftSpace: Integer; inline;
     function RightSpace: Integer; inline;
@@ -260,6 +307,8 @@ type
   private
     FOnClick: TNotifyEvent;
     FHovered: Boolean;
+    FActive: Boolean;             // mouse is pressed on node (:active)
+    FViewportWidth: Integer;      // root node only: width for responsive variants (sm:, md: ...)
     FParentControl: TControl;
     FFreeMe: Boolean;
     FElementName,                 // div, span ...
@@ -285,14 +334,19 @@ type
     FClassList: TCSSClassList;
     FCornerBitmap: array [0..3] of TBitmap;
     FVisible: Boolean;
+    FPixelRatio: Single;          // root node only: scale factor for high dpi
+    FLayoutRoot: Boolean;         // LayoutTo was called for this node
+    FLayoutWidth,                 // size for root node set by LayoutTo (-1 = auto)
+    FLayoutHeight: Integer;
     function GetStyleValue(AName: String): String;
     procedure LayoutCalcPosition(ANode: THtmlNode; TargetWidth,
       TargetHeight: Integer; out NewWidth, NewHeight: Integer);
     procedure LayoutDoFlexAlign(AParentNode: THtmlNode; AList: TList; AWidth,
-      AHeight: Integer);
+      AHeight: Integer; out NewWidth, NewHeight: Integer);
     function LayoutDoVerticalAlign(AList: TList; ClearList: Boolean = True): Integer;
     procedure LayoutGetNodeSize(ANode: THtmlNode; ParentWidth,
-      ParentHeight: Integer; InFlex: Boolean = False);
+      ParentHeight: Integer; InFlex: Boolean = False; AForceWidth: Integer = -1; AForceHeight: Integer = -1);
+    procedure ResolveInheritedStyle;
 
     procedure IntSetAlignControl(AValue: TControl);
     procedure SetHovered(AValue: Boolean);
@@ -307,6 +361,10 @@ type
   protected
     procedure DrawNode(ACanvas: TCanvas; AClipRect: TRect); virtual;
     procedure CalculateSize(out AWidth, AHeight, ABaseLine: Integer);virtual;
+    procedure MeasureText(AMaxWidth: Integer; out AWidth, AHeight, ABaseLine: Integer); virtual;
+    procedure AssignFontTo(AFont: TFont);
+    function BorderColor(ASide: TCSSSide): TColor;
+    procedure CalcRadius(AWidth, AHeight: Integer; out ATopLeft, ATopRight, ABottomRight, ABottomLeft: TPoint);
   public
     constructor Create(AInlineStyle: String = '');virtual;
     destructor Destroy; override;
@@ -315,14 +373,23 @@ type
     function ApplyStyle: THtmlNode;
     function ApplyStyles: THtmlNode;
     procedure ApplyStyleForNode(ANode: THtmlNode);
+    function MatchesCompound(const ACompound: TCSSCompoundSelector): Boolean;
+    function Matches(const ASelector: TCSSCompoundSelectors): Boolean; overload;
+    function Matches(const ASelector: String): Boolean; overload;
+    function UtilityClass(const AClassName: String; out ADeclarations: String; out ASpecificity, AOrder: Integer): Boolean;
+    function SiblingIndex: Integer;
+    function HasHoveredAncestorWithClass(const AClass: String): Boolean;
     function AddNode(ANode: THtmlNode): THtmlNode;
     function AppendTo(AParentNode: THtmlNode): THtmlNode;
     function GetNext(ANode: THtmlNode; GoAboveChildren: Boolean = False): THtmlNode;
     function GetElementsByClassName(AName: String): THtmlNodeArray;
+    function GetElementById(const AId: String): THtmlNode;
     procedure LayoutTo(ALeft, ATop, AWidth, AHeight: Integer);
     procedure AlignControlsTo(ALeft, ATop: Integer);
     function NodeAtPosition(APos: TPoint): THtmlNode;
     procedure PaintTo(ACanvas: TCanvas);
+    function CalcLength(const AValue: TCSSLength; AParentLength: Integer): Integer;
+    function BorderWidth(ASide: TCSSSide): Integer;
     function SetAlignControl(AValue: TControl): THtmlNode;
     function SetClass(AValues: String): THtmlNode;
     function SetInline(AValue: String): THtmlNode;
@@ -332,6 +399,8 @@ type
     function SetTagStr(AValue: String): THtmlNode;
     function Clear: THtmlNode;
     function Delete(ANode: THtmlNode): THtmlNode;
+    procedure Detach;
+    function CountNodes(ANode: THtmlNode): Integer;
     procedure Changed;
 
     property ClassList: TCSSClassList read FClassList;
@@ -344,7 +413,10 @@ type
     property Style[AName: String]: String read GetStyleValue write SetStyleValue;
     property Text: String read FText write FText;
     property Hovered: Boolean read FHovered write SetHovered;
+    property Active: Boolean read FActive write FActive;
+    property ViewportWidth: Integer read FViewportWidth write FViewportWidth;  // used from RootNode only, -1 = unknown
     property ChildCount: Integer read FChildCount;
+    property PixelRatio: Single read FPixelRatio write FPixelRatio;  // used from RootNode only
   published
     property AlignControl: TControl read FAlignControl write IntSetAlignControl;
     property InlineStyle: String read FInlineStyle write SetInlineStyle;
@@ -356,6 +428,9 @@ type
   THtmlNodeList = class
   end;
 
+  { utility classes (Tailwind like) support, see csstailwind.pas }
+  TCSSUtilityResolver = function(const AClassName: String; out ADeclarations: String; out AOrder: Integer): Boolean;
+
   ICSSControl = interface
     [HTMLInterface]
     function GetBodyNode: THtmlNode;
@@ -366,7 +441,16 @@ type
     Value: TColor;
   end;
 
+var
+  CSSRootFontSize: Single = CSS_DEFAULT_FONT_SIZE;   // px, base for "rem" units
+  CSSDefaultBoxSizing: TCSSBoxSizing = cbxContentBox; // initial box-sizing value (Tailwind like styles use border-box)
+
+  CSSUtilityResolver: TCSSUtilityResolver = nil;  // resolve unknown classes to CSS declarations
+
   procedure ParseCSS(ACSS: String; ATarget: TStringList);
+  function ParseSelector(const ASelector: String; out ASpecificity: Integer): TCSSCompoundSelectors;
+  function CSSResolveUtility(const AClassName: String; out ADeclarations: String; out AOrder: Integer): Boolean;
+  procedure CSSClearUtilityCache;
   function StrBefore(const AValue: String; const ASubstr: String): String;
   function StrAfter(const AValue: String; const ASubstr: String): String;
   function StrBetween(const AValue: String; const AStart, AEnd: String): String;
@@ -374,32 +458,168 @@ type
   function HTMLSpan(AInlineStyle: String; AText: String = ''; AId: String = ''): THtmlNode;
 
 implementation
-// TODO: add all css colors
 
 const
-  CSS_COLOR_KEYWORDS : array[0..15] of record         // "css level 1" https://developer.mozilla.org/en-US/docs/Web/CSS/color_value
+  CSS_COLOR_KEYWORDS : array[0..147] of record         // https://developer.mozilla.org/en-US/docs/Web/CSS/named-color
     k: String;                                        // key
     v: String;                                        // value stored in CSS format is slow but better for future
   end = (
+    (k:'aliceblue'; v:'#f0f8ff'),
+    (k:'antiquewhite'; v:'#faebd7'),
+    (k:'aqua'; v:'#00ffff'),
+    (k:'aquamarine'; v:'#7fffd4'),
+    (k:'azure'; v:'#f0ffff'),
+    (k:'beige'; v:'#f5f5dc'),
+    (k:'bisque'; v:'#ffe4c4'),
     (k:'black'; v:'#000000'),
-    (k:'silver'; v:'#c0c0c0'),
-    (k:'gray'; v: '#808080'),
-    (k:'white'; v:'#ffffff'),
-    (k:'maroon'; v:'#800000'),
-    (k:'red'; v:'#ff0000'),
-    (k:'purple'; v:'#800080'),
-    (k:'fuchsia'; v:'#ff00ff'),
-    (k:'green'; v:'#008000'),
-    (k:'lime'; v:'#00ff00'),
-    (k:'olive'; v:'#808000'),
-    (k:'yellow'; v:'#ffff00'),
-    (k:'navy'; v:'#000080'),
+    (k:'blanchedalmond'; v:'#ffebcd'),
     (k:'blue'; v:'#0000ff'),
+    (k:'blueviolet'; v:'#8a2be2'),
+    (k:'brown'; v:'#a52a2a'),
+    (k:'burlywood'; v:'#deb887'),
+    (k:'cadetblue'; v:'#5f9ea0'),
+    (k:'chartreuse'; v:'#7fff00'),
+    (k:'chocolate'; v:'#d2691e'),
+    (k:'coral'; v:'#ff7f50'),
+    (k:'cornflowerblue'; v:'#6495ed'),
+    (k:'cornsilk'; v:'#fff8dc'),
+    (k:'crimson'; v:'#dc143c'),
+    (k:'cyan'; v:'#00ffff'),
+    (k:'darkblue'; v:'#00008b'),
+    (k:'darkcyan'; v:'#008b8b'),
+    (k:'darkgoldenrod'; v:'#b8860b'),
+    (k:'darkgray'; v:'#a9a9a9'),
+    (k:'darkgreen'; v:'#006400'),
+    (k:'darkgrey'; v:'#a9a9a9'),
+    (k:'darkkhaki'; v:'#bdb76b'),
+    (k:'darkmagenta'; v:'#8b008b'),
+    (k:'darkolivegreen'; v:'#556b2f'),
+    (k:'darkorange'; v:'#ff8c00'),
+    (k:'darkorchid'; v:'#9932cc'),
+    (k:'darkred'; v:'#8b0000'),
+    (k:'darksalmon'; v:'#e9967a'),
+    (k:'darkseagreen'; v:'#8fbc8f'),
+    (k:'darkslateblue'; v:'#483d8b'),
+    (k:'darkslategray'; v:'#2f4f4f'),
+    (k:'darkslategrey'; v:'#2f4f4f'),
+    (k:'darkturquoise'; v:'#00ced1'),
+    (k:'darkviolet'; v:'#9400d3'),
+    (k:'deeppink'; v:'#ff1493'),
+    (k:'deepskyblue'; v:'#00bfff'),
+    (k:'dimgray'; v:'#696969'),
+    (k:'dimgrey'; v:'#696969'),
+    (k:'dodgerblue'; v:'#1e90ff'),
+    (k:'firebrick'; v:'#b22222'),
+    (k:'floralwhite'; v:'#fffaf0'),
+    (k:'forestgreen'; v:'#228b22'),
+    (k:'fuchsia'; v:'#ff00ff'),
+    (k:'gainsboro'; v:'#dcdcdc'),
+    (k:'ghostwhite'; v:'#f8f8ff'),
+    (k:'gold'; v:'#ffd700'),
+    (k:'goldenrod'; v:'#daa520'),
+    (k:'gray'; v:'#808080'),
+    (k:'green'; v:'#008000'),
+    (k:'greenyellow'; v:'#adff2f'),
+    (k:'grey'; v:'#808080'),
+    (k:'honeydew'; v:'#f0fff0'),
+    (k:'hotpink'; v:'#ff69b4'),
+    (k:'indianred'; v:'#cd5c5c'),
+    (k:'indigo'; v:'#4b0082'),
+    (k:'ivory'; v:'#fffff0'),
+    (k:'khaki'; v:'#f0e68c'),
+    (k:'lavender'; v:'#e6e6fa'),
+    (k:'lavenderblush'; v:'#fff0f5'),
+    (k:'lawngreen'; v:'#7cfc00'),
+    (k:'lemonchiffon'; v:'#fffacd'),
+    (k:'lightblue'; v:'#add8e6'),
+    (k:'lightcoral'; v:'#f08080'),
+    (k:'lightcyan'; v:'#e0ffff'),
+    (k:'lightgoldenrodyellow'; v:'#fafad2'),
+    (k:'lightgray'; v:'#d3d3d3'),
+    (k:'lightgreen'; v:'#90ee90'),
+    (k:'lightgrey'; v:'#d3d3d3'),
+    (k:'lightpink'; v:'#ffb6c1'),
+    (k:'lightsalmon'; v:'#ffa07a'),
+    (k:'lightseagreen'; v:'#20b2aa'),
+    (k:'lightskyblue'; v:'#87cefa'),
+    (k:'lightslategray'; v:'#778899'),
+    (k:'lightslategrey'; v:'#778899'),
+    (k:'lightsteelblue'; v:'#b0c4de'),
+    (k:'lightyellow'; v:'#ffffe0'),
+    (k:'lime'; v:'#00ff00'),
+    (k:'limegreen'; v:'#32cd32'),
+    (k:'linen'; v:'#faf0e6'),
+    (k:'magenta'; v:'#ff00ff'),
+    (k:'maroon'; v:'#800000'),
+    (k:'mediumaquamarine'; v:'#66cdaa'),
+    (k:'mediumblue'; v:'#0000cd'),
+    (k:'mediumorchid'; v:'#ba55d3'),
+    (k:'mediumpurple'; v:'#9370db'),
+    (k:'mediumseagreen'; v:'#3cb371'),
+    (k:'mediumslateblue'; v:'#7b68ee'),
+    (k:'mediumspringgreen'; v:'#00fa9a'),
+    (k:'mediumturquoise'; v:'#48d1cc'),
+    (k:'mediumvioletred'; v:'#c71585'),
+    (k:'midnightblue'; v:'#191970'),
+    (k:'mintcream'; v:'#f5fffa'),
+    (k:'mistyrose'; v:'#ffe4e1'),
+    (k:'moccasin'; v:'#ffe4b5'),
+    (k:'navajowhite'; v:'#ffdead'),
+    (k:'navy'; v:'#000080'),
+    (k:'oldlace'; v:'#fdf5e6'),
+    (k:'olive'; v:'#808000'),
+    (k:'olivedrab'; v:'#6b8e23'),
+    (k:'orange'; v:'#ffa500'),
+    (k:'orangered'; v:'#ff4500'),
+    (k:'orchid'; v:'#da70d6'),
+    (k:'palegoldenrod'; v:'#eee8aa'),
+    (k:'palegreen'; v:'#98fb98'),
+    (k:'paleturquoise'; v:'#afeeee'),
+    (k:'palevioletred'; v:'#db7093'),
+    (k:'papayawhip'; v:'#ffefd5'),
+    (k:'peachpuff'; v:'#ffdab9'),
+    (k:'peru'; v:'#cd853f'),
+    (k:'pink'; v:'#ffc0cb'),
+    (k:'plum'; v:'#dda0dd'),
+    (k:'powderblue'; v:'#b0e0e6'),
+    (k:'purple'; v:'#800080'),
+    (k:'rebeccapurple'; v:'#663399'),
+    (k:'red'; v:'#ff0000'),
+    (k:'rosybrown'; v:'#bc8f8f'),
+    (k:'royalblue'; v:'#4169e1'),
+    (k:'saddlebrown'; v:'#8b4513'),
+    (k:'salmon'; v:'#fa8072'),
+    (k:'sandybrown'; v:'#f4a460'),
+    (k:'seagreen'; v:'#2e8b57'),
+    (k:'seashell'; v:'#fff5ee'),
+    (k:'sienna'; v:'#a0522d'),
+    (k:'silver'; v:'#c0c0c0'),
+    (k:'skyblue'; v:'#87ceeb'),
+    (k:'slateblue'; v:'#6a5acd'),
+    (k:'slategray'; v:'#708090'),
+    (k:'slategrey'; v:'#708090'),
+    (k:'snow'; v:'#fffafa'),
+    (k:'springgreen'; v:'#00ff7f'),
+    (k:'steelblue'; v:'#4682b4'),
+    (k:'tan'; v:'#d2b48c'),
     (k:'teal'; v:'#008080'),
-    (k:'aqua'; v:'#00ffff')
+    (k:'thistle'; v:'#d8bfd8'),
+    (k:'tomato'; v:'#ff6347'),
+    (k:'turquoise'; v:'#40e0d0'),
+    (k:'violet'; v:'#ee82ee'),
+    (k:'wheat'; v:'#f5deb3'),
+    (k:'white'; v:'#ffffff'),
+    (k:'whitesmoke'; v:'#f5f5f5'),
+    (k:'yellow'; v:'#ffff00'),
+    (k:'yellowgreen'; v:'#9acd32')
   );
 var
   CSSColorList: TStringList;
+  CSSFontFamilyCache: TStringList;   // resolved font-family values
+  {$ifndef fmx}
+  CSSMeasureBitmap: TBitmap;         // canvas for text measurement
+  {$endif}
+  CSSRuleCounter: Integer = 0;   // order of parsed rules (cascade order)
   
 {$ifdef delphi}
 function CompareRect(R1, R2: PRect): Boolean; // lcl source code
@@ -420,7 +640,7 @@ var
   I: Integer;
 begin
   I := Pos(ASubstr, AValue);
-  if I <> -1 then  Result := Copy(AValue, 1, I -1)
+  if I > 0 then  Result := Copy(AValue, 1, I -1)
     else Result := '';
 end;
 
@@ -429,8 +649,28 @@ var
   I: Integer;
 begin
   I := Pos(ASubstr, AValue);
-  if I <> -1 then  Result := Copy(AValue, I + Length(ASubstr), Length(AValue))
+  if I > 0 then  Result := Copy(AValue, I + Length(ASubstr), Length(AValue))
     else Result := '';
+end;
+
+(*
+  Locale independent number parsing ("1.5" works also with "," decimal separator in system locale)
+*)
+function CSSStrToFloat(const AValue: String; out AResult: Single): Boolean;
+var
+  fs: TFormatSettings;
+  D: Double;
+begin
+  fs := {$ifdef fpc}DefaultFormatSettings{$else}TFormatSettings.Invariant{$endif};
+  fs.DecimalSeparator := '.';
+  fs.ThousandSeparator := #0;
+  Result := TryStrToFloat(Trim(AValue), D, fs);
+  if Result then AResult := D else AResult := 0;
+end;
+
+function CSSStrToFloatDef(const AValue: String; ADefault: Single): Single;
+begin
+  if not CSSStrToFloat(AValue, Result) then Result := ADefault;
 end;
 
 function StrBetween(const AValue: String; const AStart, AEnd: String): String;
@@ -576,117 +816,149 @@ end;
 {$endif}
 
 function CSSToFontWeight(AValue: String): TCSSFontWeight;
+var
+  N: Integer;
 begin
-  // TODO: add another values
-  if AValue = 'bold' then begin
+  Result.FontType := cfwUndefined;
+  Result.Value := [];
+  AValue := LowerCase(Trim(AValue));
+  if (AValue = 'bold') or (AValue = 'bolder') then begin
     Result.FontType := cfwBold;
     Result.Value := [{$ifdef delphi}TFontStyle.{$endif}fsBold];
-  end
-  else begin
-    Result.FontType := cfwUndefined;
-    Result.Value := [];
+  end else
+  if (AValue = 'normal') or (AValue = 'lighter') then
+    Result.FontType := cfwNormal
+  else
+  if TryStrToInt(AValue, N) then begin     // 100..900, 600 and more is bold
+    if N >= 600 then begin
+      Result.FontType := cfwBold;
+      Result.Value := [{$ifdef delphi}TFontStyle.{$endif}fsBold];
+    end else
+      Result.FontType := cfwNormal;
   end;
 end;
 
 function CSSToTextAlign(AValue: String): TCSSTextAlign;
 begin
-  if AValue = '' then Exit(ctaUndefined);
-  case AValue[1] of
-    'l': Result := ctaLeft;     // left
-    'r': Result := ctaRight;    // righ
-    'c': Result := ctaCenter;   // center
-    'j': Result := ctaJustify;  // justify
-  end;
+  if (AValue = 'left') or (AValue = 'start') then Result := ctaLeft else
+  if (AValue = 'right') or (AValue = 'end') then Result := ctaRight else
+  if AValue = 'center' then Result := ctaCenter else
+  if AValue = 'justify' then Result := ctaJustify else
+    Result := ctaUndefined;
 end;
 
-function CSSToAlignItems(AValue: String): TCSSAlignItems;
+function CSSToAlignItems(AValue: String; ADefault: TCSSAlignItems = caiStretch): TCSSAlignItems;
 begin
-  if AValue = '' then Exit(caiStretch);
-  case AValue[1] of
-    'f': if AValue = 'flex-start' then Result := caiFlexStart else Result := caiFlexEnd;
-    'c': Result := caiCenter; // center
-    's': Result := caiStretch; // stretch
-    'b': Result := caiBaseline; // baseline
-  end;
+  if (AValue = 'flex-start') or (AValue = 'start') or (AValue = 'self-start') then Result := caiFlexStart else
+  if (AValue = 'flex-end') or (AValue = 'end') or (AValue = 'self-end') then Result := caiFlexEnd else
+  if AValue = 'center' then Result := caiCenter else
+  if AValue = 'stretch' then Result := caiStretch else
+  if AValue = 'baseline' then Result := caiBaseline else
+  if AValue = 'auto' then Result := caiAuto else
+    Result := ADefault;
+end;
+
+function CSSToJustifyContent(AValue: String): TCSSJustifyContent;
+begin
+  if (AValue = 'flex-end') or (AValue = 'end') or (AValue = 'right') then Result := cjcFlexEnd else
+  if AValue = 'center' then Result := cjcCenter else
+  if AValue = 'space-between' then Result := cjcSpaceBetween else
+  if AValue = 'space-around' then Result := cjcSpaceAround else
+  if AValue = 'space-evenly' then Result := cjcSpaceEvenly else
+    Result := cjcFlexStart;
+end;
+
+function CSSToFlexDirection(AValue: String): TCSSFlexDirection;
+begin
+  if AValue = 'row-reverse' then Result := cfdRowReverse else
+  if AValue = 'column' then Result := cfdColumn else
+  if AValue = 'column-reverse' then Result := cfdColumnReverse else
+    Result := cfdRow;
+end;
+
+function CSSToFlexWrap(AValue: String): TCSSFlexWrap;
+begin
+  if AValue = 'wrap' then Result := cfwWrap else
+  if AValue = 'wrap-reverse' then Result := cfwWrapReverse else
+    Result := cfwNoWrap;
 end;
 
 function CSSToOverflowType(AValue: String): TCSSOverflowType;
 begin
-  if AValue = '' then Exit(cotVisible);
-  case AValue[1] of
-    'v': Result := cotVisible; // visible
-    'h': Result := cotHidden; // hidden
-    'a': Result := cotAuto; // auto
-    's': Result := cotScroll; // scroll
-  end;
+  if AValue = 'hidden' then Result := cotHidden else
+  if AValue = 'auto' then Result := cotAuto else
+  if AValue = 'scroll' then Result := cotScroll else
+    Result := cotVisible;
 end;
 
-function CSSToBorderStyle(AValue: String): TCSSBorderStyle;
+function CSSToBorderStyle(AValue: String; out AStyle: TCSSBorderStyle): Boolean;
+const
+  Names: array[TCSSBorderStyle] of String = ('', 'none', 'hidden', 'dotted', 'dashed', 'solid', 'double', 'groove', 'ridge', 'inset', 'outset');
+var
+  S: TCSSBorderStyle;
 begin
-  if AValue = 'solid' then Result := cbsSolid else
-  if AValue = 'dotted' then Result := cbsDotted else
-    Result := cbsUndefined;
+  Result := False;
+  AStyle := cbsUndefined;
+  if AValue = '' then Exit;
+  for S := Succ(Low(TCSSBorderStyle)) to High(TCSSBorderStyle) do
+    if Names[S] = AValue then begin
+      AStyle := S;
+      Exit(True);
+    end;
 end;
 
 function CSSFontStyleFromName(S: String): TCSSFontStyle;
 begin
-  Result := cfsNormal;
-  if length(s)<2 then exit;
-  case S[2] of
-    'b': if S = 'oblique' then Result := cfsOblique;
-    'n': if S = 'inherit' then Result := cfsInherit;
-    't': if S = 'italic' then Result := cfsItalic;
+  if S = 'italic' then Result := cfsItalic else
+  if S.StartsWith('oblique') then Result := cfsOblique else
+  if S = 'normal' then Result := cfsNormal else
+    Result := cfsUndefined;
+end;
+
+(*
+  Convert CSS length value. Returns False if AValue is not valid length.
+  Supported: 0, auto, px, pt, em, rem, %, unitless number (as px)
+*)
+function TryCSSToLengthValue(AValue: String; out ALength: TCSSLength): Boolean;
+  function NumberWithUnit(const AUnit: String; AType: TCSSLengthType): Boolean;
+  begin
+    Result := AValue.EndsWith(AUnit) and CSSStrToFloat(Copy(AValue, 1, Length(AValue) - Length(AUnit)), ALength.Value);
+    if Result then ALength.LengthType := AType;
   end;
+begin
+  ALength.Value := 0;
+  ALength.LengthType := cltUndefined;
+  AValue := LowerCase(Trim(AValue));
+  Result := True;
+  if AValue = 'auto' then
+    ALength.LengthType := cltAuto
+  else
+  if not (NumberWithUnit('px', cltPx) or NumberWithUnit('pt', cltPt) or NumberWithUnit('rem', cltRem) or
+     NumberWithUnit('em', cltEm) or NumberWithUnit('%', cltPercentage) or NumberWithUnit('', cltPx)) then
+    Result := False;
 end;
 
 function CSSToLength(AValue: String): TCSSLength;
-var
-  fs: TFormatSettings;
 begin
-  if AValue.Contains('px') then begin
-    Result.Value := StrToIntDef(StrBefore(AValue, 'px'), 0);
-    Result.LengthType := cltPx;
-  end else
-  if AValue.Equals('0') then begin
-    Result.Value := 0;
-    Result.LengthType := cltPx;
-  end else
-  if AValue.Contains('%') then begin
-    fs.DecimalSeparator := '.';
-    Result.Value := StrToFloat(StrBefore(AValue, '%'), fs);
-    Result.LengthType := cltPercentage;
-    if Result.Value > 100 then Result.Value := 100;
-  end else
-  if AValue.Equals('auto') then begin
-    Result.LengthType := cltAuto;
-  end else
-    Result.LengthType := cltUndefined;
+  TryCSSToLengthValue(AValue, Result);
 end;
 
 function CSSToPosition(AValue: String): TCSSPosition;
 begin
-  Result := cpStatic;
   if AValue = 'relative' then Result := cpRelative else
   if AValue = 'absolute' then Result := cpAbsolute else
-  if AValue = 'sticky' then Result := cpSticky;
+  if AValue = 'fixed' then Result := cpFixed else
+  if AValue = 'sticky' then Result := cpSticky else
+    Result := cpStatic;
 end;
 
 function CSSToDisplay(AValue: String): TCSSDisplayType;
 begin
-  if AValue.IsEmpty then Result := cdtBlock else
-  case AValue[1] of
-    'b':
-      if AValue.Equals('block') then Result := cdtBlock;
-    'f':
-      if AValue.Equals('flex') then Result := cdtFlex;
-    'i':
-      if AValue.Equals('inline') or AValue.Equals('inline-block') then Result := cdtInline else
-      if AValue.Equals('inline-flex') then Result := cdtInlineFlex;
-    'n':
-      if AValue.Equals('none') then Result := cdtNone;
-    else
-      Result := cdtBlock;
-  end;
+  if AValue = 'flex' then Result := cdtFlex else
+  if (AValue = 'inline') or (AValue = 'inline-block') then Result := cdtInline else
+  if AValue = 'inline-flex' then Result := cdtInlineFlex else
+  if AValue = 'none' then Result := cdtNone else
+    Result := cdtBlock;
 end;
 
 function CSSToFloat(AValue: String): TCSSFloatType;
@@ -698,54 +970,101 @@ end;
 
 function CSSToCursor(AValue: String): TCursor;
 begin
-  //TODO: add more cursors here
-  if AValue = 'pointer' then Result := crHandPoint else
+  if (AValue = 'pointer') or (AValue = 'grab') or (AValue = 'grabbing') then Result := crHandPoint else
   if AValue = 'wait' then Result := crHourGlass else
+  if AValue = 'progress' then Result := crAppStart else
   if AValue = 'text' then Result := crIBeam else
   if AValue = 'move' then Result := crSizeAll else
+  if AValue = 'crosshair' then Result := crCross else
+  if AValue = 'help' then Result := crHelp else
+  if AValue = 'not-allowed' then Result := crNo else
+  if (AValue = 'ns-resize') or (AValue = 'row-resize') then Result := crSizeNS else
+  if (AValue = 'ew-resize') or (AValue = 'col-resize') then Result := crSizeWE else
+  if AValue = 'nesw-resize' then Result := crSizeNESW else
+  if AValue = 'nwse-resize' then Result := crSizeNWSE else
+  if AValue = 'none' then Result := crNone else
   Result := crDefault;
 end;
 
 (*
     Convert HTML colors to LCL colors
+    Supported: #rgb, #rgba, #rrggbb, #rrggbbaa, rgb(), rgba(), named colors, transparent, currentcolor
+    Note: alpha channel is not supported yet; fully transparent colors are converted to "transparent"
 *)
 function CSSToColor(AValue: String): TCSSColor;
+  function HexByte(const S: String; out B: Byte): Boolean;
+  var
+    V: Integer;
+  begin
+    Result := TryStrToInt('$' + S, V) and (V >= 0) and (V <= 255);
+    if Result then B := V else B := 0;
+  end;
+  function ColorPart(S: String; out B: Byte): Boolean;
+  var
+    F: Single;
+  begin
+    S := Trim(S);
+    if S.EndsWith('%') then begin
+      Result := CSSStrToFloat(Copy(S, 1, Length(S)-1), F);
+      F := F * 2.55;
+    end else
+      Result := CSSStrToFloat(S, F);
+    B := EnsureRange(Round(F), 0, 255);
+  end;
 var
-  R,G,B: Byte;
+  R, G, B, A: Byte;
   X: Integer;
   s: String;
+  Parts: TStringArray;
+  Alpha: Single;
+  Ok: Boolean;
 begin
   Result.ColorType := cctUndefined;
-  AValue := Trim(AValue);
-  if AValue.IsEmpty then
+  Result.Value := 0;
+  AValue := LowerCase(Trim(AValue));
+  if AValue = '' then
     Exit;
+  A := 255;
+  Ok := False;
   if AValue[1] = '#' then begin
-    if Length(AValue) = 7 then begin
-      R := StrToInt('$'+Copy(AValue, 2, 2));
-      G := StrToInt('$'+Copy(AValue, 4, 2));
-      B := StrToInt('$'+Copy(AValue, 6, 2));
-      Result.Value := RGBToColor(R, G, B);
-      Result.ColorType := cctNormal;
-    end else
-    if Length(AValue) = 4 then begin
-      R:= StrToInt('$' + AValue[2] + AValue[2]);
-      G:= StrToInt('$' + AValue[3] + AValue[4]);
-      B:= StrToInt('$' + AValue[4] + AValue[5]);
-      Result.Value := RGBToColor(R, G, B);
-      Result.ColorType := cctNormal;
+    case Length(AValue) of
+      4, 5: Ok := HexByte(AValue[2] + AValue[2], R) and HexByte(AValue[3] + AValue[3], G) and HexByte(AValue[4] + AValue[4], B) and
+            ((Length(AValue) = 4) or HexByte(AValue[5] + AValue[5], A));
+      7, 9: Ok := HexByte(Copy(AValue, 2, 2), R) and HexByte(Copy(AValue, 4, 2), G) and HexByte(Copy(AValue, 6, 2), B) and
+            ((Length(AValue) = 7) or HexByte(Copy(AValue, 8, 2), A));
     end;
   end else
   if AValue.StartsWith('rgb') then begin
-    s := StrBetween(AValue, '(', ')');
-    R := StrToInt(Trim(StrPart(s, ',')));
-    G := StrToInt(Trim(StrPart(s, ',')));
-    B := StrToInt(Trim(StrPart(s, ',')));
-    Result.Value := RGBToColor(R, G, B);
+    s := StringReplace(StrBetween(AValue, '(', ')'), '/', ' ', [rfReplaceAll]);
+    s := StringReplace(s, ',', ' ', [rfReplaceAll]);
+    Parts := SplitParameters(Trim(s));
+    if Length(Parts) >= 3 then begin
+      Ok := ColorPart(Parts[0], R) and ColorPart(Parts[1], G) and ColorPart(Parts[2], B);
+      if Ok and (Length(Parts) >= 4) then begin
+        if Parts[3].EndsWith('%') then Alpha := CSSStrToFloatDef(Copy(Parts[3], 1, Length(Parts[3])-1), 100) / 100
+          else Alpha := CSSStrToFloatDef(Parts[3], 1);
+        A := EnsureRange(Round(Alpha * 255), 0, 255);
+      end;
+    end;
+  end else
+  if AValue = 'transparent' then begin
+    Result.ColorType := cctTransparent;
+    Exit;
+  end else
+  if AValue = 'currentcolor' then begin
+    Result.ColorType := cctCurrentColor;
+    Exit;
+  end else
+  if Assigned(CSSColorList) and CSSColorList.Find(AValue, X) then begin
+    Result.Value := TColorObject(CSSColorList.Objects[X]).Value;
     Result.ColorType := cctNormal;
-  end
-  else begin
-    if CSSColorList.Find(AValue, X) then begin
-      Result.Value := TColorObject(CSSColorList.Objects[X]).Value;
+    Exit;
+  end;
+  if Ok then begin
+    if A = 0 then
+      Result.ColorType := cctTransparent
+    else begin
+      Result.Value := RGBToColor(R, G, B);
       Result.ColorType := cctNormal;
     end;
   end;
@@ -770,83 +1089,144 @@ begin
   end;
 end;
 
-procedure TryCSSToLength(const AParts: TStringArray; var ATarget: TCSSLength);
+(*
+  Resolve CSS font-family list (eg. "Inter, ui-sans-serif, system-ui, sans-serif") to first installed font.
+  Generic families are mapped to platform fonts, "default" is LCL default font.
+*)
+function CSSResolveFontFamily(const AFamily: String): String;
+const
+  {$if defined(darwin)}
+  SERIF_FONT = 'Times'; MONO_FONT = 'Menlo';
+  {$elseif defined(windows) or defined(mswindows)}
+  SERIF_FONT = 'Times New Roman'; MONO_FONT = 'Consolas';
+  {$else}
+  SERIF_FONT = 'Serif'; MONO_FONT = 'Monospace';
+  {$endif}
+var
+  Parts: TStringArray;
+  I, X: Integer;
+  Name, LName: String;
+begin
+  Result := 'default';
+  if Trim(AFamily) = '' then Exit;
+  if CSSFontFamilyCache = nil then begin
+    CSSFontFamilyCache := TStringList.Create;
+    CSSFontFamilyCache.Sorted := True;
+    CSSFontFamilyCache.CaseSensitive := True;
+  end;
+  if CSSFontFamilyCache.Find(AFamily, X) then
+    Exit(CSSFontFamilyCache.ValueFromIndex[X]);
+  Parts := SplitParameters(AFamily, ',');
+  for I := 0 to High(Parts) do begin
+    Name := Trim(StringReplace(StringReplace(Parts[I], '"', '', [rfReplaceAll]), '''', '', [rfReplaceAll]));
+    LName := LowerCase(Name);
+    if (LName = 'sans-serif') or (LName = 'system-ui') or (LName = 'ui-sans-serif') or (LName = '-apple-system') or
+      (LName = 'blinkmacsystemfont') or (LName = 'default') then Break;    // 'default'
+    if (LName = 'serif') or (LName = 'ui-serif') then begin
+      Result := SERIF_FONT;
+      Break;
+    end;
+    if (LName = 'monospace') or (LName = 'ui-monospace') then begin
+      Result := MONO_FONT;
+      Break;
+    end;
+    {$ifdef fpc}
+    try
+      if Screen.Fonts.IndexOf(Name) >= 0 then begin
+        Result := Name;
+        Break;
+      end;
+    except
+      Result := Name;     // font list is not available (eg. widgetset is not initialized)
+      Break;
+    end;
+    {$endif}
+  end;
+  CSSFontFamilyCache.Add(AFamily + CSSFontFamilyCache.NameValueSeparator + Result);
+end;
+
+function TryCSSToLength(const AParts: TStringArray; var ATarget: TCSSLength): Boolean;
+var
+  I: Integer;
+  L: TCSSLength;
+begin
+  Result := False;
+  for I := 0 to High(AParts) do begin
+    if AParts[I].IsEmpty then Continue;
+    if TryCSSToLengthValue(AParts[I], L) and (L.LengthType <> cltAuto) then begin
+      ATarget := L;
+      AParts[I] := '';
+      Exit(True);
+    end;
+  end;
+end;
+
+function CSSToBorderWidth(const AValue: String): TCSSLength;  // https://developer.mozilla.org/en-US/docs/Web/CSS/border-width
+begin
+  Result.LengthType := cltPx;
+  if AValue = 'thin' then Result.Value := 1 else
+  if AValue = 'medium' then Result.Value := 3 else
+  if AValue = 'thick' then Result.Value := 5 else
+    Result := CSSToLength(AValue);
+end;
+
+procedure TryCSSToBorderWidth(const AParts: TStringArray; var ATarget: TCSSLength);
 var
   I: Integer;
 begin
-  for I := 0 to High(AParts) do begin
-    if AParts[I].IsEmpty then Continue;
-    if AParts[I].EndsWith('px') then begin
-      ATarget.Value := StrToIntDef(StrBefore(AParts[I], 'px'), 0);
-      ATarget.LengthType := cltPx;
+  for I := 0 to High(AParts) do
+    if (AParts[I] = 'thin') or (AParts[I] = 'medium') or (AParts[I] = 'thick') then begin
+      ATarget := CSSToBorderWidth(AParts[I]);
       AParts[I] := '';
-    end else
-    if AParts[I].EndsWith('em') then begin
-      ATarget.LengthType := cltEm;
-      ATarget.Value := StrToIntDef(StrBefore(AParts[I], 'em'), 0);
-      AParts[I] := '';
+      Exit;
     end;
-  end;
+  TryCSSToLength(AParts, ATarget);
 end;
 
 procedure TryCSSToBorderStyle(const AParts: TStringArray; var ATarget: TCSSBorderStyle);
 var
   I: Integer;
-  S: String;
 begin
-  for I := 0 to High(AParts) do begin
-    S := AParts[I];
-    if S.IsEmpty then Continue;
-    if S.Equals('solid') then begin
-        ATarget := cbsSolid;
-        AParts[I] := '';
-    end else
-    if S.Equals('dotted') then begin
-      ATarget := cbsNone;
+  for I := 0 to High(AParts) do
+    if CSSToBorderStyle(AParts[I], ATarget) then begin
       AParts[I] := '';
-    end else
-    if S.Equals('none') then begin
-      ATarget := cbsNone;
-      AParts[I] := '';
-    end else
-    if S.Equals('dashed') then begin
-      ATarget := cbsDashed;
-      AParts[I] := '';
+      Exit;
     end;
-  end;
 end;
 
 procedure TryCSSToColor(const AParts: TStringArray; var ATarget: TCSSColor);
 var
   I: Integer;
+  C: TCSSColor;
 begin
   for I := 0 to High(AParts) do begin
     if AParts[I].IsEmpty then Continue;
-    ATarget := CSSToColor(AParts[I]);
-    if ATarget.ColorType <> cctUndefined then AParts[I] := '';
+    C := CSSToColor(AParts[I]);
+    if C.ColorType <> cctUndefined then begin
+      ATarget := C;
+      AParts[I] := '';
+      Exit;
+    end;
   end;
 end;
 
+(*
+  border shorthand: [width] [style] [color] in any order, missing values are set to initial values
+  (width: medium, style: none, color: currentcolor)
+*)
 function CSSToBorder(AValue: String): TCSSBorder;
 var
   Parts: TStringArray;
 begin
-  Parts := SplitParameters(AValue);
-  case High(Parts) of
-    0: // STYLE
-      TryCSSToBorderStyle(Parts, Result.Style);
-    1: // STYLE | COLOR in any order
-      begin
-        TryCSSToBorderStyle(Parts, Result.Style);
-        TryCSSToColor(Parts, Result.Color);
-      end;
-    2: // STYLE | COLOR | WIDTH in any order
-      begin
-        TryCSSToBorderStyle(Parts, Result.Style);
-        TryCSSToLength(Parts, Result.Width);
-        TryCSSToColor(Parts, Result.Color);
-      end;
-  end;
+  Result.Width.LengthType := cltPx;
+  Result.Width.Value := 3;
+  Result.Style := cbsNone;
+  Result.Color.ColorType := cctCurrentColor;
+  Result.Color.Value := 0;
+  Parts := SplitParameters(LowerCase(AValue));
+  TryCSSToBorderStyle(Parts, Result.Style);
+  TryCSSToBorderWidth(Parts, Result.Width);
+  TryCSSToColor(Parts, Result.Color);
 end;
 
 (*
@@ -856,34 +1236,76 @@ end;
 *)
 function CSSToBorderRadius(AValue: String): TCSSBorderRadius;
 var
-  I: Integer;
-begin
-  I := Pos(' ', AValue) ;
-  if I > 0 then begin
-    Result.Width := CSSToLength( Copy(AValue, 1, I));
-    Result.Height := CSSToLength( Copy(AValue, I+1, MaxInt));
-  end else begin
-    Result.Width := CSSToLength(AValue);
-    Result.Height := Result.Width;
-  end;
-end;
-
-function CSSToFont(AValue: String): TCSSFont;
-var
   Parts: TStringArray;
 begin
-  Parts := SplitParameters(AValue);
+  Parts := SplitParameters(Trim(AValue));
+  if Length(Parts) = 0 then begin
+    Result.Width.LengthType := cltUndefined;
+    Result.Width.Value := 0;
+  end else
+    Result.Width := CSSToLength(Parts[0]);
+  if Length(Parts) > 1 then
+    Result.Height := CSSToLength(Parts[1])
+  else
+    Result.Height := Result.Width;
+end;
+
+(*
+  font shorthand: [style] [weight] size[/line-height] family
+*)
+function CSSToFont(AValue: String; out ASpecified: TCSSInheritedProps): TCSSFont;
+var
+  Parts: TStringArray;
+  I: Integer;
+  S: String;
+  W: TCSSFontWeight;
+  FS: TCSSFontStyle;
+  L: TCSSLength;
+begin
+  ASpecified := [];
   Result.Family := '';
+  Result.Style := cfsUndefined;
   Result.TextDecoration := ctdUndefined;
   Result.Weight.FontType := cfwUndefined;
   Result.Weight.Value := [];
   Result.Size.LengthType := cltUndefined;
-  TryCSSToLength(Parts, Result.Size);
+  Result.Size.Value := 0;
+  Parts := SplitParameters(Trim(AValue));
+  for I := 0 to High(Parts) do begin
+    S := LowerCase(Parts[I]);
+    if cipFontSize in ASpecified then begin  // everything after size is family
+      Result.Family := Trim(Result.Family + ' ' + Parts[I]);
+      Continue;
+    end;
+    FS := CSSFontStyleFromName(S);
+    if FS <> cfsUndefined then begin
+      Result.Style := FS;
+      Include(ASpecified, cipFontStyle);
+      Continue;
+    end;
+    W := CSSToFontWeight(S);
+    if W.FontType <> cfwUndefined then begin
+      Result.Weight := W;
+      Include(ASpecified, cipFontWeight);
+      Continue;
+    end;
+    if Pos('/', S) > 0 then S := StrBefore(S, '/');    // line-height is not supported yet
+    if TryCSSToLengthValue(S, L) and (L.LengthType <> cltAuto) and (S <> '') and (S[1] in ['0'..'9', '.']) then begin
+      Result.Size := L;
+      Include(ASpecified, cipFontSize);
+    end;
+  end;
+  if Result.Family <> '' then Include(ASpecified, cipFontFamily);
+  // font shorthand resets style and weight to normal
+  if not (cipFontStyle in ASpecified) then Result.Style := cfsNormal;
+  if not (cipFontWeight in ASpecified) then Result.Weight.FontType := cfwNormal;
+  ASpecified := ASpecified + [cipFontStyle, cipFontWeight];
 end;
 
 function CSSToTextDecoration(AValue: String): TCSSTextDecoration;
 begin
-  if AValue = 'underline' then Result := ctdUnderline else
+  if Pos('underline', AValue) > 0 then Result := ctdUnderline else
+  if Pos('line-through', AValue) > 0 then Result := ctdLineThrough else
   if AValue = 'none' then Result := ctdNone else
     Result := ctdUndefined;
 end;
@@ -912,6 +1334,7 @@ begin
   AttCounter := 0;
   Sl := TStringList.Create;
   Sl.Delimiter := ',';
+  Sl.StrictDelimiter := True;      // selectors can contain spaces (descendant combinator)
   for I := 1 to Length(ACSS) do begin
     CurCh := ACSS[I];
     if CurCh in ['"', ''''] then InQuotes := not InQuotes;
@@ -928,12 +1351,16 @@ begin
         if AttCounter = 1 then begin
           Attributes := Copy(ACSS, T+1, I-T -1);
           Sl.DelimitedText := Selectors;
+          if not Trim(Selectors).StartsWith('@') then      // at-rules (@media, @font-face...) are not supported
           for X := 0 to Sl.Count -1 do begin
             S := Trim(Sl.Strings[X]);
-            if ATarget.Find(S, OI) then ATarget.Delete(OI);
+            if S = '' then Continue;
+            if ATarget.Sorted and ATarget.Find(S, OI) then ATarget.Delete(OI);
             Prop := TCSSItem.Create;
             Prop.Attributes := Attributes;
-            Prop.Weight := ATarget.Count;
+            Prop.SelectorText := S;
+            Inc(CSSRuleCounter);
+            Prop.Weight := CSSRuleCounter;
             ATarget.AddObject(S, Prop);
           end;
           T := I+1;
@@ -945,12 +1372,205 @@ begin
   Sl.Free;
 end;
 
-function CalcCSSLength(AValue: TCSSLength; ParentLength: Integer): Integer;
+(*
+  Parse CSS selector, supported: element, *, .class, #id, :pseudo-class, descendant (space) and child (>) combinators
+  Escaped characters (eg. ".hover\:bg-red-500", ".w-1\/2") are supported in names.
+  Returns empty array for not supported selector.
+*)
+function ParseSelector(const ASelector: String; out ASpecificity: Integer): TCSSCompoundSelectors;
+var
+  I, Len: Integer;
+  Cur: TCSSCompoundSelector;
+  CurEmpty: Boolean;
+  NextCombinator: TCSSCombinator;
+  procedure Fail;
+  begin
+    Result := nil;
+    ASpecificity := 0;
+  end;
+  function ReadIdent: String;
+  begin
+    Result := '';
+    while I <= Len do begin
+      if ASelector[I] = '\' then begin
+        Inc(I);
+        if I <= Len then Result := Result + ASelector[I];
+        Inc(I);
+        Continue;
+      end;
+      if ASelector[I] in [' ', '.', '#', ':', '>', '[', '+', '~', ',', '*', #9] then Break;
+      if ASelector[I] = '(' then begin    // functional pseudo class eg. :not(.a) - read whole
+        while (I <= Len) and (ASelector[I] <> ')') do begin
+          Result := Result + ASelector[I];
+          Inc(I);
+        end;
+      end;
+      if I <= Len then Result := Result + ASelector[I];
+      Inc(I);
+    end;
+  end;
+  procedure AddArray(var A: TStringArray; const S: String);
+  begin
+    SetLength(A, Length(A) + 1);
+    A[High(A)] := S;
+  end;
+  procedure PushCompound;
+  begin
+    if CurEmpty then Exit;
+    SetLength(Result, Length(Result) + 1);
+    Result[High(Result)] := Cur;
+    Cur := Default(TCSSCompoundSelector);
+    CurEmpty := True;
+  end;
+var
+  S: String;
+begin
+  Result := nil;
+  ASpecificity := 0;
+  Cur := Default(TCSSCompoundSelector);
+  CurEmpty := True;
+  NextCombinator := ccNone;
+  I := 1;
+  Len := Length(ASelector);
+  while I <= Len do begin
+    case ASelector[I] of
+      ' ', #9: begin
+        if not CurEmpty then begin
+          PushCompound;
+          if NextCombinator = ccNone then NextCombinator := ccDescendant;
+        end;
+        Inc(I);
+      end;
+      '>': begin
+        PushCompound;
+        if Length(Result) = 0 then begin Fail; Exit; end;
+        NextCombinator := ccChild;
+        Inc(I);
+      end;
+      '+', '~', '[', ',': begin   // not supported
+        Fail;
+        Exit;
+      end;
+      else begin
+        if CurEmpty then begin
+          if Length(Result) > 0 then begin
+            if NextCombinator = ccNone then NextCombinator := ccDescendant;
+            Cur.Combinator := NextCombinator;
+          end;
+          NextCombinator := ccNone;
+        end;
+        CurEmpty := False;
+        case ASelector[I] of
+          '.': begin
+            Inc(I);
+            S := ReadIdent;
+            if S = '' then begin Fail; Exit; end;
+            AddArray(Cur.Classes, S);
+            Inc(ASpecificity, 100);
+          end;
+          '#': begin
+            Inc(I);
+            Cur.Id := ReadIdent;
+            if Cur.Id = '' then begin Fail; Exit; end;
+            Inc(ASpecificity, 10000);
+          end;
+          ':': begin
+            Inc(I);
+            if (I <= Len) and (ASelector[I] = ':') then begin Fail; Exit; end;  // pseudo elements are not supported
+            S := LowerCase(ReadIdent);
+            if S = '' then begin Fail; Exit; end;
+            AddArray(Cur.Pseudos, S);
+            Inc(ASpecificity, 100);
+          end;
+          '*': begin
+            Cur.Element := CSS_UNIVERSAL_SELECTOR;
+            Inc(I);
+          end;
+          else begin
+            Cur.Element := LowerCase(ReadIdent);
+            if Cur.Element = '' then begin Fail; Exit; end;
+            Inc(ASpecificity);
+          end;
+        end;
+      end;
+    end;
+  end;
+  PushCompound;
+  if NextCombinator = ccChild then Fail;   // selector ends with ">"
+end;
+
+procedure TCSSItem.CompileSelector;
+begin
+  if SelectorCompiled then Exit;
+  SelectorCompiled := True;
+  Selector := ParseSelector(SelectorText, Specificity);
+  SelectorValid := Length(Selector) > 0;
+end;
+
+function CompareCSSRules(Item1, Item2: Pointer): Integer;
+begin
+  Result := TCSSItem(Item1).Specificity - TCSSItem(Item2).Specificity;
+  if Result = 0 then Result := TCSSItem(Item1).Weight - TCSSItem(Item2).Weight;
+end;
+
+type
+  TCSSUtilityCacheItem = class
+    Found: Boolean;
+    Declarations: String;
+    Order: Integer;
+  end;
+
+var
+  CSSUtilityCache: TStringList;
+
+(*
+  Resolve utility class with CSSUtilityResolver (cached)
+*)
+function CSSResolveUtility(const AClassName: String; out ADeclarations: String; out AOrder: Integer): Boolean;
+var
+  X: Integer;
+  Item: TCSSUtilityCacheItem;
+begin
+  ADeclarations := '';
+  AOrder := 0;
+  if not Assigned(CSSUtilityResolver) then Exit(False);
+  if CSSUtilityCache = nil then begin
+    CSSUtilityCache := TStringList.Create;
+    CSSUtilityCache.Sorted := True;
+    CSSUtilityCache.CaseSensitive := True;
+    CSSUtilityCache.OwnsObjects := True;
+  end;
+  if CSSUtilityCache.Find(AClassName, X) then
+    Item := TCSSUtilityCacheItem(CSSUtilityCache.Objects[X])
+  else begin
+    Item := TCSSUtilityCacheItem.Create;
+    Item.Found := CSSUtilityResolver(AClassName, Item.Declarations, Item.Order);
+    CSSUtilityCache.AddObject(AClassName, Item);
+  end;
+  Result := Item.Found;
+  ADeclarations := Item.Declarations;
+  AOrder := Item.Order;
+end;
+
+procedure CSSClearUtilityCache;
+begin
+  if Assigned(CSSUtilityCache) then CSSUtilityCache.Clear;
+end;
+
+(*
+  Convert length to pixels
+  ParentLength - for percentage values
+  AFontSize    - font size of node in px (for em values)
+  AScale       - pixel ratio (high dpi support)
+*)
+function CalcCSSLength(AValue: TCSSLength; ParentLength: Integer; AFontSize: Single = CSS_DEFAULT_FONT_SIZE; AScale: Single = 1): Integer;
 begin
   case AValue.LengthType of
-    cltPercentage: Result := Round((ParentLength/100) * AValue.Value);
-    cltPx: Result := Round(AValue.Value);
-    cltEm: Result := Round(AValue.Value); // TODO
+    cltPercentage: if ParentLength < 0 then Result := 0 else Result := Round((ParentLength/100) * AValue.Value);
+    cltPx: Result := Round(AValue.Value * AScale);
+    cltPt: Result := Round(AValue.Value * 96 / 72 * AScale);
+    cltEm: Result := Round(AValue.Value * AFontSize * AScale);
+    cltRem: Result := Round(AValue.Value * CSSRootFontSize * AScale);
     cltAuto: Result := MaxInt;
     else
       Result := 0;
@@ -1178,24 +1798,34 @@ begin
 end;
 
 function TCSSClassList.GetName: String;
+var
+  I: Integer;
 begin
-  FList.Delimiter := ' ';
-  Result := FList.CommaText;
+  Result := '';
+  for I := 0 to FList.Count - 1 do
+    if I = 0 then Result := FList[I] else Result := Result + ' ' + FList[I];
 end;
 
 procedure TCSSClassList.SetName(AValue: String);
+var
+  Parts: TStringArray;
+  I: Integer;
 begin
-  {$ifdef fpc}FreeThenNil(FList);{$else}FList.Free;{$endif}
-  FList := DivideToStringList(AValue, ' ', True);
-  FList.Delimiter := ' ';
+  FList.Clear;
+  Parts := SplitParameters(Trim(StringReplace(StringReplace(AValue, #9, ' ', [rfReplaceAll]), #10, ' ', [rfReplaceAll])));
+  for I := 0 to High(Parts) do
+    Add(Parts[I]);
+end;
+
+function TCSSClassList.Contains(const AName: String): Boolean;
+begin
+  Result := FList.IndexOf(AName) >= 0;
 end;
 
 constructor TCSSClassList.Create;
 begin
   FList :=  TStringList.Create;
-  FList.Duplicates := dupIgnore;
-  FList.OwnsObjects := True;
-  FList.Sorted := True;
+  FList.CaseSensitive := True;
 end;
 
 destructor TCSSClassList.Destroy;
@@ -1207,7 +1837,8 @@ end;
 function TCSSClassList.Add(AName: String): TCSSClassList;
 begin
   Result := Self;
-  FList.Add(AName);
+  AName := Trim(AName);
+  if (AName <> '') and (FList.IndexOf(AName) < 0) then FList.Add(AName);
 end;
 
 function TCSSClassList.Remove(AName: String): TCSSClassList;
@@ -1215,7 +1846,8 @@ var
   I: Integer;
 begin
   Result := Self;
-  if FList.Find(AName, I) then FList.Delete(I);
+  I := FList.IndexOf(AName);
+  if I >= 0 then FList.Delete(I);
 end;
 
 function TCSSClassList.Replace(AFrom, ATo: String): TCSSClassList;
@@ -1223,9 +1855,10 @@ var
   I: Integer;
 begin
   Result := Self;
-  if FList.Find(AFrom, I) then begin
-    FList.Delete(I);
-    FList.Add(ATo);
+  I := FList.IndexOf(AFrom);
+  if I >= 0 then begin
+    if FList.IndexOf(ATo) >= 0 then FList.Delete(I)
+      else FList[I] := ATo;
   end;
 end;
 
@@ -1234,7 +1867,8 @@ var
   I: Integer;
 begin
   Result := Self;
-  if FList.Find(AName, I) then FList.Delete(I) else FList.Add(AName);
+  I := FList.IndexOf(AName);
+  if I >= 0 then FList.Delete(I) else Add(AName);
 end;
 
 { TCSSStyleSheet }
@@ -1250,16 +1884,26 @@ function TCSSStyleSheet.GetSelectorByName(AName: String): TCSSItem;
 var
   I: Integer;
 begin
-  if FList.Find(AName, I) then Result := TCSSItem(FList.Objects[I]) else Result := Nil;
+  for I := FList.Count - 1 downto 0 do
+    if FList[I] = AName then Exit(TCSSItem(FList.Objects[I]));
+  Result := Nil;
+end;
+
+function TCSSStyleSheet.GetCount: Integer;
+begin
+  Result := FList.Count;
+end;
+
+function TCSSStyleSheet.GetItem(AIndex: Integer): TCSSItem;
+begin
+  Result := TCSSItem(FList.Objects[AIndex]);
 end;
 
 constructor TCSSStyleSheet.Create(AOwner: TComponent);
 begin
   inherited Create(AOwner);
-  FList := TStringList.Create;
+  FList := TStringList.Create;      // rules in order of definition
   FList.OwnsObjects := True;
-  FList.Sorted := True;
-  FList.Duplicates := dupError;
 end;
 
 destructor TCSSStyleSheet.Destroy;
@@ -1292,19 +1936,70 @@ end;
 procedure TCSSItem.Reset;
 var
   L: TCSSSide;
+  procedure ResetLength(var ALength: TCSSLength; AType: TCSSLengthType = cltUndefined);
+  begin
+    ALength.LengthType := AType;
+    ALength.Value := 0;
+  end;
+  procedure ResetRadius(var ARadius: TCSSBorderRadius);
+  begin
+    ResetLength(ARadius.Width);
+    ResetLength(ARadius.Height);
+  end;
 begin
+  AlignItems := caiStretch;
+  AlignSelf := caiAuto;
   Background.Color.ColorType := cctUndefined;
+  Background.Color.Value := 0;
+  BoxSizing := CSSDefaultBoxSizing;
   Color.ColorType := cctUndefined;
+  Color.Value := 0;
   Cursor := crDefault;
   Display := cdtBlock;
-  Width.LengthType := cltUndefined;
-  Height.LengthType := cltUndefined;
+  Float := cftNone;
+  ResetLength(FlexBasis, cltAuto);
+  FlexDirection := cfdRow;
+  FlexGrow := 0;
+  FlexShrink := 1;
+  FlexWrap := cfwNoWrap;
+  Font.Family := '';
+  ResetLength(Font.Size);
+  Font.Style := cfsUndefined;
   Font.TextDecoration := ctdUndefined;
   Font.Weight.FontType := cfwUndefined;
   Font.Weight.Value := [];
-  for L := Low(TCSSSide) to High(TCSSSide) do Margin[L].LengthType := cltUndefined;
-  for L := Low(TCSSSide) to High(TCSSSide) do Padding[L].LengthType := cltUndefined;
-  for L := Low(TCSSSide) to High(TCSSSide) do Border[L].Width.LengthType := cltUndefined;
+  JustifyContent := cjcFlexStart;
+  Order := 0;
+  Overflow := cotVisible;
+  Position := cpStatic;
+  ResetRadius(RadiusTopLeft);
+  ResetRadius(RadiusTopRight);
+  ResetRadius(RadiusBottomLeft);
+  ResetRadius(RadiusBottomRight);
+  ResetLength(RowGap);
+  ResetLength(ColumnGap);
+  Specified := [];
+  TextAlign := ctaUndefined;
+  WhiteSpace := cwsNormal;
+  ResetLength(Width);
+  ResetLength(Height);
+  ResetLength(MinWidth);
+  ResetLength(MinHeight);
+  ResetLength(MaxWidth);
+  ResetLength(MaxHeight);
+  ResetLength(Top);
+  ResetLength(Left);
+  ResetLength(Right);
+  ResetLength(Bottom);
+  for L := Low(TCSSSide) to High(TCSSSide) do begin
+    ResetLength(Margin[L]);
+    ResetLength(Padding[L]);
+    Border[L].Style := cbsNone;
+    Border[L].Color.ColorType := cctCurrentColor;
+    Border[L].Color.Value := 0;
+    ResetLength(Border[L].Width, cltPx);
+    Border[L].Width.Value := 3;  // medium
+  end;
 end;
 
 (*
@@ -1336,40 +2031,58 @@ begin
   if Assigned(cs) then Self.Parse(cs.Attributes);
 end;
 
+(*
+  Expand 1-4 values shorthand to top, right, bottom, left
+  https://developer.mozilla.org/en-US/docs/Web/CSS/Shorthand_properties#tricky_edge_cases
+*)
+function ExpandSides(const AParts: TStringArray; out ATop, ARight, ABottom, ALeft: String): Boolean;
+begin
+  Result := True;
+  case Length(AParts) of
+    1: begin ATop := AParts[0]; ARight := AParts[0]; ABottom := AParts[0]; ALeft := AParts[0]; end;
+    2: begin ATop := AParts[0]; ARight := AParts[1]; ABottom := AParts[0]; ALeft := AParts[1]; end;
+    3: begin ATop := AParts[0]; ARight := AParts[1]; ABottom := AParts[2]; ALeft := AParts[1]; end;
+    4: begin ATop := AParts[0]; ARight := AParts[1]; ABottom := AParts[2]; ALeft := AParts[3]; end;
+    else Result := False;
+  end;
+end;
+
 procedure TCSSItem.AddProperty(AName: String; AValue: String);
 var
   Parts: TStringArray;
+  T, R, B, L: String;
+  I: Integer;
+  F: Single;
 begin
   AName := Trim(AName);
   AValue := Trim(AValue);
-  if (AName = 'margin') or (AName = 'padding') then begin // shorthand values https://developer.mozilla.org/en-US/docs/Web/CSS/margin
-    Parts := SplitParameters(AValue);
-    case High(Parts) of
-      0:begin
-          AddParsedProperty(AName + '-top', AValue);
-          AddParsedProperty(AName + '-right', AValue);
-          AddParsedProperty(AName + '-bottom', AValue);
-          AddParsedProperty(AName + '-left', AValue);
-        end;
-      1:begin
-          AddParsedProperty(AName + '-top', Parts[0]);
-          AddParsedProperty(AName + '-bottom', Parts[0]);
-          AddParsedProperty(AName + '-left', Parts[1]);
-          AddParsedProperty(AName + '-right', Parts[1]);
-        end;
-      2:begin
-          AddParsedProperty(AName + '-top', Parts[0]);
-          AddParsedProperty(AName + '-left', Parts[1]);
-          AddParsedProperty(AName + '-right', Parts[1]);
-          AddParsedProperty(AName + '-bottom', Parts[2]);
-        end;
-      3:begin
-          AddParsedProperty(AName + '-top', Parts[0]);
-          AddParsedProperty(AName + '-right', Parts[1]);
-          AddParsedProperty(AName + '-bottom', Parts[2]);
-          AddParsedProperty(AName + '-left', Parts[3]);;;
-        end;
-    end; // case
+  I := Pos('!important', LowerCase(AValue));        // priority is not supported, ignore it
+  if I > 0 then AValue := Trim(Copy(AValue, 1, I - 1));
+  if AValue = '' then Exit;
+  Parts := SplitParameters(AValue);
+  if (AName = 'margin') or (AName = 'padding') or (AName = 'border-width') or (AName = 'border-style') or (AName = 'border-color') then begin
+    if ExpandSides(Parts, T, R, B, L) then begin
+      if AName.StartsWith('border-') then begin
+        AName := Copy(AName, 8, MaxInt);  // width, style, color
+        AddParsedProperty('border-top-' + AName, T);
+        AddParsedProperty('border-right-' + AName, R);
+        AddParsedProperty('border-bottom-' + AName, B);
+        AddParsedProperty('border-left-' + AName, L);
+      end else begin
+        AddParsedProperty(AName + '-top', T);
+        AddParsedProperty(AName + '-right', R);
+        AddParsedProperty(AName + '-bottom', B);
+        AddParsedProperty(AName + '-left', L);
+      end;
+    end;
+  end else
+  if AName = 'inset' then begin
+    if ExpandSides(Parts, T, R, B, L) then begin
+      AddParsedProperty('top', T);
+      AddParsedProperty('right', R);
+      AddParsedProperty('bottom', B);
+      AddParsedProperty('left', L);
+    end;
   end else
   if (AName = 'border') then begin
     AddParsedProperty(AName+ '-top', AValue);
@@ -1378,89 +2091,199 @@ begin
     AddParsedProperty(AName+ '-right', AValue);
   end else
   if (AName = 'border-radius') then begin
-    Parts := SplitParameters(AValue);
-    case High(Parts) of
-      0:begin
-          AddParsedProperty('border-top-left-radius', AValue);
-          AddParsedProperty('border-top-right-radius', AValue);
-          AddParsedProperty('border-bottom-right-radius', AValue);
-          AddParsedProperty('border-bottom-left-radius', AValue);
-        end;
-      1:begin
-          AddParsedProperty('border-top-left-radius', Parts[0]);
-          AddParsedProperty('border-top-right-radius', Parts[1]);
-          AddParsedProperty('border-bottom-right-radius', Parts[0]);
-          AddParsedProperty('border-bottom-left-radius', Parts[1]);
-        end;
-      3:begin
-          AddParsedProperty('border-top-left-radius', Parts[0]);
-          AddParsedProperty('border-top-right-radius', Parts[1]);
-          AddParsedProperty('border-bottom-right-radius', Parts[2]);
-          AddParsedProperty('border-bottom-left-radius', Parts[3]);
-        end;
+    AValue := StrBefore(AValue + '/', '/');         // elliptical corners "a / b" are not supported yet
+    Parts := SplitParameters(Trim(AValue));
+    // order: top-left, top-right, bottom-right, bottom-left
+    if ExpandSides(Parts, T, R, B, L) then begin
+      AddParsedProperty('border-top-left-radius', T);
+      AddParsedProperty('border-top-right-radius', R);
+      AddParsedProperty('border-bottom-right-radius', B);
+      AddParsedProperty('border-bottom-left-radius', L);
     end;
-  end
+  end else
+  if AName = 'gap' then begin
+    AddParsedProperty('row-gap', Parts[0]);
+    if Length(Parts) > 1 then AddParsedProperty('column-gap', Parts[1])
+      else AddParsedProperty('column-gap', Parts[0]);
+  end else
+  if AName = 'flex' then begin   // https://developer.mozilla.org/en-US/docs/Web/CSS/flex
+    if AValue = 'none' then begin
+      FlexGrow := 0; FlexShrink := 0; FlexBasis := CSSToLength('auto');
+    end else
+    if AValue = 'auto' then begin
+      FlexGrow := 1; FlexShrink := 1; FlexBasis := CSSToLength('auto');
+    end else
+    if AValue = 'initial' then begin
+      FlexGrow := 0; FlexShrink := 1; FlexBasis := CSSToLength('auto');
+    end else begin
+      FlexGrow := 0; FlexShrink := 1; FlexBasis := CSSToLength('0');
+      I := 0;
+      if (I < Length(Parts)) and CSSStrToFloat(Parts[I], F) then begin
+        FlexGrow := F;
+        Inc(I);
+        if (I < Length(Parts)) and CSSStrToFloat(Parts[I], F) then begin
+          FlexShrink := F;
+          Inc(I);
+        end;
+      end;
+      if I < Length(Parts) then FlexBasis := CSSToLength(Parts[I]);
+    end;
+  end else
+  if AName = 'flex-flow' then begin
+    for I := 0 to High(Parts) do
+      if Parts[I].StartsWith('wrap') or (Parts[I] = 'nowrap') then AddParsedProperty('flex-wrap', Parts[I])
+        else AddParsedProperty('flex-direction', Parts[I]);
+  end else
+  if (AName = 'background') then begin   // only color is supported
+    for I := 0 to High(Parts) do
+      if CSSToColor(Parts[I]).ColorType <> cctUndefined then AddParsedProperty('background-color', Parts[I]);
+  end else
+  if (AName = 'overflow') then
+    AddParsedProperty(AName, Parts[0])
   else AddParsedProperty(AName, AValue);
 end;
 
+function CSSToFontSize(const AValue: String): TCSSLength;  // https://developer.mozilla.org/en-US/docs/Web/CSS/font-size
+const
+  Names: array[0..6] of String = ('xx-small', 'x-small', 'small', 'medium', 'large', 'x-large', 'xx-large');
+  Sizes: array[0..6] of Integer = (9, 10, 13, 16, 18, 24, 32);
+var
+  I: Integer;
+begin
+  for I := 0 to High(Names) do
+    if Names[I] = AValue then begin
+      Result.LengthType := cltPx;
+      Result.Value := Sizes[I];
+      Exit;
+    end;
+  Result.LengthType := cltEm;
+  if AValue = 'smaller' then Result.Value := 0.833 else
+  if AValue = 'larger' then Result.Value := 1.2 else
+    Result := CSSToLength(AValue);
+end;
+
 procedure TCSSItem.AddParsedProperty(AName: String; AValue: String);
+  procedure SetBorderPart(ASide: TCSSSide; const APart: String);
+  begin
+    if APart = 'width' then Border[ASide].Width := CSSToBorderWidth(AValue) else
+    if APart = 'style' then CSSToBorderStyle(AValue, Border[ASide].Style) else
+    if APart = 'color' then Border[ASide].Color := CSSToColor(AValue);
+  end;
+  function InheritedPropOf(const AProp: String; out AInherited: TCSSInheritedProp): Boolean;
+  begin
+    Result := True;
+    if AProp = 'color' then AInherited := cipColor else
+    if AProp = 'font-size' then AInherited := cipFontSize else
+    if AProp = 'font-family' then AInherited := cipFontFamily else
+    if AProp = 'font-style' then AInherited := cipFontStyle else
+    if AProp = 'font-weight' then AInherited := cipFontWeight else
+    if AProp = 'text-decoration' then AInherited := cipTextDecoration else
+    if AProp = 'text-align' then AInherited := cipTextAlign else
+    if AProp = 'white-space' then AInherited := cipWhiteSpace else
+      Result := False;
+  end;
+var
+  Side: TCSSSide;
+  Prop: TCSSInheritedProp;
+  FontSpecified: TCSSInheritedProps;
+  S: String;
 begin
   if AValue = '' then Exit;
+  if AName = 'text-decoration-line' then AName := 'text-decoration';
+  if InheritedPropOf(AName, Prop) then begin
+    if (AValue = 'inherit') or (AValue = 'unset') or ((Prop = cipColor) and SameText(AValue, 'currentcolor')) then begin
+      Exclude(Specified, Prop);
+      Exit;
+    end;
+    Include(Specified, Prop);
+  end;
   case AName[1] of
     'a':
       if AName = 'align-items' then
         AlignItems := CSSToAlignItems(AValue)
       else
       if AName = 'align-self' then
-        AlignSelf := CSSToAlignItems(AValue);
+        AlignSelf := CSSToAlignItems(AValue, caiAuto);
     'b':
-      if AName = 'border-top' then
-        Border[csTop] := CSSToBorder(AValue)
-      else
-      if AName = 'border-left' then
-        Border[csLeft] := CSSToBorder(AValue)
-      else
-      if AName = 'border-bottom' then
-        Border[csBottom] := CSSToBorder(AValue)
-      else
-      if AName = 'border-right' then
-        Border[csRight] := CSSToBorder(AValue)
-      else
       if AName = 'background-color' then
         Background.Color := CSSToColor(AValue)
       else
-      if AName = 'border-top-left-radius' then
-        RadiusTopLeft := CSSToBorderRadius(AValue)
+      if AName = 'box-sizing' then begin
+        if AValue = 'border-box' then BoxSizing := cbxBorderBox else BoxSizing := cbxContentBox;
+      end else
+      if AName = 'bottom' then
+        Bottom := CSSToLength(AValue)
       else
-      if AName = 'border-top-right-radius' then
-        RadiusTopRight := CSSToBorderRadius(AValue)
-      else
-      if AName = 'border-bottom-left-radius' then
-        RadiusBottomLeft := CSSToBorderRadius(AValue)
-      else
-      if AName = 'border-bottom-right-radius' then
-        RadiusBottomRight := CSSToBorderRadius(AValue);
+      if AName.StartsWith('border-') then begin
+        S := Copy(AName, 8, MaxInt);         // top, top-width, top-left-radius ...
+        if S = 'top-left-radius' then RadiusTopLeft := CSSToBorderRadius(AValue) else
+        if S = 'top-right-radius' then RadiusTopRight := CSSToBorderRadius(AValue) else
+        if S = 'bottom-left-radius' then RadiusBottomLeft := CSSToBorderRadius(AValue) else
+        if S = 'bottom-right-radius' then RadiusBottomRight := CSSToBorderRadius(AValue) else
+        for Side := Low(TCSSSide) to High(TCSSSide) do begin
+          case Side of
+            csTop: if not S.StartsWith('top') then Continue else S := Copy(S, 4, MaxInt);
+            csLeft: if not S.StartsWith('left') then Continue else S := Copy(S, 5, MaxInt);
+            csBottom: if not S.StartsWith('bottom') then Continue else S := Copy(S, 7, MaxInt);
+            csRight: if not S.StartsWith('right') then Continue else S := Copy(S, 6, MaxInt);
+          end;
+          if S = '' then Border[Side] := CSSToBorder(AValue)
+            else SetBorderPart(Side, Copy(S, 2, MaxInt));   // "-width" -> "width"
+          Break;
+        end;
+      end;
     'c':
       if AName = 'color' then
         Color := CSSToColor(AValue)
       else
       if AName = 'cursor' then
-        Cursor := CSSToCursor(AValue);
+        Cursor := CSSToCursor(AValue)
+      else
+      if AName = 'column-gap' then
+        ColumnGap := CSSToLength(AValue);
     'd':
       if AName = 'display' then
         Display := CSSToDisplay(AValue);
     'f':
       if AName = 'flex-grow' then
-        FlexGrow := StrToFloat(AValue) // TODO: better conversion
+        FlexGrow := Max(0, CSSStrToFloatDef(AValue, 0))
+      else
+      if AName = 'flex-shrink' then
+        FlexShrink := Max(0, CSSStrToFloatDef(AValue, 1))
+      else
+      if AName = 'flex-basis' then
+        FlexBasis := CSSToLength(AValue)
+      else
+      if AName = 'flex-direction' then
+        FlexDirection := CSSToFlexDirection(AValue)
+      else
+      if AName = 'flex-wrap' then
+        FlexWrap := CSSToFlexWrap(AValue)
       else
       if AName = 'float' then
         Float := CSSToFloat(AValue)
       else
-      if AName = 'font' then
-        Font := CSSToFont(AValue)
+      if AName = 'font' then begin
+        Font := CSSToFont(AValue, FontSpecified);
+        Specified := Specified + FontSpecified;
+      end else
+      if AName = 'font-size' then
+        Font.Size := CSSToFontSize(AValue)
+      else
+      if AName = 'font-family' then
+        Font.Family := AValue
+      else
+      if AName = 'font-style' then
+        Font.Style := CSSFontStyleFromName(AValue)
       else
       if AName = 'font-weight' then
         Font.Weight := CSSToFontWeight(AValue);
+    'h':
+      if AName = 'height' then
+        Height := CSSToLength(AValue);
+    'j':
+      if AName = 'justify-content' then
+        JustifyContent := CSSToJustifyContent(AValue);
     'l':
       if AName = 'left' then
         Left := CSSToLength(AValue);
@@ -1475,10 +2298,25 @@ begin
         Margin[csBottom] := CSSToLength(AValue)
       else
       if AName = 'margin-right' then
-        Margin[csRight] := CSSToLength(AValue);
+        Margin[csRight] := CSSToLength(AValue)
+      else
+      if AName = 'min-width' then
+        MinWidth := CSSToLength(AValue)
+      else
+      if AName = 'min-height' then
+        MinHeight := CSSToLength(AValue)
+      else
+      if AName = 'max-width' then
+        MaxWidth := CSSToLength(AValue)
+      else
+      if AName = 'max-height' then
+        MaxHeight := CSSToLength(AValue);
     'o':
       if AName = 'overflow' then
-        Overflow := CSSToOverflowType(AValue);
+        Overflow := CSSToOverflowType(AValue)
+      else
+      if AName = 'order' then
+        Order := StrToIntDef(AValue, 0);
     'p':
       if AName = 'padding-left' then
         Padding[csLeft] := CSSToLength(AValue)
@@ -1494,6 +2332,12 @@ begin
       else
       if AName = 'position' then
         Position := CSSToPosition(AValue);
+    'r':
+      if AName = 'right' then
+        Right := CSSToLength(AValue)
+      else
+      if AName = 'row-gap' then
+        RowGap := CSSToLength(AValue);
     't':
       if AName = 'top' then
         Top := CSSToLength(AValue)
@@ -1503,12 +2347,13 @@ begin
       else
       if AName = 'text-decoration' then
         Font.TextDecoration := CSSToTextDecoration(AValue);
-    'h':
-      if AName = 'height' then
-        Height := CSSToLength(AValue);
     'w':
       if AName = 'width' then
-        Width := CSSToLength(AValue);
+        Width := CSSToLength(AValue)
+      else
+      if AName = 'white-space' then begin
+        if (AValue = 'nowrap') or (AValue = 'pre') then WhiteSpace := cwsNoWrap else WhiteSpace := cwsNormal;
+      end;
   end;
 end;
 
@@ -1520,41 +2365,132 @@ begin
   if Source = Nil then Exit;
 	if Source is TCSSItem then begin
 		Src := TCSSItem(Source);
+    Attributes := Src.Attributes;
+    AlignSelf := Src.AlignSelf;
     AlignItems := Src.AlignItems;
     Background := Src.Background;
+    BoxSizing := Src.BoxSizing;
     Color := Src.Color;
     Cursor := Src.Cursor;
     Display := Src.Display;
     Font := Src.Font;
     Float := Src.Float;
-    for I := Low(TCSSSide) to High(TCSSSide) do
+    FlexBasis := Src.FlexBasis;
+    FlexDirection := Src.FlexDirection;
+    FlexGrow := Src.FlexGrow;
+    FlexShrink := Src.FlexShrink;
+    FlexWrap := Src.FlexWrap;
+    for I := Low(TCSSSide) to High(TCSSSide) do begin
       Border[I] := Src.Border[I];
-    for I := Low(TCSSSide) to High(TCSSSide) do
       Margin[I] := Src.Margin[I];
-    for I := Low(TCSSSide) to High(TCSSSide) do
       Padding[I] := Src.Padding[I];
+    end;
+    JustifyContent := Src.JustifyContent;
+    Order := Src.Order;
+    Overflow := Src.Overflow;
+    Position := Src.Position;
+    RadiusTopLeft := Src.RadiusTopLeft;
+    RadiusTopRight := Src.RadiusTopRight;
+    RadiusBottomLeft := Src.RadiusBottomLeft;
+    RadiusBottomRight := Src.RadiusBottomRight;
+    RowGap := Src.RowGap;
+    ColumnGap := Src.ColumnGap;
+    Specified := Src.Specified;
     TextAlign :=  Src.TextAlign;
+    WhiteSpace := Src.WhiteSpace;
     Height := Src.Height;
     Width := Src.Width;
+    MinHeight := Src.MinHeight;
+    MinWidth := Src.MinWidth;
+    MaxHeight := Src.MaxHeight;
+    MaxWidth := Src.MaxWidth;
+    Top := Src.Top;
+    Left := Src.Left;
+    Right := Src.Right;
+    Bottom := Src.Bottom;
+    Weight := Src.Weight;
+    Specificity := Src.Specificity;
+    SelectorText := Src.SelectorText;
 	end else
 		inherited Assign(Source);
 end;
 
+(*
+  Merge defined (non default) color, margin and padding values
+*)
 procedure TCSSItem.Merge(AValue: TCSSItem);
 var
   I: TCSSSide;
 begin
   if AValue.Color.ColorType <> cctUndefined then Color := AValue.Color;
-  for I := Low(TCSSSide) to High(TCSSSide) do
-    if AValue.Margin[TCSSSide(I)].LengthType <> cltUndefined then Margin[csTop] := AValue.Margin[csTop];
+  if AValue.Background.Color.ColorType <> cctUndefined then Background := AValue.Background;
+  for I := Low(TCSSSide) to High(TCSSSide) do begin
+    if AValue.Margin[I].LengthType <> cltUndefined then Margin[I] := AValue.Margin[I];
+    if AValue.Padding[I].LengthType <> cltUndefined then Padding[I] := AValue.Padding[I];
+  end;
 end;
 
 { THtmlNode }
 
 
-procedure THtmlNode.SetStyleValue(AName: String; AValue: String);
+(*
+  Split inline style to names and values
+*)
+procedure SplitDeclarations(const AStyle: String; ANames, AValues: TStringList);
+var
+  List: TStringList;
+  I: Integer;
+  S, N: String;
 begin
-  CompStyle.AddProperty(AName, AValue);
+  List := DivideToStringList(AStyle, ';');
+  try
+    for I := 0 to List.Count - 1 do begin
+      S := List[I];
+      N := LowerCase(Trim(Copy(S, 1, Pos(':', S) - 1)));
+      if N = '' then Continue;
+      ANames.Add(N);
+      AValues.Add(Trim(Copy(S, Pos(':', S) + 1, MaxInt)));
+    end;
+  finally
+    List.Free;
+  end;
+end;
+
+(*
+  Set or remove (empty AValue) property in inline style
+*)
+procedure THtmlNode.SetStyleValue(AName: String; AValue: String);
+var
+  Names, Values: TStringList;
+  I: Integer;
+  S: String;
+begin
+  AName := LowerCase(Trim(AName));
+  if AName = '' then Exit;
+  Names := TStringList.Create;
+  Values := TStringList.Create;
+  try
+    SplitDeclarations(FInlineStyle, Names, Values);
+    I := Names.IndexOf(AName);
+    if I >= 0 then begin
+      if Trim(AValue) = '' then begin
+        Names.Delete(I);
+        Values.Delete(I);
+      end else
+        Values[I] := Trim(AValue);
+    end else
+    if Trim(AValue) <> '' then begin
+      Names.Add(AName);
+      Values.Add(Trim(AValue));
+    end;
+    S := '';
+    for I := 0 to Names.Count - 1 do
+      S := S + Names[I] + ':' + Values[I] + ';';
+    InlineStyle := S;
+  finally
+    Names.Free;
+    Values.Free;
+  end;
 end;
 
 function Merge(c1, c2, c3, c4: Cardinal): Cardinal; inline;
@@ -1784,10 +2720,7 @@ begin
   cs := FCompStyle;
   CRect := CompSize.ContentRect;
   BSize := CompSize.Border;
-  RadiusTopLeft := Point( Round(CompStyle.RadiusTopLeft.Width.Value), Round(CompStyle.RadiusTopLeft.Height.Value));
-  RadiusTopRight := Point(Round(CompStyle.RadiusTopRight.Width.Value), Round(CompStyle.RadiusTopRight.Height.Value));
-  RadiusBottomRight := Point(Round(CompStyle.RadiusBottomRight.Width.Value), Round(CompStyle.RadiusBottomRight.Height.Value));
-  RadiusBottomLeft := Point(Round(CompStyle.RadiusBottomLeft.Width.Value), Round(CompStyle.RadiusBottomLeft.Height.Value));
+  CalcRadius(CRect.Width, CRect.Height, RadiusTopLeft, RadiusTopRight, RadiusBottomRight, RadiusBottomLeft);
 
   SetLength(BackPoly, 0);
   SetLength(BRightPoly, 0);
@@ -1835,7 +2768,7 @@ begin
   ACanvas.Rectangle(AClipRect);
 }
   // rendering part
-  if cs.Background.Color.ColorType <> cctUndefined then begin
+  if cs.Background.Color.ColorType = cctNormal then begin
     AddToArray(BackPoly, OPoly[1]);
     AddToArray(BackPoly, OPoly[2]);
     AddToArray(BackPoly, OPoly[3]);
@@ -1852,21 +2785,24 @@ begin
     AddToArray(BTopPoly, OPoly[2]);
     AddToArray(BTopPoly, IPoly[2]);
     AddToArray(BTopPoly, IPoly[1]);
-    RenderPolygon(ACanvas, cs.Border[csTop].Color.Value, 1, 0, 0, BTopPoly);
+    if cs.Border[csTop].Color.ColorType <> cctTransparent then
+      RenderPolygon(ACanvas, BorderColor(csTop), 1, 0, 0, BTopPoly);
   end;
   if BSize.Right > 0 then begin
     AddToArray(BRightPoly, OPoly[3]);
     AddToArray(BRightPoly, OPoly[4]);
     AddToArray(BRightPoly, IPoly[4]);
     AddToArray(BRightPoly, IPoly[3]);
-    RenderPolygon(ACanvas, cs.Border[csRight].Color.Value, 1, 0, 0, BRightPoly);
+    if cs.Border[csRight].Color.ColorType <> cctTransparent then
+      RenderPolygon(ACanvas, BorderColor(csRight), 1, 0, 0, BRightPoly);
   end;
   if BSize.Bottom > 0 then begin
     AddToArray(BBottomPoly, OPoly[5]);
     AddToArray(BBottomPoly, OPoly[6]);
     AddToArray(BBottomPoly, IPoly[6]);
     AddToArray(BBottomPoly, IPoly[5]);
-    RenderPolygon(ACanvas, cs.Border[csBottom].Color.Value, 1, 0, 0, BBottomPoly);
+    if cs.Border[csBottom].Color.ColorType <> cctTransparent then
+      RenderPolygon(ACanvas, BorderColor(csBottom), 1, 0, 0, BBottomPoly);
   end;
 
   if BSize.Left > 0 then begin
@@ -1874,7 +2810,8 @@ begin
     AddToArray(BLeftPoly, OPoly[0]);
     AddToArray(BLeftPoly, IPoly[0]);
     AddToArray(BLeftPoly, IPoly[7]);
-    RenderPolygon(ACanvas, cs.Border[csLeft].Color.Value, 1, 0, 0, BLeftPoly);
+    if cs.Border[csLeft].Color.ColorType <> cctTransparent then
+      RenderPolygon(ACanvas, BorderColor(csLeft), 1, 0, 0, BLeftPoly);
   end;
   // fine tunning with antialiasing example
 {  for I := 0 to 3 do Corner[I].Req := False;
@@ -1903,22 +2840,20 @@ begin
   if Text <> '' then begin
     ACanvas.Brush.Style := bsClear;
     {$ifdef fpc} ACanvas.Font.BeginUpdate; {$endif}
-    ACanvas.Font.Style := FCompStyle.Font.Weight.Value;
-    ACanvas.Font.Size := Round(FCompStyle.Font.Size.Value);
-    ACanvas.Font.Color := FCompStyle.Color.Value;
-    if FCompStyle.Font.TextDecoration = ctdUnderline then ACanvas.Font.Style := ACanvas.Font.Style + [fsUnderline];
+    AssignFontTo(ACanvas.Font);
     {$ifdef fpc} ACanvas.Font.EndUpdate;{$endif}
-    R := Rect(FCompSize.MarginRect.Left + FCompSize.LeftSpace,
-      FCompSize.MarginRect.Top + FCompSize.TopSpace,
-      FCompSize.MarginRect.Right - FCompSize.RightSpace,
-      FCompSize.MarginRect.Bottom - FCompSize.BottomSpace);
-    Flags := DT_LEFT or  DT_NOPREFIX or DT_END_ELLIPSIS;
+    R := FCompSize.RealContentRect;
+    if FCompStyle.WhiteSpace = cwsNoWrap then
+      Flags := DT_LEFT or DT_NOPREFIX or DT_SINGLELINE or DT_END_ELLIPSIS
+    else
+      Flags := DT_LEFT or DT_NOPREFIX or DT_WORDBREAK;
     case CompStyle.TextAlign of
       ctaCenter: Flags := Flags or DT_CENTER;
       ctaRight: Flags := Flags or DT_RIGHT;
     end;
-    R.Intersect(AClipRect);
+    ACanvas.ClipRect := TRect.Intersect(FCompSize.RealContentRect, AClipRect);  // R can't be intersected here, text is moved when R.Top changes
     DrawText(ACanvas.Handle, PChar(Text), Length(Text),  R, Flags);
+    ACanvas.ClipRect := AClipRect;
   end;
   
   if CSS_DEBUG_MODE then begin
@@ -1958,32 +2893,131 @@ begin
     Exit;
   end;
 
-  // TODO: maybe faster cache validation
-  if (FCachedFont.Size.Value = FCompStyle.Font.Size.Value) and (FCachedFont.CachedText = Text)
-    and (FCachedFont.Weight.Value = FCompStyle.Font.Weight.Value) then
-  else begin
-    b := TBitmap.Create;
-    try
-      b.Canvas.Font.Size := Round(FCompStyle.Font.Size.Value);
-      b.Canvas.Font.Style := FCompStyle.Font.Weight.Value;
-      {$ifdef fmx}
-      // TODO:       b.Canvas.MeasureText();
-      {$else}
-      ts := b.Canvas.TextExtent(Text);
-      {$endif}
-      FCachedFont.CachedWidth := ts.Width + 1; // to prevent "bold" size bug
-      FCachedFont.CachedHeight := ts.Height;
-      FCachedFont.CachedBaseLine := Round(ts.Height/5); // TODO: get real baseline from font
-      FCachedFont.Size.Value := FCompStyle.Font.Size.Value;
-      FCachedFont.Weight.Value := FCompStyle.Font.Weight.Value;
-      FCachedFont.CachedText := Text;
-    finally
-      b.Free;
-    end;
+  if (FCachedFont.CachedText <> Text) or (FCachedFont.Size.Value <> FCompSize.FontSize) or (FCachedFont.Family <> FCompStyle.Font.Family) or
+    (FCachedFont.Weight.FontType <> FCompStyle.Font.Weight.FontType) or (FCachedFont.Style <> FCompStyle.Font.Style) or
+    (FCachedFont.Size.LengthType <> cltPx) or (FCachedFont.CachedPixelRatio <> RootNode.FPixelRatio) then begin
+    MeasureText(-1, FCachedFont.CachedWidth, FCachedFont.CachedHeight, FCachedFont.CachedBaseLine);
+    FCachedFont.Size.Value := FCompSize.FontSize;
+    FCachedFont.Size.LengthType := cltPx;
+    FCachedFont.Family := FCompStyle.Font.Family;
+    FCachedFont.Weight.FontType := FCompStyle.Font.Weight.FontType;
+    FCachedFont.Style := FCompStyle.Font.Style;
+    FCachedFont.CachedPixelRatio := RootNode.FPixelRatio;
+    FCachedFont.CachedText := Text;
   end;
   AWidth := FCachedFont.CachedWidth;
   AHeight := FCachedFont.CachedHeight;
   ABaseLine := FCachedFont.CachedBaseLine;
+end;
+
+(*
+  Measure text of node, AMaxWidth = -1 for single line text
+*)
+procedure THtmlNode.MeasureText(AMaxWidth: Integer; out AWidth, AHeight, ABaseLine: Integer);
+var
+  Canvas: TCanvas;
+  R: TRect;
+  {$ifdef fpc}
+  TM: TTextMetric;
+  {$endif}
+begin
+  {$ifdef fmx}
+  AWidth := 0; AHeight := 0; ABaseLine := 0; // TODO: add fmx support
+  {$else}
+  if CSSMeasureBitmap = nil then begin
+    CSSMeasureBitmap := TBitmap.Create;
+    CSSMeasureBitmap.SetSize(1, 1);
+  end;
+  Canvas := CSSMeasureBitmap.Canvas;
+  AssignFontTo(Canvas.Font);
+  if AMaxWidth < 0 then begin
+    with Canvas.TextExtent(Text) do begin
+      AWidth := cx + 1; // to prevent "bold" size bug
+      AHeight := cy;
+    end;
+  end else begin
+    R := Rect(0, 0, Max(1, AMaxWidth), 0);
+    DrawText(Canvas.Handle, PChar(Text), Length(Text), R, DT_CALCRECT or DT_WORDBREAK or DT_NOPREFIX or DT_LEFT);
+    AWidth := Min(R.Width + 1, AMaxWidth);
+    AHeight := R.Height;
+  end;
+  ABaseLine := Round(Canvas.TextHeight('Xg') / 5);
+  {$ifdef fpc}
+  if GetTextMetrics(Canvas.Handle, TM) and (TM.tmDescent > 0) then ABaseLine := TM.tmDescent;
+  {$endif}
+  {$endif}
+end;
+
+(*
+  Setup canvas font based on computed style
+*)
+procedure THtmlNode.AssignFontTo(AFont: TFont);
+var
+  St: TFontStyles;
+begin
+  St := [];
+  if FCompStyle.Font.Weight.FontType = cfwBold then Include(St, {$ifdef delphi}TFontStyle.{$endif}fsBold);
+  if FCompStyle.Font.Style in [cfsItalic, cfsOblique] then Include(St, {$ifdef delphi}TFontStyle.{$endif}fsItalic);
+  case FCompStyle.Font.TextDecoration of
+    ctdUnderline: Include(St, {$ifdef delphi}TFontStyle.{$endif}fsUnderline);
+    ctdLineThrough: Include(St, {$ifdef delphi}TFontStyle.{$endif}fsStrikeOut);
+  end;
+  {$ifndef fmx}
+  AFont.Name := CSSResolveFontFamily(FCompStyle.Font.Family);
+  if FCompSize.FontSize > 0 then
+    AFont.Height := -Round(FCompSize.FontSize * RootNode.FPixelRatio)
+  else
+    AFont.Size := 0;
+  AFont.Style := St;
+  AFont.Color := FCompStyle.Color.Value;
+  {$endif}
+end;
+
+function THtmlNode.BorderColor(ASide: TCSSSide): TColor;
+begin
+  if FCompStyle.Border[ASide].Color.ColorType = cctNormal then
+    Result := FCompStyle.Border[ASide].Color.Value
+  else
+    Result := FCompStyle.Color.Value;   // currentcolor
+end;
+
+(*
+  Calculate corner radius in px, overlapping radii are reduced
+  https://www.w3.org/TR/css-backgrounds-3/#corner-overlap
+*)
+procedure THtmlNode.CalcRadius(AWidth, AHeight: Integer; out ATopLeft, ATopRight, ABottomRight, ABottomLeft: TPoint);
+  function RadiusPoint(const ARadius: TCSSBorderRadius): TPoint;
+  begin
+    Result.x := Max(0, CalcLength(ARadius.Width, AWidth));
+    Result.y := Max(0, CalcLength(ARadius.Height, AHeight));
+    if (Result.x = MaxInt) or (Result.y = MaxInt) or (Result.x = 0) or (Result.y = 0) then Result := Point(0, 0);
+  end;
+  procedure Reduce(var F: Double; ASide: Integer; R1, R2: Integer);
+  begin
+    if (R1 + R2 > 0) and (ASide / (R1 + R2) < F) then F := ASide / (R1 + R2);
+  end;
+  function ScalePoint(const P: TPoint; F: Double): TPoint;
+  begin
+    Result := Point(Trunc(P.x * F), Trunc(P.y * F));
+  end;
+var
+  F: Double;
+begin
+  ATopLeft := RadiusPoint(FCompStyle.RadiusTopLeft);
+  ATopRight := RadiusPoint(FCompStyle.RadiusTopRight);
+  ABottomRight := RadiusPoint(FCompStyle.RadiusBottomRight);
+  ABottomLeft := RadiusPoint(FCompStyle.RadiusBottomLeft);
+  F := 1;
+  Reduce(F, AWidth, ATopLeft.x, ATopRight.x);
+  Reduce(F, AWidth, ABottomLeft.x, ABottomRight.x);
+  Reduce(F, AHeight, ATopLeft.y, ABottomLeft.y);
+  Reduce(F, AHeight, ATopRight.y, ABottomRight.y);
+  if F < 1 then begin
+    ATopLeft := ScalePoint(ATopLeft, F);
+    ATopRight := ScalePoint(ATopRight, F);
+    ABottomRight := ScalePoint(ABottomRight, F);
+    ABottomLeft := ScalePoint(ABottomLeft, F);
+  end;
 end;
 
 constructor THtmlNode.Create(AInlineStyle: String = '');
@@ -1996,6 +3030,8 @@ begin
   FCachedFont.Size.Value := -1;
   for I := 0 to 3 do FCornerBitmap[I] := Nil;
   RootNode := Self;
+  FPixelRatio := 1;
+  FViewportWidth := -1;
   FElementName := 'div';    // default
   FFreeMe := True;
   FText := '';
@@ -2008,6 +3044,7 @@ var
   I: Integer;
 begin
   Clear;
+  Detach;
   for I := 3 downto 0 do
     if FCornerBitmap[I] <> Nil then FCornerBitmap[I].Free;
   FClassList.Free;
@@ -2055,30 +3092,199 @@ end;
 *)
 procedure THtmlNode.ApplyStyleForNode(ANode: THtmlNode);
 var
+  Rules: TList;
   sh: TCSSStyleSheet;
-  s: String;
+  Item: TCSSItem;
   I: Integer;
+  Decl: String;
+  Spec, Order: Integer;
+  TempRules: array of TCSSItem;
 begin
   if ANode.RootNode = Nil then exit;
   sh := ANode.RootNode.StyleSheet;
   ANode.FCompStyle.Reset;
-  if ANode.FElementName = 'span' then ANode.FCompStyle.Display := cdtInline;    //TODO: better solution here
-  if Assigned(sh) then begin // if we have defined StyleSheet
-    for I := 0 to ANode.ClassList.Count -1 do begin
-      s := '.' + ANode.ClassList.Item[I];
-      ANode.FCompStyle.ParseFromStyleSheet(sh, s);
-      if ANode.FPrevSibling = nil then ANode.FCompStyle.ParseFromStyleSheet(sh, s+':first-child');
-      if ANode.FNextSibling = nil then ANode.FCompStyle.ParseFromStyleSheet(sh, s+':last-child');
-      if ANode.Hovered then begin
-        ANode.FCompStyle.ParseFromStyleSheet(sh, s+':hover');
-        if ANode.FPrevSibling = nil then ANode.FCompStyle.ParseFromStyleSheet(sh, s+':first-child:hover');
-        if ANode.FNextSibling = nil then ANode.FCompStyle.ParseFromStyleSheet(sh, s+':last-child:hover');
+  if ANode.FElementName = 'span' then ANode.FCompStyle.Display := cdtInline;    // default display for span element
+  Rules := TList.Create;
+  TempRules := nil;
+  try
+    // collect matching rules from stylesheet
+    if Assigned(sh) then
+      for I := 0 to sh.Count - 1 do begin
+        Item := sh.Items[I];
+        Item.CompileSelector;
+        if Item.SelectorValid and ANode.Matches(Item.Selector) then Rules.Add(Item);
       end;
-    end;
+    // utility classes (rules are created temporary)
+    if Assigned(CSSUtilityResolver) then
+      for I := 0 to ANode.ClassList.Count - 1 do
+        if ANode.UtilityClass(ANode.ClassList.Item[I], Decl, Spec, Order) then begin
+          Item := TCSSItem.Create;
+          Item.Attributes := Decl;
+          Item.Specificity := Spec;
+          Item.Weight := CSS_UTILITY_ORDER_BASE + Order;
+          SetLength(TempRules, Length(TempRules) + 1);
+          TempRules[High(TempRules)] := Item;
+          Rules.Add(Item);
+        end;
+    // cascade order: specificity, then order of definition
+    Rules.Sort(@CompareCSSRules);
+    for I := 0 to Rules.Count - 1 do
+      ANode.FCompStyle.Parse(TCSSItem(Rules[I]).Attributes);
+  finally
+    Rules.Free;
+    for I := 0 to High(TempRules) do TempRules[I].Free;
   end;
   if ANode.InlineStyle <> '' then  ANode.FCompStyle.Parse(ANode.InlineStyle);
   if (ANode.Hovered) and (ANode.HoverStyle <> '') then
       ANode.FCompStyle.Parse(ANode.HoverStyle);
+end;
+
+(*
+  Check variants of utility class (eg. "hover:md:bg-red-500") and resolve it to CSS declarations
+*)
+function THtmlNode.UtilityClass(const AClassName: String; out ADeclarations: String; out ASpecificity, AOrder: Integer): Boolean;
+const
+  BREAKPOINTS: array[0..4] of record Name: String; Width: Integer; end = (
+    (Name: 'sm'; Width: 640), (Name: 'md'; Width: 768), (Name: 'lg'; Width: 1024), (Name: 'xl'; Width: 1280), (Name: '2xl'; Width: 1536));
+var
+  Name, Variant: String;
+  I, P, VW, BpIndex: Integer;
+begin
+  Result := False;
+  ADeclarations := '';
+  ASpecificity := 100;
+  AOrder := 0;
+  BpIndex := -1;
+  Name := AClassName;
+  repeat
+    P := Pos(':', Name);
+    if P = 0 then Break;
+    Variant := Copy(Name, 1, P - 1);
+    Name := Copy(Name, P + 1, MaxInt);
+    if Variant = 'hover' then begin
+      if not FHovered then Exit;
+    end else
+    if Variant = 'active' then begin
+      if not FActive then Exit;
+    end else
+    if Variant = 'first' then begin
+      if Assigned(FPrevSibling) then Exit;
+    end else
+    if Variant = 'last' then begin
+      if Assigned(FNextSibling) then Exit;
+    end else
+    if Variant = 'odd' then begin
+      if Odd(SiblingIndex) then Exit;    // 1st, 3rd ... (index 0, 2 ...)
+    end else
+    if Variant = 'even' then begin
+      if not Odd(SiblingIndex) then Exit;
+    end else
+    if Variant = 'group-hover' then begin
+      if not HasHoveredAncestorWithClass('group') then Exit;
+    end else begin
+      // responsive variants (mobile first, compared with width of root node)
+      I := High(BREAKPOINTS);
+      while (I >= 0) and (BREAKPOINTS[I].Name <> Variant) do Dec(I);
+      if I < 0 then Exit;     // unknown variant
+      VW := RootNode.FViewportWidth;
+      if (VW < 0) or (VW < BREAKPOINTS[I].Width) then Exit;
+      BpIndex := Max(BpIndex, I);
+      Continue;
+    end;
+    Inc(ASpecificity, 100);   // pseudo class
+  until False;
+  if (Name <> '') and (Name[1] = '!') then System.Delete(Name, 1, 1);  // important modifier is ignored
+  if Name = '' then Exit;
+  Result := CSSResolveUtility(Name, ADeclarations, AOrder);
+  if Result and (BpIndex >= 0) then Inc(AOrder, (BpIndex + 1) * CSS_UTILITY_BREAKPOINT_ORDER);  // responsive utilities are after base utilities
+end;
+
+function THtmlNode.SiblingIndex: Integer;
+var
+  N: THtmlNode;
+begin
+  Result := 0;
+  N := FPrevSibling;
+  while Assigned(N) do begin
+    Inc(Result);
+    N := N.FPrevSibling;
+  end;
+end;
+
+function THtmlNode.HasHoveredAncestorWithClass(const AClass: String): Boolean;
+var
+  N: THtmlNode;
+begin
+  N := ParentNode;
+  while Assigned(N) do begin
+    if N.FHovered and N.ClassList.Contains(AClass) then Exit(True);
+    N := N.ParentNode;
+  end;
+  Result := False;
+end;
+
+function THtmlNode.MatchesCompound(const ACompound: TCSSCompoundSelector): Boolean;
+var
+  I: Integer;
+  P: String;
+begin
+  Result := False;
+  if (ACompound.Element <> '') and (ACompound.Element <> CSS_UNIVERSAL_SELECTOR) and not SameText(ACompound.Element, FElementName) then Exit;
+  if (ACompound.Id <> '') and (ACompound.Id <> FId) then Exit;
+  for I := 0 to High(ACompound.Classes) do
+    if not FClassList.Contains(ACompound.Classes[I]) then Exit;
+  for I := 0 to High(ACompound.Pseudos) do begin
+    P := ACompound.Pseudos[I];
+    if P = 'hover' then begin
+      if not FHovered then Exit;
+    end else
+    if P = 'active' then begin
+      if not FActive then Exit;
+    end else
+    if P = 'first-child' then begin
+      if Assigned(FPrevSibling) then Exit;
+    end else
+    if P = 'last-child' then begin
+      if Assigned(FNextSibling) then Exit;
+    end else
+    if P = 'only-child' then begin
+      if Assigned(FPrevSibling) or Assigned(FNextSibling) then Exit;
+    end else
+      Exit;   // not supported pseudo class
+  end;
+  Result := True;
+end;
+
+(*
+  Match selector from right to left
+*)
+function THtmlNode.Matches(const ASelector: TCSSCompoundSelectors): Boolean;
+  function MatchFrom(ANode: THtmlNode; AIndex: Integer): Boolean;
+  var
+    P: THtmlNode;
+  begin
+    Result := ANode.MatchesCompound(ASelector[AIndex]);
+    if (not Result) or (AIndex = 0) then Exit;
+    if ASelector[AIndex].Combinator = ccChild then
+      Result := Assigned(ANode.ParentNode) and MatchFrom(ANode.ParentNode, AIndex - 1)
+    else begin   // descendant
+      P := ANode.ParentNode;
+      while Assigned(P) do begin
+        if MatchFrom(P, AIndex - 1) then Exit(True);
+        P := P.ParentNode;
+      end;
+      Result := False;
+    end;
+  end;
+begin
+  Result := (Length(ASelector) > 0) and MatchFrom(Self, High(ASelector));
+end;
+
+function THtmlNode.Matches(const ASelector: String): Boolean;
+var
+  Spec: Integer;
+begin
+  Result := Matches(ParseSelector(ASelector, Spec));
 end;
 
 procedure THtmlNode.PaintTo(ACanvas: TCanvas);
@@ -2088,7 +3294,7 @@ procedure THtmlNode.PaintTo(ACanvas: TCanvas);
       if Node.FVisible then Node.DrawNode(ACanvas, ClipRect);
       if Node.ChildCount > 0 then begin
         if Node.CompStyle.Overflow = cotHidden then
-          RenderNode(Node.FirstChild, Node.CompSize.RealContentRect) // Note: this is not CSS standard behavior use Node.CompSize.ContentRect;
+          RenderNode(Node.FirstChild, TRect.Intersect(Node.CompSize.RealContentRect, ClipRect)) // Note: this is not CSS standard behavior use Node.CompSize.ContentRect;
         else
           RenderNode(Node.FirstChild, ClipRect)
       end;
@@ -2112,6 +3318,8 @@ function THtmlNode.SetClass(AValues: String): THtmlNode;
 begin
   Result := Self;
   FClassList.Name := AValues;
+  ApplyStyleForNode(Self);
+  Changed;
 end;
 
 
@@ -2155,99 +3363,204 @@ begin
   if ClearList then AList.Clear;
 end;
 
-procedure THtmlNode.LayoutGetNodeSize(ANode: THtmlNode; ParentWidth, ParentHeight: Integer; InFlex: Boolean = False);
+(*
+  Convert CSS length to pixels for this node (em is relative to node font size)
+*)
+function THtmlNode.CalcLength(const AValue: TCSSLength; AParentLength: Integer): Integer;
+var
+  FontSize: Single;
+begin
+  FontSize := FCompSize.FontSize;
+  if FontSize <= 0 then FontSize := CSSRootFontSize;
+  Result := CalcCSSLength(AValue, AParentLength, FontSize, RootNode.FPixelRatio);
+end;
+
+function THtmlNode.BorderWidth(ASide: TCSSSide): Integer;
+begin
+  if FCompStyle.Border[ASide].Style in [cbsUndefined, cbsNone, cbsHidden] then
+    Result := 0
+  else
+    Result := Max(0, CalcLength(FCompStyle.Border[ASide].Width, 0));
+end;
+
+(*
+  Resolve inherited properties (color, font, text-align...) from parent node and compute font size in px
+  Only properties not specified by node style are inherited, so it can be called repeatedly.
+*)
+procedure THtmlNode.ResolveInheritedStyle;
+var
+  cs, ps: TCSSItem;
+  ParentFontSize: Single;
+begin
+  cs := FCompStyle;
+  if Assigned(ParentNode) then ps := ParentNode.FCompStyle else ps := Nil;
+  if not (cipColor in cs.Specified) or (cs.Color.ColorType in [cctUndefined, cctCurrentColor]) then begin
+    if Assigned(ps) then cs.Color := ps.Color
+    else begin
+      cs.Color.Value := {$ifdef fmx}TColorRec.Black{$else}clBlack{$endif};
+      cs.Color.ColorType := cctNormal;
+    end;
+  end;
+  if not (cipFontFamily in cs.Specified) then
+    if Assigned(ps) then cs.Font.Family := ps.Font.Family else cs.Font.Family := '';
+  if not (cipFontStyle in cs.Specified) then
+    if Assigned(ps) then cs.Font.Style := ps.Font.Style else cs.Font.Style := cfsNormal;
+  if not (cipFontWeight in cs.Specified) then begin
+    if Assigned(ps) then cs.Font.Weight := ps.Font.Weight
+    else begin
+      cs.Font.Weight.FontType := cfwNormal;
+      cs.Font.Weight.Value := [];
+    end;
+  end;
+  if not (cipTextDecoration in cs.Specified) then
+    if Assigned(ps) then cs.Font.TextDecoration := ps.Font.TextDecoration else cs.Font.TextDecoration := ctdNone;
+  if not (cipTextAlign in cs.Specified) then
+    if Assigned(ps) then cs.TextAlign := ps.TextAlign else cs.TextAlign := ctaUndefined;
+  if not (cipWhiteSpace in cs.Specified) then
+    if Assigned(ps) then cs.WhiteSpace := ps.WhiteSpace else cs.WhiteSpace := cwsNormal;
+
+  // font size in px; 0 = default system font
+  if Assigned(ParentNode) then ParentFontSize := ParentNode.FCompSize.FontSize else ParentFontSize := 0;
+  if (cipFontSize in cs.Specified) and (cs.Font.Size.LengthType <> cltUndefined) then begin
+    if ParentFontSize <= 0 then ParentFontSize := CSSRootFontSize;
+    case cs.Font.Size.LengthType of
+      cltPx: FCompSize.FontSize := cs.Font.Size.Value;
+      cltPt: FCompSize.FontSize := cs.Font.Size.Value * 96 / 72;
+      cltEm: FCompSize.FontSize := cs.Font.Size.Value * ParentFontSize;
+      cltPercentage: FCompSize.FontSize := cs.Font.Size.Value / 100 * ParentFontSize;
+      cltRem: FCompSize.FontSize := cs.Font.Size.Value * CSSRootFontSize;
+      else FCompSize.FontSize := ParentFontSize;
+    end;
+  end else
+    FCompSize.FontSize := ParentFontSize;
+end;
+
+(*
+  Calculate size of node
+  InFlex - node is flex item (size is calculated by flex layout)
+  AForceWidth, AForceHeight - border box size set by flex layout (-1 = not set)
+*)
+procedure THtmlNode.LayoutGetNodeSize(ANode: THtmlNode; ParentWidth, ParentHeight: Integer; InFlex: Boolean; AForceWidth: Integer; AForceHeight: Integer);
 var
   childWidth,
   childHeight,
   cW, cH, cB: Integer;
+  HorzSpace, VertSpace: Integer;   // padding + border
+  TextW, TextH, AvailW: Integer;
   R: TRect;
   cs: TCSSItem;
+  function AutoToZero(AValue: Integer): Integer; inline;
+  begin
+    if AValue = MaxInt then Result := 0 else Result := AValue;
+  end;
+  // returns -1 if size can't be computed
+  function SpecifiedSize(const ALength: TCSSLength; AParent, ASpace: Integer): Integer;
+  begin
+    Result := -1;
+    case ALength.LengthType of
+      cltPercentage: if AParent >= 0 then Result := Round((AParent/100) * ALength.Value);
+      cltPx, cltPt, cltEm, cltRem: Result := ANode.CalcLength(ALength, AParent);
+      else Exit;
+    end;
+    if (Result >= 0) and (cs.BoxSizing = cbxBorderBox) then Result := Max(0, Result - ASpace);
+  end;
+  // apply min-*, max-* constraints
+  function Constrain(AValue: Integer; const AMin, AMax: TCSSLength; AParent, ASpace: Integer): Integer;
+  var
+    L: Integer;
+  begin
+    Result := AValue;
+    if Result < 0 then Exit;
+    L := SpecifiedSize(AMax, AParent, ASpace);
+    if (L >= 0) and (Result > L) then Result := L;
+    L := SpecifiedSize(AMin, AParent, ASpace);
+    if (L >= 0) and (Result < L) then Result := L;
+  end;
 begin
-
   cs := ANode.FCompStyle;
-  if (ANode.FCompStyle.Font.Weight.FontType = cfwBold) then
-    ANode.FCompStyle.Font.Weight.Value := [{$ifdef delphi}TFontStyle.{$endif}fsBold] else
-  if Assigned(ANode.ParentNode) then
-    ANode.FCompStyle.Font.Weight.Value := ANode.ParentNode.FCompStyle.Font.Weight.Value
-  else
-    ANode.FCompStyle.Font.Weight.Value := [];
+  ANode.ResolveInheritedStyle;
 
-  // inherit parent style here
-  // font style inherit
-  if (ANode.FCompStyle.TextAlign = ctaUndefined) and (ANode.ParentNode <> Nil) then
-      ANode.FCompStyle.TextAlign := ANode.ParentNode.CompStyle.TextAlign;
+  ANode.FCompSize.Position.Left := AutoToZero(ANode.CalcLength(cs.Left, ParentWidth));
+  ANode.FCompSize.Position.Top := AutoToZero(ANode.CalcLength(cs.Top, ParentHeight));
+  ANode.FCompSize.Position.Right := AutoToZero(ANode.CalcLength(cs.Right, ParentWidth));
+  ANode.FCompSize.Position.Bottom := AutoToZero(ANode.CalcLength(cs.Bottom, ParentHeight));
 
-  if (ANode.FCompStyle.Font.TextDecoration = ctdUndefined) then begin
-    if (Assigned(ANode.ParentNode)) then
-      ANode.FCompStyle.Font.TextDecoration := ANode.ParentNode.FCompStyle.Font.TextDecoration
-    else
-      ANode.FCompStyle.Font.TextDecoration := ctdNone;
-  end;
-  if ANode.FCompStyle.Color.ColorType = cctUndefined then begin
-    if Assigned(ANode.ParentNode) then
-      ANode.FCompStyle.Color.Value := ANode.ParentNode.CompStyle.Color.Value
-    else ANode.FCompStyle.Color.Value := {$ifdef fmx}TColorRec.Black{$else}clBlack{$endif};
-  end;
-  if (Assigned(ANode.ParentNode)) and (ANode.FCompStyle.Font.Size.LengthType = cltUndefined) then
-    ANode.FCompStyle.Font.Size.Value := ANode.ParentNode.CompStyle.Font.Size.Value;
-
-  ANode.FCompSize.Position.Left := CalcCSSLength(cs.Left, ParentWidth);
-  ANode.FCompSize.Position.Top := CalcCSSLength(cs.Top, ParentHeight);
-
-  // margins
-  R.Top := CalcCSSLength(cs.Margin[csTop], ParentHeight);
-  R.Left := CalcCSSLength(cs.Margin[csLeft], ParentWidth);
-  R.Right := CalcCSSLength(cs.Margin[csRight], ParentWidth);
-  R.Bottom := CalcCSSLength(cs.Margin[csBottom], ParentHeight);
+  // margins (percentage is relative to width also for top and bottom), auto margins are 0 here
+  R.Top := AutoToZero(ANode.CalcLength(cs.Margin[csTop], ParentWidth));
+  R.Left := AutoToZero(ANode.CalcLength(cs.Margin[csLeft], ParentWidth));
+  R.Right := AutoToZero(ANode.CalcLength(cs.Margin[csRight], ParentWidth));
+  R.Bottom := AutoToZero(ANode.CalcLength(cs.Margin[csBottom], ParentWidth));
   ANode.FCompSize.Margin := R;
 
-  R.Top := CalcCSSLength(cs.Padding[csTop], ParentWidth);
-  R.Left := CalcCSSLength(cs.Padding[csLeft], ParentWidth);
-  R.Right := CalcCSSLength(cs.Padding[csRight], ParentWidth);
-  R.Bottom := CalcCSSLength(cs.Padding[csBottom], ParentWidth);
+  R.Top := AutoToZero(ANode.CalcLength(cs.Padding[csTop], ParentWidth));
+  R.Left := AutoToZero(ANode.CalcLength(cs.Padding[csLeft], ParentWidth));
+  R.Right := AutoToZero(ANode.CalcLength(cs.Padding[csRight], ParentWidth));
+  R.Bottom := AutoToZero(ANode.CalcLength(cs.Padding[csBottom], ParentWidth));
   ANode.CompSize.Padding := R;
 
-  R.Top := CalcCSSLength(cs.Border[csTop].Width, ParentWidth);
-  R.Left := CalcCSSLength(cs.Border[csLeft].Width, ParentWidth);
-  R.Right := CalcCSSLength(cs.Border[csRight].Width, ParentWidth);
-  R.Bottom := CalcCSSLength(cs.Border[csBottom].Width, ParentWidth);
+  R.Top := ANode.BorderWidth(csTop);
+  R.Left := ANode.BorderWidth(csLeft);
+  R.Right := ANode.BorderWidth(csRight);
+  R.Bottom := ANode.BorderWidth(csBottom);
   ANode.CompSize.Border := R;
 
+  HorzSpace := ANode.CompSize.Padding.Left + ANode.CompSize.Padding.Right + ANode.CompSize.Border.Left + ANode.CompSize.Border.Right;
+  VertSpace := ANode.CompSize.Padding.Top + ANode.CompSize.Padding.Bottom + ANode.CompSize.Border.Top + ANode.CompSize.Border.Bottom;
+
   ANode.CalculateSize(cW, cH, cB);      // return -1, -1, 0 if node doesn't have own sizes. TextNode have own size (text size)
+  TextW := cW;
+  TextH := cH;
   // if width/height is set in this node owerrite
-  case cs.Width.LengthType of
-    cltPercentage: if ParentWidth <> -1 then cW := Round((ParentWidth/100) * cs.Width.Value);
-    cltPx:         cW := Round(cs.Width.Value);
-    cltUndefined:  if (ParentWidth <> -1) and ((cs.Display in [cdtBlock,cdtFlex]) and (not InFlex) and not( cs.Float  in [cftLeft, cftRight])) then
-      cW := ParentWidth - ANode.CompSize.LeftSpace - ANode.CompSize.RightSpace;
+  if ANode.FLayoutRoot then begin    // size of root node is set by LayoutTo
+    if ANode.FLayoutWidth >= 0 then cW := ANode.FLayoutWidth;
+    if ANode.FLayoutHeight >= 0 then cH := ANode.FLayoutHeight;
+  end else
+  if SpecifiedSize(cs.Width, ParentWidth, HorzSpace) >= 0 then
+    cW := SpecifiedSize(cs.Width, ParentWidth, HorzSpace)
+  else
+  if (cs.Width.LengthType in [cltUndefined, cltAuto]) and (ParentWidth <> -1) and (cs.Display in [cdtBlock,cdtFlex]) and
+     (not InFlex) and not (cs.Float in [cftLeft, cftRight]) and not (cs.Position in [cpAbsolute, cpFixed]) then
+    cW := Max(0, ParentWidth - ANode.CompSize.LeftSpace - ANode.CompSize.RightSpace);
+  if not ANode.FLayoutRoot then begin
+    cW := Constrain(cW, cs.MinWidth, cs.MaxWidth, ParentWidth, HorzSpace);
+    // height
+    if SpecifiedSize(cs.Height, ParentHeight, VertSpace) >= 0 then
+      cH := SpecifiedSize(cs.Height, ParentHeight, VertSpace);
+    cH := Constrain(cH, cs.MinHeight, cs.MaxHeight, ParentHeight, VertSpace);
   end;
-  // height
-  case cs.Height.LengthType of
-    cltPercentage:  if ParentHeight <> -1 then cH := Round((ParentHeight/100) * cs.Height.Value);
-    cltPx:          cH := Round(cs.Height.Value);
-{    cltUndefined:   if (cs.Display = cdtBlock) and (cH = -1) and (ANode.ChildCount = 0) and not( cs.Float  in [cftLeft, cftRight]) then
-      cH := ParentHeight - ANode.FCompSize.Margin.Top - ANode.FCompSize.Margin.Bottom;
-}
+  if AForceWidth >= 0 then cW := Max(0, AForceWidth - HorzSpace);
+  if AForceHeight >= 0 then cH := Max(0, AForceHeight - VertSpace);
+
+  // wrap text if there is not enough space
+  if (ANode.FText <> '') and (ANode.FChildCount = 0) and (cs.WhiteSpace = cwsNormal) and (ANode.FAlignControl = nil) then begin
+    if cW >= 0 then AvailW := cW
+      else if ParentWidth > 0 then AvailW := ParentWidth - ANode.CompSize.LeftSpace - ANode.CompSize.RightSpace
+      else AvailW := -1;
+    if (AvailW > 0) and (TextW > AvailW) then begin
+      ANode.MeasureText(AvailW, TextW, TextH, cB);
+      if cW < 0 then cW := TextW;
+      if SpecifiedSize(cs.Height, ParentHeight, VertSpace) < 0 then
+        cH := Constrain(TextH, cs.MinHeight, cs.MaxHeight, ParentHeight, VertSpace);
+    end;
   end;
+
   // if node have childrens calculate childrens required space
   if ANode.FChildCount > 0 then begin
-    if (cs.Display in [cdtBlock, cdtFlex]) and (cW = -1) {and (not InFlex)} then
+    if (cs.Display in [cdtBlock, cdtFlex]) and (cW = -1) and not InFlex then
       cW := ParentWidth;
     LayoutCalcPosition(ANode.FFirstChild, cW, cH, childWidth, childHeight);
-    if InFlex then cW := -1;
-    if cW = -1 then cW := childWidth;
-    if cH = -1 then cH := childHeight;
+    if cW = -1 then cW := Constrain(childWidth, cs.MinWidth, cs.MaxWidth, ParentWidth, HorzSpace);
+    if cH = -1 then cH := Constrain(childHeight, cs.MinHeight, cs.MaxHeight, ParentHeight, VertSpace);
     cB := cH - ANode.FLastNode.CompSize.MarginRect.Bottom + ANode.FLastNode.CompSize.BaseLine + ANode.CompSize.BottomSpace; // TODO: not LastNode, but bottom right position node
   end else
     if cB > 0 then cB := cB + ANode.FCompSize.Padding.Bottom + ANode.FCompSize.Border.Bottom  + ANode.FCompSize.Margin.Bottom;
-  if cW = -1 then cW := 0;
-  if cH = -1 then cH := 0;
-  Inc(cW, ANode.CompSize.Padding.Left + ANode.CompSize.Padding.Right +  ANode.CompSize.Border.Left + ANode.CompSize.Border.Right);
-  Inc(cH, ANode.CompSize.Padding.Top + ANode.CompSize.Padding.Bottom + ANode.CompSize.Border.Top + ANode.CompSize.Border.Bottom);
+  if cW = -1 then cW := Constrain(0, cs.MinWidth, cs.MaxWidth, ParentWidth, HorzSpace);
+  if cH = -1 then cH := Constrain(0, cs.MinHeight, cs.MaxHeight, ParentHeight, VertSpace);
+  Inc(cW, HorzSpace);
+  Inc(cH, VertSpace);
   ANode.FCompSize.BaseLine := cB;
   ANode.FCompSize.ContentWidth := cW;
   ANode.FCompSize.ContentHeight := cH;
-
 end;
 
 procedure THtmlNode.IntSetAlignControl(AValue: TControl);
@@ -2258,93 +3571,388 @@ begin
 end;
 
 
-procedure THtmlNode.LayoutDoFlexAlign(AParentNode: THtmlNode; AList: TList; AWidth, AHeight: Integer);
+(*
+  Flexible box layout https://www.w3.org/TR/css-flexbox-1/#layout-algorithm (simplified)
+  AWidth, AHeight - inner size of flex container (-1 = not known)
+  NewWidth, NewHeight - used inner size of flex container
+*)
+procedure THtmlNode.LayoutDoFlexAlign(AParentNode: THtmlNode; AList: TList; AWidth, AHeight: Integer; out NewWidth, NewHeight: Integer);
+type
+  TFlexItem = record
+    Node: THtmlNode;
+    Main, Cross: Integer;         // border box size
+    MarginMainStart, MarginMainEnd, MarginCrossStart, MarginCrossEnd: Integer;
+    AutoMainStart, AutoMainEnd, AutoCrossStart, AutoCrossEnd: Boolean;
+    Base: Integer;                // flex base size (border box)
+    Pos, CrossPos: Integer;       // margin box position in line
+    Frozen: Boolean;
+  end;
+  TFlexLine = record
+    First, Last: Integer;         // items index
+    CrossSize: Integer;
+    CrossPos: Integer;
+  end;
 var
-  SumFlexGrow: Single;
-  NewWidth, NewHeight,
-  X,Y: Integer;
-  CountFlexGrow,
-  I: Integer;
+  ps: TCSSItem;
+  IsRow, IsReverse: Boolean;
+  MainSize, CrossSize: Integer;   // container inner size (-1 = auto)
+  MainGap, CrossGap: Integer;
+  Items: array of TFlexItem;
+  Lines: array of TFlexLine;
+  N, I, J, L: Integer;
   Node: THtmlNode;
-  UsedSpace,
-  MaxBaseline,
-  MaxSize: Integer; // width or height
-begin
-  // only one row is supported now
-  SumFlexGrow := 0;
-  CountFlexGrow := 0;
-  UsedSpace := 0;
-  // calculate used space and try to get sizes
-  for I := 0 to AList.Count -1 do begin
-   Node := THtmlNode(AList.Items[I]);
+  Justify: TCSSJustifyContent;
 
-   LayoutGetNodeSize(Node, AWidth,  AHeight, True);
-   if Node.CompStyle.Position = cpAbsolute then Continue;      // skip nodes with absolute position
-   if Node.CompStyle.FlexGrow > 0 then begin
-     SumFlexGrow := SumFlexGrow + Node.CompStyle.FlexGrow;
-     Inc(CountFlexGrow);
-   end;
-   Inc(UsedSpace, Node.CompSize.ContentWidth + Node.CompSize.Margin.Left + Node.CompSize.Margin.Right);
+  function ItemMain(ANode: THtmlNode): Integer; inline;
+  begin
+    if IsRow then Result := ANode.FCompSize.ContentWidth else Result := ANode.FCompSize.ContentHeight;
   end;
-
-  // calculate max size (height only just now) and make second iteration for nodes layout
-  MaxSize := 0;
-  MaxBaseline := 0;
-  for I := 0 to AList.Count -1 do begin
-    Node := THtmlNode(AList.Items[I]);
-    if Node.CompStyle.Position <> cpAbsolute then begin
-      if Node.CompStyle.FlexGrow > 0 then
-        LayoutGetNodeSize(Node, Node.CompSize.ContentWidth - Node.CompSize.Padding.Right - Node.CompSize.Padding.Left - Node.CompSize.Border.Left - Node.CompSize.Border.Right { + Node.CompSize.Margin.Left + Node.CompSize.Margin.Right } +  Round(((AWidth - UsedSpace) / SumFlexGrow) * Node.CompStyle.FlexGrow), AHeight, True);
-      MaxSize := Math.Max(MaxSize, Node.CompSize.ContentHeight + Node.CompSize.Margin.Top + Node.CompSize.Margin.Bottom);
-      if Node.CompStyle.Position <> cpAbsolute then  MaxBaseLine := Max(MaxBaseLine, Node.FCompSize.MarginRect.Bottom -  Node.FCompSize.BaseLine - Node.FCompSize.Position.Top);
+  function ItemCross(ANode: THtmlNode): Integer; inline;
+  begin
+    if IsRow then Result := ANode.FCompSize.ContentHeight else Result := ANode.FCompSize.ContentWidth;
+  end;
+  function OuterMain(const AItem: TFlexItem): Integer; inline;
+  begin
+    Result := AItem.Main + AItem.MarginMainStart + AItem.MarginMainEnd;
+  end;
+  function OuterCross(const AItem: TFlexItem): Integer; inline;
+  begin
+    Result := AItem.Cross + AItem.MarginCrossStart + AItem.MarginCrossEnd;
+  end;
+  // layout item with forced main and/or cross size (border box, -1 = auto)
+  procedure LayoutItem(var AItem: TFlexItem; AMain, ACross: Integer);
+  begin
+    if IsRow then LayoutGetNodeSize(AItem.Node, AWidth, AHeight, True, AMain, ACross)
+      else LayoutGetNodeSize(AItem.Node, AWidth, AHeight, True, ACross, AMain);
+    AItem.Main := ItemMain(AItem.Node);
+    AItem.Cross := ItemCross(AItem.Node);
+  end;
+  function ItemAlign(const AItem: TFlexItem): TCSSAlignItems;
+  begin
+    Result := AItem.Node.FCompStyle.AlignSelf;
+    if Result = caiAuto then Result := ps.AlignItems;
+    if (Result = caiBaseline) and not IsRow then Result := caiFlexStart;
+  end;
+  function CrossIsAuto(const AItem: TFlexItem): Boolean;
+  var
+    L: TCSSLength;
+  begin
+    if IsRow then L := AItem.Node.FCompStyle.Height else L := AItem.Node.FCompStyle.Width;
+    Result := L.LengthType in [cltUndefined, cltAuto];
+  end;
+  function ClampMain(const AItem: TFlexItem; AValue: Integer): Integer;
+  var
+    cs: TCSSItem;
+    Mn, Mx: TCSSLength;
+    Space, V, Parent: Integer;
+  begin
+    cs := AItem.Node.FCompStyle;
+    if IsRow then begin
+      Mn := cs.MinWidth; Mx := cs.MaxWidth; Parent := AWidth;
+      Space := AItem.Node.FCompSize.Padding.Left + AItem.Node.FCompSize.Padding.Right + AItem.Node.FCompSize.Border.Left + AItem.Node.FCompSize.Border.Right;
+    end else begin
+      Mn := cs.MinHeight; Mx := cs.MaxHeight; Parent := AHeight;
+      Space := AItem.Node.FCompSize.Padding.Top + AItem.Node.FCompSize.Padding.Bottom + AItem.Node.FCompSize.Border.Top + AItem.Node.FCompSize.Border.Bottom;
+    end;
+    Result := Max(AValue, Space);
+    if not ((Mx.LengthType = cltPercentage) and (Parent < 0)) and (Mx.LengthType in [cltPx, cltPt, cltEm, cltRem, cltPercentage]) then begin
+      V := AItem.Node.CalcLength(Mx, Parent);
+      if cs.BoxSizing = cbxContentBox then Inc(V, Space);
+      Result := Min(Result, V);
+    end;
+    if not ((Mn.LengthType = cltPercentage) and (Parent < 0)) and (Mn.LengthType in [cltPx, cltPt, cltEm, cltRem, cltPercentage]) then begin
+      V := AItem.Node.CalcLength(Mn, Parent);
+      if cs.BoxSizing = cbxContentBox then Inc(V, Space);
+      Result := Max(Result, V);
     end;
   end;
-
-  // align position based on vertical align (content just now)
-  X := 0;
-  Y := 0;
-  for I := 0 to AList.Count -1 do begin
-    Node := THtmlNode(AList.Items[I]);
-    if Node.CompStyle.Position = cpAbsolute then begin
-      Node.CompSize.MarginRect := Rect( Node.CompSize.Position.Left, Node.CompSize.Position.Top,
-        Node.CompSize.Position.Left + Node.CompSize.ContentWidth + Node.CompSize.Margin.Left + Node.CompSize.Margin.Right,
-        Node.CompSize.Position.Top + Node.CompSize.ContentHeight + Node.CompSize.Margin.Top + Node.CompSize.Margin.Bottom);
-      Node.CompSize.ContentRect := Rect(Node.CompSize.MarginRect.Left + Node.CompSize.Margin.Left, Node.CompSize.MarginRect.Top + Node.CompSize.Margin.Top,
-        Node.CompSize.MarginRect.Right - Node.CompSize.Margin.Right, Node.CompSize.MarginRect.Bottom - Node.CompSize.Margin.Bottom
-      );
-    end else
-    begin
-      // TODO: fine align node due ROUND
-      if Node.CompStyle.FlexGrow > 0 then begin
-        NewWidth := Math.Max(Node.CompSize.ContentWidth , Node.CompSize.ContentWidth + Node.CompSize.Margin.Left + Node.CompSize.Margin.Right +  Round(((AWidth - UsedSpace) / SumFlexGrow) * Node.CompStyle.FlexGrow));
-      end
-      else
-        NewWidth := Node.CompSize.ContentWidth + Node.CompSize.Margin.Left + Node.CompSize.Margin.Right;
-      if AParentNode.CompStyle.AlignItems = caiStretch then begin
-        NewHeight := MaxSize;
-        Node.CompSize.MarginRect := Rect(X, Y,  X + NewWidth, Y + NewHeight);
-        Node.CompSize.ContentRect := Rect(Node.CompSize.MarginRect.Left + Node.CompSize.Margin.Left, Node.CompSize.MarginRect.Top + Node.CompSize.Margin.Top,
-          Node.CompSize.MarginRect.Right - Node.CompSize.Margin.Right, Node.CompSize.MarginRect.Bottom - Node.CompSize.Margin.Bottom
-        );
-      end
-      else begin // baseline
-        Node.CompSize.MarginRect := Rect(X, Y,  X + NewWidth, Y + Node.CompSize.Margin.Top + Node.CompSize.ContentHeight + Node.CompSize.Margin.Bottom);
-        Node.CompSize.ContentRect := Rect(Node.CompSize.MarginRect.Left + Node.CompSize.Margin.Left, Node.CompSize.MarginRect.Top + Node.CompSize.Margin.Top ,
-          Node.CompSize.MarginRect.Right - Node.CompSize.Margin.Right, Node.CompSize.MarginRect.Bottom - Node.CompSize.Margin.Bottom
-        );
+  procedure ResolveFlexibleLengths(var ALine: TFlexLine);
+  var
+    I, FreeSpace, Used, Loop: Integer;
+    SumGrow, SumShrink: Double;
+    Changed: Boolean;
+    Target: Integer;
+  begin
+    if MainSize < 0 then Exit;
+    for I := ALine.First to ALine.Last do Items[I].Frozen := False;
+    for Loop := 1 to 5 do begin       // loop until all min/max constraints are satisfied
+      Used := MainGap * (ALine.Last - ALine.First);
+      SumGrow := 0;
+      SumShrink := 0;
+      for I := ALine.First to ALine.Last do begin
+        if Items[I].Frozen then
+          Inc(Used, OuterMain(Items[I]))
+        else begin
+          Inc(Used, Items[I].Base + Items[I].MarginMainStart + Items[I].MarginMainEnd);
+          SumGrow := SumGrow + Items[I].Node.FCompStyle.FlexGrow;
+          SumShrink := SumShrink + Items[I].Node.FCompStyle.FlexShrink * Items[I].Base;
+        end;
       end;
-      Inc(X, Node.CompSize.MarginRect.Width);
+      FreeSpace := MainSize - Used;
+      Changed := False;
+      for I := ALine.First to ALine.Last do begin
+        if Items[I].Frozen then Continue;
+        Target := Items[I].Base;
+        if (FreeSpace > 0) and (SumGrow > 0) then
+          Target := Items[I].Base + Round(FreeSpace * Items[I].Node.FCompStyle.FlexGrow / SumGrow)
+        else
+        if (FreeSpace < 0) and (SumShrink > 0) then
+          Target := Items[I].Base - Round(-FreeSpace * Items[I].Node.FCompStyle.FlexShrink * Items[I].Base / SumShrink);
+        Items[I].Main := ClampMain(Items[I], Target);
+        if Items[I].Main <> Target then begin     // min/max violation, freeze item and distribute rest again
+          Items[I].Frozen := True;
+          Changed := True;
+        end;
+      end;
+      if not Changed then Break;
     end;
   end;
-  if AParentNode.CompStyle.AlignItems = caiBaseline then begin
-    MaxSize := LayoutDoVerticalAlign(AList, False);
-{    MaxSize := 0;
-    for I := 0 to AList.Count -1 do
-      MaxSize := Math.Max(MaxSize, THtmlNode(AList.Items[I]).CompSize.MarginRect.Bottom);
-}
+  procedure SortByOrder;
+  var
+    I, J: Integer;
+    T: TFlexItem;
+  begin
+    for I := 1 to High(Items) do begin    // stable insertion sort
+      T := Items[I];
+      J := I - 1;
+      while (J >= 0) and (Items[J].Node.FCompStyle.Order > T.Node.FCompStyle.Order) do begin
+        Items[J + 1] := Items[J];
+        Dec(J);
+      end;
+      Items[J + 1] := T;
+    end;
   end;
-  AParentNode.CompSize.ContentWidth := x;             // set new size for parent node
-  AParentNode.CompSize.ContentHeight := Y + MaxSize;
+var
+  cs: TCSSItem;
+  sz: THtmlSize;
+  Basis: TCSSLength;
+  Space, LineMain, LineCross, FreeSpace, AutoCount, X, Y, Step, MaxAscent, Asc, TotalCross, MaxMain, NewMain: Integer;
+  Align: TCSSAlignItems;
+  Temp: TFlexItem;
+  R: TRect;
+begin
+  ps := AParentNode.FCompStyle;
+  IsRow := ps.FlexDirection in [cfdRow, cfdRowReverse];
+  IsReverse := ps.FlexDirection in [cfdRowReverse, cfdColumnReverse];
+  if IsRow then begin
+    MainSize := AWidth; CrossSize := AHeight;
+    MainGap := AParentNode.CalcLength(ps.ColumnGap, AWidth);
+    CrossGap := AParentNode.CalcLength(ps.RowGap, AHeight);
+  end else begin
+    MainSize := AHeight; CrossSize := AWidth;
+    MainGap := AParentNode.CalcLength(ps.RowGap, AHeight);
+    CrossGap := AParentNode.CalcLength(ps.ColumnGap, AWidth);
+  end;
+  if (MainGap < 0) or (MainGap = MaxInt) then MainGap := 0;
+  if (CrossGap < 0) or (CrossGap = MaxInt) then CrossGap := 0;
+
+  // collect items and compute hypothetical sizes
+  Items := nil;
+  for I := 0 to AList.Count - 1 do begin
+    Node := THtmlNode(AList[I]);
+    if Node.FCompStyle.Display = cdtNone then Continue;
+    LayoutGetNodeSize(Node, AWidth, AHeight, True);
+    if Node.FCompStyle.Position in [cpAbsolute, cpFixed] then begin    // absolute nodes are positioned relative to container
+      sz := Node.FCompSize;
+      X := sz.Position.Left;
+      Y := sz.Position.Top;
+      if (Node.FCompStyle.Left.LengthType in [cltUndefined, cltAuto]) and not (Node.FCompStyle.Right.LengthType in [cltUndefined, cltAuto]) and (AWidth >= 0) then
+        X := AWidth - sz.Position.Right - sz.ContentWidth - sz.Margin.Left - sz.Margin.Right;
+      if (Node.FCompStyle.Top.LengthType in [cltUndefined, cltAuto]) and not (Node.FCompStyle.Bottom.LengthType in [cltUndefined, cltAuto]) and (AHeight >= 0) then
+        Y := AHeight - sz.Position.Bottom - sz.ContentHeight - sz.Margin.Top - sz.Margin.Bottom;
+      sz.MarginRect := Rect(X, Y, X + sz.ContentWidth + sz.Margin.Left + sz.Margin.Right, Y + sz.ContentHeight + sz.Margin.Top + sz.Margin.Bottom);
+      sz.ContentRect := Rect(sz.MarginRect.Left + sz.Margin.Left, sz.MarginRect.Top + sz.Margin.Top,
+        sz.MarginRect.Right - sz.Margin.Right, sz.MarginRect.Bottom - sz.Margin.Bottom);
+      Continue;
+    end;
+    SetLength(Items, Length(Items) + 1);
+    with Items[High(Items)] do begin
+      Node := THtmlNode(AList[I]);
+      cs := Node.FCompStyle;
+      sz := Node.FCompSize;
+      if IsRow then begin
+        MarginMainStart := sz.Margin.Left; MarginMainEnd := sz.Margin.Right;
+        MarginCrossStart := sz.Margin.Top; MarginCrossEnd := sz.Margin.Bottom;
+        AutoMainStart := cs.Margin[csLeft].LengthType = cltAuto; AutoMainEnd := cs.Margin[csRight].LengthType = cltAuto;
+        AutoCrossStart := cs.Margin[csTop].LengthType = cltAuto; AutoCrossEnd := cs.Margin[csBottom].LengthType = cltAuto;
+        Space := sz.Padding.Left + sz.Padding.Right + sz.Border.Left + sz.Border.Right;
+      end else begin
+        MarginMainStart := sz.Margin.Top; MarginMainEnd := sz.Margin.Bottom;
+        MarginCrossStart := sz.Margin.Left; MarginCrossEnd := sz.Margin.Right;
+        AutoMainStart := cs.Margin[csTop].LengthType = cltAuto; AutoMainEnd := cs.Margin[csBottom].LengthType = cltAuto;
+        AutoCrossStart := cs.Margin[csLeft].LengthType = cltAuto; AutoCrossEnd := cs.Margin[csRight].LengthType = cltAuto;
+        Space := sz.Padding.Top + sz.Padding.Bottom + sz.Border.Top + sz.Border.Bottom;
+      end;
+      Main := ItemMain(Node);
+      Cross := ItemCross(Node);
+      // flex base size
+      Basis := cs.FlexBasis;
+      if (Basis.LengthType = cltPercentage) and (MainSize < 0) then Basis.LengthType := cltAuto;
+      if Basis.LengthType in [cltPx, cltPt, cltEm, cltRem, cltPercentage] then begin
+        Base := Node.CalcLength(Basis, MainSize);
+        if cs.BoxSizing = cbxContentBox then Inc(Base, Space);
+      end else
+        Base := Main;
+    end;
+  end;
+  N := Length(Items);
+  SortByOrder;
+
+  // column direction with stretched items: width is known before height
+  if (not IsRow) and (CrossSize >= 0) then
+    for I := 0 to N - 1 do
+      if (ItemAlign(Items[I]) = caiStretch) and CrossIsAuto(Items[I]) and not (Items[I].AutoCrossStart or Items[I].AutoCrossEnd) then begin
+        LayoutItem(Items[I], -1, Max(0, CrossSize - Items[I].MarginCrossStart - Items[I].MarginCrossEnd));
+        if Items[I].Node.FCompStyle.FlexBasis.LengthType in [cltAuto, cltUndefined] then Items[I].Base := Items[I].Main;
+      end;
+  for I := 0 to N - 1 do Items[I].Base := ClampMain(Items[I], Items[I].Base);
+
+  // collect lines
+  Lines := nil;
+  I := 0;
+  while I < N do begin
+    SetLength(Lines, Length(Lines) + 1);
+    L := High(Lines);
+    Lines[L].First := I;
+    LineMain := Items[I].Base + Items[I].MarginMainStart + Items[I].MarginMainEnd;
+    J := I + 1;
+    if (ps.FlexWrap <> cfwNoWrap) and (MainSize >= 0) then
+      while (J < N) and (LineMain + MainGap + Items[J].Base + Items[J].MarginMainStart + Items[J].MarginMainEnd <= MainSize) do begin
+        Inc(LineMain, MainGap + Items[J].Base + Items[J].MarginMainStart + Items[J].MarginMainEnd);
+        Inc(J);
+      end
+    else
+      J := N;
+    Lines[L].Last := J - 1;
+    I := J;
+  end;
+
+  // resolve main sizes and layout items with new sizes
+  for L := 0 to High(Lines) do begin
+    for I := Lines[L].First to Lines[L].Last do Items[I].Main := Items[I].Base;
+    ResolveFlexibleLengths(Lines[L]);
+    LineCross := 0;
+    for I := Lines[L].First to Lines[L].Last do begin
+      if (Items[I].Main <> ItemMain(Items[I].Node)) or (MainSize >= 0) then
+        LayoutItem(Items[I], Items[I].Main, -1);
+      LineCross := Max(LineCross, OuterCross(Items[I]));
+    end;
+    Lines[L].CrossSize := LineCross;
+  end;
+  if (Length(Lines) = 1) and (CrossSize >= 0) then Lines[0].CrossSize := CrossSize;   // single line uses whole container
+
+  // baseline (row only) and cross axis alignment
+  for L := 0 to High(Lines) do begin
+    // stretch items
+    for I := Lines[L].First to Lines[L].Last do
+      if (ItemAlign(Items[I]) = caiStretch) and CrossIsAuto(Items[I]) and not (Items[I].AutoCrossStart or Items[I].AutoCrossEnd) and
+        (Items[I].Cross <> Lines[L].CrossSize - Items[I].MarginCrossStart - Items[I].MarginCrossEnd) then
+        LayoutItem(Items[I], Items[I].Main, Max(0, Lines[L].CrossSize - Items[I].MarginCrossStart - Items[I].MarginCrossEnd));
+    MaxAscent := 0;
+    for I := Lines[L].First to Lines[L].Last do
+      if ItemAlign(Items[I]) = caiBaseline then
+        MaxAscent := Max(MaxAscent, OuterCross(Items[I]) - Items[I].Node.FCompSize.BaseLine);
+    for I := Lines[L].First to Lines[L].Last do begin
+      FreeSpace := Lines[L].CrossSize - OuterCross(Items[I]);
+      if Items[I].AutoCrossStart and Items[I].AutoCrossEnd then Items[I].CrossPos := Max(0, FreeSpace) div 2
+      else if Items[I].AutoCrossStart then Items[I].CrossPos := Max(0, FreeSpace)
+      else if Items[I].AutoCrossEnd then Items[I].CrossPos := 0
+      else
+      case ItemAlign(Items[I]) of
+        caiCenter: Items[I].CrossPos := FreeSpace div 2;
+        caiFlexEnd: Items[I].CrossPos := FreeSpace;
+        caiBaseline: begin
+          Asc := OuterCross(Items[I]) - Items[I].Node.FCompSize.BaseLine;
+          Items[I].CrossPos := MaxAscent - Asc;
+        end;
+        else Items[I].CrossPos := 0;
+      end;
+      if ItemAlign(Items[I]) = caiBaseline then
+        Lines[L].CrossSize := Max(Lines[L].CrossSize, Items[I].CrossPos + OuterCross(Items[I]));
+    end;
+  end;
+
+  // lines position (align-content: flex-start)
+  TotalCross := 0;
+  for L := 0 to High(Lines) do begin
+    if L > 0 then Inc(TotalCross, CrossGap);
+    Lines[L].CrossPos := TotalCross;
+    Inc(TotalCross, Lines[L].CrossSize);
+  end;
+  if ps.FlexWrap = cfwWrapReverse then
+    for L := 0 to High(Lines) do
+      Lines[L].CrossPos := TotalCross - Lines[L].CrossPos - Lines[L].CrossSize;
+
+  // main axis alignment
+  Justify := ps.JustifyContent;
+  MaxMain := 0;
+  for L := 0 to High(Lines) do begin
+    LineMain := MainGap * (Lines[L].Last - Lines[L].First);
+    AutoCount := 0;
+    for I := Lines[L].First to Lines[L].Last do begin
+      Inc(LineMain, OuterMain(Items[I]));
+      if Items[I].AutoMainStart then Inc(AutoCount);
+      if Items[I].AutoMainEnd then Inc(AutoCount);
+    end;
+    if MainSize >= 0 then FreeSpace := MainSize - LineMain else FreeSpace := 0;
+    MaxMain := Max(MaxMain, LineMain);
+    X := 0;
+    Step := 0;
+    if (AutoCount > 0) and (FreeSpace > 0) then begin
+      Step := FreeSpace div AutoCount;         // auto margins take all free space
+      FreeSpace := 0;
+    end else
+    if FreeSpace > 0 then
+      case Justify of
+        cjcFlexEnd: X := FreeSpace;
+        cjcCenter: X := FreeSpace div 2;
+        cjcSpaceAround: X := FreeSpace div (2 * (Lines[L].Last - Lines[L].First + 1));
+        cjcSpaceEvenly: X := FreeSpace div (Lines[L].Last - Lines[L].First + 2);
+      end
+    else
+    if (FreeSpace < 0) and (Justify in [cjcCenter]) then X := FreeSpace div 2;
+    for I := Lines[L].First to Lines[L].Last do begin
+      if Items[I].AutoMainStart then Inc(X, Step);
+      Items[I].Pos := X;
+      Inc(X, OuterMain(Items[I]) + MainGap);
+      if Items[I].AutoMainEnd then Inc(X, Step);
+      if (FreeSpace > 0) and (I < Lines[L].Last) then
+        case Justify of
+          cjcSpaceBetween: Inc(X, FreeSpace div Max(1, Lines[L].Last - Lines[L].First));
+          cjcSpaceAround: Inc(X, FreeSpace div (Lines[L].Last - Lines[L].First + 1));
+          cjcSpaceEvenly: Inc(X, FreeSpace div (Lines[L].Last - Lines[L].First + 2));
+        end;
+    end;
+  end;
+  if MainSize >= 0 then NewMain := MainSize else NewMain := MaxMain;
+
+  // set node positions
+  for L := 0 to High(Lines) do
+    for I := Lines[L].First to Lines[L].Last do begin
+      X := Items[I].Pos;
+      if IsReverse then X := NewMain - X - OuterMain(Items[I]);
+      Y := Lines[L].CrossPos + Items[I].CrossPos;
+      if IsRow then R := Rect(X, Y, X + OuterMain(Items[I]), Y + OuterCross(Items[I]))
+        else R := Rect(Y, X, Y + OuterCross(Items[I]), X + OuterMain(Items[I]));
+      sz := Items[I].Node.FCompSize;
+      sz.MarginRect := R;
+      sz.ContentRect := Rect(R.Left + sz.Margin.Left, R.Top + sz.Margin.Top, R.Right - sz.Margin.Right, R.Bottom - sz.Margin.Bottom);
+      if Items[I].Node.FCompStyle.Position = cpRelative then begin
+        OffsetRect(sz.MarginRect, sz.Position.Left - sz.Position.Right * Ord(Items[I].Node.FCompStyle.Left.LengthType in [cltUndefined, cltAuto]), sz.Position.Top);
+        OffsetRect(sz.ContentRect, sz.Position.Left - sz.Position.Right * Ord(Items[I].Node.FCompStyle.Left.LengthType in [cltUndefined, cltAuto]), sz.Position.Top);
+      end;
+    end;
+
+  if IsRow then begin
+    NewWidth := NewMain;
+    NewHeight := TotalCross;
+  end else begin
+    NewWidth := TotalCross;
+    NewHeight := NewMain;
+  end;
+  if (CrossSize >= 0) then begin
+    if IsRow then NewHeight := Max(NewHeight, CrossSize) else NewWidth := Max(NewWidth, CrossSize);
+  end;
 end;
 
 procedure THtmlNode.LayoutCalcPosition(ANode: THtmlNode; TargetWidth, TargetHeight: Integer; out NewWidth, NewHeight: Integer);
@@ -2363,6 +3971,7 @@ var
   cs: TCSSItem;
   GapList: TList;
   ParentIsFlex: Boolean;
+  X, Y: Integer;
 begin
   if not Assigned(ANode) then begin
     Exit;
@@ -2378,10 +3987,8 @@ begin
       INode := INode.GetNext(INode);
     end;
 
-    LayoutDoFlexAlign(ANode.ParentNode, GapList, TargetWidth, TargetHeight);
+    LayoutDoFlexAlign(ANode.ParentNode, GapList, TargetWidth, TargetHeight, NewWidth, NewHeight);
     GapList.Free;
-    NewWidth := ANode.ParentNode.CompSize.ContentWidth;
-    NewHeight := ANode.ParentNode.CompSize.ContentHeight;
     Exit;
   end;
 
@@ -2404,8 +4011,8 @@ begin
       end;
       cs := ANode.FCompStyle;
       // we can't compute ContentWidth or ContentHeight (eg.: first node width:90% but targetwith is unknown yet (will be known after next iteration)
-      if ((TargetWidth = -1) and (ANode.CompStyle.Width.LengthType = cltPercentage)) or
-        ((TargetHeight = -1) and (ANode.CompStyle.Height.LengthType = cltPercentage)) then begin
+      if (not ANode.FLayoutRoot) and (((TargetWidth = -1) and (ANode.CompStyle.Width.LengthType = cltPercentage)) or
+        ((TargetHeight = -1) and (ANode.CompStyle.Height.LengthType = cltPercentage))) then begin
         Dx := 0;
         Dy := 0;
         NeedIteration := True
@@ -2420,9 +4027,26 @@ begin
         if RealMargin.Top = MaxInt then RealMargin.Top := 0;
         if RealMargin.Right = MaxInt then RealMargin.Right := 0;
         if RealMargin.Bottom = MaxInt then RealMargin.Bottom := 0;
-        if cs.Position = cpAbsolute then
-          ContentBounds := Rect(Dx + RealMargin.Left, Dy + RealMargin.Top, Dx + PrefWidth + RealMargin.Left, Dy + PrefHeight + RealMargin.Top)
-        else begin
+        if cs.Position in [cpAbsolute, cpFixed] then begin
+          // absolute position is relative to parent node, static position is used if left/top is not set
+          X := Dx + RealMargin.Left;
+          Y := Dy + RealMargin.Top;
+          if not (cs.Left.LengthType in [cltUndefined, cltAuto]) then
+            X := ANode.FCompSize.Position.Left + RealMargin.Left
+          else if not (cs.Right.LengthType in [cltUndefined, cltAuto]) and (TargetWidth >= 0) then
+            X := TargetWidth - ANode.FCompSize.Position.Right - PrefWidth - RealMargin.Right;
+          if not (cs.Top.LengthType in [cltUndefined, cltAuto]) then
+            Y := ANode.FCompSize.Position.Top + RealMargin.Top
+          else if not (cs.Bottom.LengthType in [cltUndefined, cltAuto]) and (TargetHeight >= 0) then
+            Y := TargetHeight - ANode.FCompSize.Position.Bottom - PrefHeight - RealMargin.Bottom;
+          ContentBounds := Rect(X, Y, X + PrefWidth, Y + PrefHeight);
+        end else begin
+          if (cs.Float = cftRight) and (TargetWidth >= 0) then begin   // float right: stack from right side
+            X := TargetWidth - RightOffset.x - PrefWidth - RealMargin.Right;
+            ContentBounds := Rect(X, Dy, X + PrefWidth, Dy + PrefHeight);
+            Inc(RightOffset.x, PrefWidth + RealMargin.Left + RealMargin.Right);
+            RowHeight := Max(PrefHeight + RealMargin.Top + RealMargin.Bottom, RowHeight);
+          end else
           if (cs.Display in [cdtInline, cdtInlineFlex]) or (cs.Float in [cftLeft, cftRight]) then begin
             if (TargetWidth =-1) or ((Dx + PrefWidth + RealMargin.Left + RealMargin.Right) <= (TargetWidth - RightOffset.x)) then begin
               ContentBounds := Rect(Dx, Dy, Dx + PrefWidth, Dy + PrefHeight);
@@ -2431,6 +4055,7 @@ begin
             end else begin // there is no space in current "line" move to next
               RowHeight :=  LayoutDoVerticalAlign(GapList);
               Inc(Dy, RowHeight);
+              RightOffset.x := 0;
               RowHeight := PrefHeight + RealMargin.Top + RealMargin.Bottom;
               if Dy > LeftOffset.y then  LeftOffset.x := 0;
               Dx := LeftOffset.x;
@@ -2444,7 +4069,8 @@ begin
             Inc(Dx, RealMargin.Left);
           end else begin    // block display: node use whole available space
             LayoutDoVerticalAlign(GapList);
-            if (Dx > 0) and (LeftOffset.x = 0) then Inc(Dy, RowHeight);
+            if ((Dx > 0) and (LeftOffset.x = 0)) or (RightOffset.x > 0) then Inc(Dy, RowHeight);
+            RightOffset.x := 0;
             Dx := 0 + RealMargin.Left;
             ContentBounds := Rect(Dx, Dy, Dx + PrefWidth , Dy + PrefHeight); // new bounds  before margins
             RowHeight := 0;
@@ -2479,15 +4105,18 @@ begin
   ANode := ForNode;
 //  if ForNode.CompStyle.Width.LengthType = cltPx then NewWidth := Round(ForNode.CompStyle.Width.Value);
   while Assigned(ANode) do begin
-    if ANode.CompStyle.Display in [cdtBlock, cdtFlex] then begin
-      if ANode.CompStyle.Width.LengthType = cltUndefined then begin // fix block alignment  (eg. first node is block and next is inline, and block width is not correct)
-        ANode.FCompSize.MarginRect.Right := TargetWidth;
-        ANode.FCompSize.ContentRect.Right := ANode.FCompSize.MarginRect.Right - ANode.CompSize.Margin.Right;
-      end;
+    cs := ANode.CompStyle;
+    if (cs.Display in [cdtBlock, cdtFlex]) and (cs.Width.LengthType in [cltUndefined, cltAuto]) and
+      (cs.MaxWidth.LengthType = cltUndefined) and (cs.Float in [cftUndefined, cftNone]) and
+      not (cs.Position in [cpAbsolute, cpFixed]) and not ANode.FLayoutRoot then begin // fix block alignment  (eg. first node is block and next is inline, and block width is not correct)
+      ANode.FCompSize.MarginRect.Right := TargetWidth;
+      ANode.FCompSize.ContentRect.Right := ANode.FCompSize.MarginRect.Right - ANode.CompSize.Margin.Right;
     end;
-    if (ANode.CompStyle.Position in [cpRelative,cpAbsolute]) then begin
-      OffsetRect( ANode.FCompSize.MarginRect, ANode.FCompSize.Position.Left, ANode.FCompSize.Position.Top);
-      OffsetRect( ANode.FCompSize.ContentRect, ANode.FCompSize.Position.Left, ANode.FCompSize.Position.Top);
+    if cs.Position = cpRelative then begin
+      if cs.Left.LengthType in [cltUndefined, cltAuto] then X := -ANode.FCompSize.Position.Right else X := ANode.FCompSize.Position.Left;
+      if cs.Top.LengthType in [cltUndefined, cltAuto] then Y := -ANode.FCompSize.Position.Bottom else Y := ANode.FCompSize.Position.Top;
+      OffsetRect( ANode.FCompSize.MarginRect, X, Y);
+      OffsetRect( ANode.FCompSize.ContentRect, X, Y);
     end;
     ANode := ANode.GetNext(ANode, False);
   end;
@@ -2520,8 +4149,16 @@ var
       if ANode.FVisible then begin
         Dx := 0;
         Dy := 0;
-        if (ANode.CompStyle.Margin[csLeft].LengthType = cltAuto) and (ANode.ParentNode <> Nil) then
-          Dx := (ANode.ParentNode.CompSize.RealContentWidth - ANode.CompSize.ContentWidth) div 2;
+        // margin: auto for block nodes (flex items are aligned by flex layout)
+        if (ANode.ParentNode <> Nil) and (ANode.CompStyle.Display in [cdtBlock, cdtFlex]) and
+          not (ANode.ParentNode.CompStyle.Display in [cdtFlex, cdtInlineFlex]) and
+          not (ANode.CompStyle.Position in [cpAbsolute, cpFixed]) and (ANode.CompStyle.Float in [cftUndefined, cftNone]) then begin
+          if (ANode.CompStyle.Margin[csLeft].LengthType = cltAuto) and (ANode.CompStyle.Margin[csRight].LengthType = cltAuto) then
+            Dx := (ANode.ParentNode.CompSize.RealContentWidth - ANode.CompSize.ContentWidth) div 2
+          else if ANode.CompStyle.Margin[csLeft].LengthType = cltAuto then
+            Dx := ANode.ParentNode.CompSize.RealContentWidth - ANode.CompSize.ContentWidth - ANode.CompSize.Margin.Right;
+          if Dx < 0 then Dx := 0;
+        end;
         OffsetRect(ANode.FCompSize.ContentRect, StartX + Dx, StartY + Dy);
         OffsetRect(ANode.FCompSize.MarginRect, StartX + Dx, StartY + Dy);
       end;
@@ -2541,38 +4178,26 @@ begin
 
 //  Writeln(Awidth, ' - ' , AHeight);
 
-  //TODO: correct calculation needed here
-  Self.CompSize.Margin.Left := CalcCSSLength(Self.CompStyle.Margin[csLeft], AWidth);
-  Self.CompSize.Margin.Right := CalcCSSLength(Self.CompStyle.Margin[csRight], AWidth);
-  Self.CompSize.Margin.Top := CalcCSSLength(Self.CompStyle.Margin[csTop], AHeight);
-  Self.CompSize.Margin.Bottom := CalcCSSLength(Self.CompStyle.Margin[csBottom], AHeight);
+  ResolveInheritedStyle;
+  Self.CompSize.Margin := Rect(
+    CalcLength(Self.CompStyle.Margin[csLeft], AWidth), CalcLength(Self.CompStyle.Margin[csTop], AWidth),
+    CalcLength(Self.CompStyle.Margin[csRight], AWidth), CalcLength(Self.CompStyle.Margin[csBottom], AWidth));
+  Self.CompSize.Padding := Rect(
+    CalcLength(Self.CompStyle.Padding[csLeft], AWidth), CalcLength(Self.CompStyle.Padding[csTop], AWidth),
+    CalcLength(Self.CompStyle.Padding[csRight], AWidth), CalcLength(Self.CompStyle.Padding[csBottom], AWidth));
+  // auto margins are not supported for root node
+  if Self.CompSize.Margin.Left = MaxInt then Self.CompSize.Margin.Left := 0;
+  if Self.CompSize.Margin.Top = MaxInt then Self.CompSize.Margin.Top := 0;
+  if Self.CompSize.Margin.Right = MaxInt then Self.CompSize.Margin.Right := 0;
+  if Self.CompSize.Margin.Bottom = MaxInt then Self.CompSize.Margin.Bottom := 0;
+  Self.CompSize.Border := Rect(BorderWidth(csLeft), BorderWidth(csTop), BorderWidth(csRight), BorderWidth(csBottom));
 
-  Self.CompSize.Padding.Left := CalcCSSLength(Self.CompStyle.Padding[csLeft], AWidth);
-  Self.CompSize.Padding.Right := CalcCSSLength(Self.CompStyle.Padding[csRight], AWidth);
-  Self.CompSize.Padding.Top := CalcCSSLength(Self.CompStyle.Padding[csTop], AHeight);
-  Self.CompSize.Padding.Bottom := CalcCSSLength(Self.CompStyle.Padding[csBottom], AHeight);
-
-  Self.CompSize.Border.Left := CalcCSSLength(Self.CompStyle.Border[csLeft].Width, AWidth);
-  Self.CompSize.Border.Right := CalcCSSLength(Self.CompStyle.Border[csRight].Width, AWidth);
-  Self.CompSize.Border.Top := CalcCSSLength(Self.CompStyle.Border[csTop].Width, AHeight);
-  Self.CompSize.Border.Bottom := CalcCSSLength(Self.CompStyle.Border[csBottom].Width, AHeight);
-
-   // override "body" and ignore set width or height value
-  if AWidth = -1 then begin
-{    if Self.CompStyle.Width.LengthType = cltPercentage then}
-      Self.CompStyle.Width.LengthType := cltUndefined;
-  end
-  else begin
-    Self.CompStyle.Width.LengthType := cltPx;
-    Self.CompStyle.Width.Value := AWidth - Self.CompSize.LeftSpace - Self.CompSize.RightSpace;
-  end;
-  if AHeight = -1 then begin
-    Self.CompStyle.Height.LengthType := cltUndefined;
-  end
-  else begin
-    Self.CompStyle.Height.LengthType := cltPx;
-    Self.CompStyle.Height.Value := AHeight - Self.CompSize.TopSpace - Self.CompSize.BottomSpace;
-  end;
+  // override "body" and ignore set width or height value
+  FLayoutRoot := True;
+  if AWidth = -1 then FLayoutWidth := -1
+    else FLayoutWidth := Max(0, AWidth - Self.CompSize.LeftSpace - Self.CompSize.RightSpace);
+  if AHeight = -1 then FLayoutHeight := -1
+    else FLayoutHeight := Max(0, AHeight - Self.CompSize.TopSpace - Self.CompSize.BottomSpace);
 
 //  if not AAlignControls then begin
   LayoutCalcPosition(Self, AWidth, AHeight, TempWidth, TempHeight);
@@ -2700,25 +4325,10 @@ begin
 end;
 
 function THtmlNode.Clear: THtmlNode;
-  procedure ClearChildrens(ForNode: THtmlNode);
-  var
-    N: THtmlNode;
-  begin
-    while Assigned(ForNode) do begin
-      N := ForNode;
-      if ForNode.ChildCount > 0 then begin
-        ClearChildrens(ForNode.FFirstChild);
-        ForNode.FFirstChild := Nil;
-      end;
-      ForNode := ForNode.GetNext(ForNode, False);
-      N.Free;
-    end;
-  end;
 begin
   Result := Self;
-  ClearChildrens(FirstChild);
-  Self.FFirstChild := Nil;
-  Self.FNextSibling := Nil;
+  while Assigned(FFirstChild) do
+    FFirstChild.Free;   // children is detached (removed from list) in destructor
   Self.FChildCount := 0;
   Self.FLastNode := Nil;
   Self.FFirstNode := Nil;
@@ -2728,13 +4338,8 @@ function THtmlNode.Delete(ANode: THtmlNode): THtmlNode;
 begin
   Result := Self;
   if (not Assigned(ANode)) or (ANode = Self) or (ANode = RootNode) then Exit;
-  if Assigned(ANode.FPrevSibling) then ANode.FPrevSibling.FNextSibling := ANode.FNextSibling;
-  if Assigned(ANode.FNextSibling) then ANode.FNextSibling.FPrevSibling := ANode.FPrevSibling;
-  if Assigned(ANode.ParentNode) and (ANode.ParentNode.FFirstChild = ANode) then ANode.ParentNode.FFirstChild := ANode.FNextSibling;
-  if Assigned(ANode.ParentNode) and (ANode.ParentNode.FLastNode = ANode) then ANode.ParentNode.FLastNode := ANode.FPrevSibling;
-  Dec(ANode.ParentNode.FChildCount);
-  ANode.Clear; // remove all childrens
-  FreeAndNil(ANode);
+  ANode.Detach;
+  ANode.Free;  // destructor removes all childrens
   Changed;
 end;
 
@@ -2742,10 +4347,50 @@ procedure THtmlNode.Changed;
 var
   I: ICSSControl;
 begin
-  if (Assigned(RootNode.ParentControl)) and (Assigned(RootNode)) then begin
+  if Assigned(RootNode) and Assigned(RootNode.ParentControl) then begin
     if RootNode.ParentControl.GetInterface(StringToGUID(HTMLInterface), I) then
       I.Changed;
   end;
+end;
+
+(*
+  Count nodes (siblings and their descendants) starting from ANode
+*)
+function THtmlNode.CountNodes(ANode: THtmlNode): Integer;
+begin
+  Result := 0;
+  while Assigned(ANode) do begin
+    Inc(Result, 1 + CountNodes(ANode.FFirstChild));
+    ANode := ANode.FNextSibling;
+  end;
+end;
+
+(*
+  Remove node from parent (node is not freed)
+*)
+procedure THtmlNode.Detach;
+  procedure SetRoot(ForNode: THtmlNode; ARoot: THtmlNode);
+  begin
+    while Assigned(ForNode) do begin
+      ForNode.RootNode := ARoot;
+      if ForNode.FChildCount > 0 then SetRoot(ForNode.FFirstChild, ARoot);
+      ForNode := ForNode.FNextSibling;
+    end;
+  end;
+begin
+  if not Assigned(ParentNode) then Exit;
+  if Assigned(RootNode) and (RootNode <> Self) then Dec(RootNode.FTotalCount, 1 + CountNodes(FFirstChild));
+  if Assigned(FPrevSibling) then FPrevSibling.FNextSibling := FNextSibling;
+  if Assigned(FNextSibling) then FNextSibling.FPrevSibling := FPrevSibling;
+  if ParentNode.FFirstChild = Self then ParentNode.FFirstChild := FNextSibling;
+  if ParentNode.FFirstNode = Self then ParentNode.FFirstNode := FNextSibling;
+  if ParentNode.FLastNode = Self then ParentNode.FLastNode := FPrevSibling;
+  Dec(ParentNode.FChildCount);
+  FPrevSibling := nil;
+  FNextSibling := nil;
+  ParentNode := nil;
+  RootNode := Self;
+  SetRoot(FFirstChild, Self);
 end;
 
 function THtmlNode.AddNode(ANode: THtmlNode): THtmlNode;
@@ -2754,24 +4399,35 @@ function THtmlNode.AddNode(ANode: THtmlNode): THtmlNode;
     while Assigned(ForNode) do begin
       ForNode.RootNode := Self.RootNode;
       if ForNode.ChildCount > 0 then SetMyParent(ForNode.FFirstChild);
-      ForNode := ForNode.GetNext(ForNode, False);
+      ForNode := ForNode.FNextSibling;
     end;
   end;
+var
+  P: THtmlNode;
 begin
   Result := Self;
   if RootNode = Nil then
-    Raise Exception.Create('There is no root node!');;
-  if Self = ANode then
-    Raise Exception.Create('Can''t add self as children!');;
+    Raise Exception.Create('There is no root node!');
+  if not Assigned(ANode) then Exit;
+  P := Self;
+  while Assigned(P) do begin
+    if P = ANode then
+      Raise Exception.Create('Can''t add self or parent node as children!');
+    P := P.ParentNode;
+  end;
+  ANode.Detach;   // node can be in another tree
   ANode.ParentNode := Self;
-  SetMyParent(ANode);
+  ANode.FLayoutRoot := False;
+  ANode.RootNode := Self.RootNode;
+  SetMyParent(ANode.FFirstChild);
   if FFirstNode = Nil then FFirstNode := ANode;
   if FFirstChild = Nil then FFirstChild := ANode;
   if FLastNode <> Nil then FLastNode.FNextSibling := ANode;
   ANode.FPrevSibling := FLastNode;
+  ANode.FNextSibling := nil;
   FLastNode := ANode;
   Inc(Self.FChildCount);
-  Inc(RootNode.FTotalCount);
+  Inc(RootNode.FTotalCount, 1 + CountNodes(ANode.FFirstChild));
 end;
 
 function THtmlNode.GetNext(ANode: THtmlNode; GoAboveChildren: Boolean): THtmlNode;
@@ -2802,25 +4458,66 @@ begin
   end;
 end;
 
+(*
+  Find all nodes (self and descendants) with class AName
+*)
 function THtmlNode.GetElementsByClassName(AName: String): THtmlNodeArray;
+  procedure Search(ANode: THtmlNode);
+  begin
+    while Assigned(ANode) do begin
+      if ANode.ClassList.Contains(AName) then begin
+        SetLength(Result, Length(Result) + 1);
+        Result[High(Result)] := ANode;
+      end;
+      if ANode.FChildCount > 0 then Search(ANode.FFirstChild);
+      ANode := ANode.FNextSibling;
+    end;
+  end;
+begin
+  Result := nil;
+  if ClassList.Contains(AName) then begin
+    SetLength(Result, 1);
+    Result[0] := Self;
+  end;
+  Search(FFirstChild);
+end;
+
+(*
+  Find first node (self or descendant) with Id
+*)
+function THtmlNode.GetElementById(const AId: String): THtmlNode;
 var
   Node: THtmlNode;
 begin
-  Node := Self;
-  SetLength(Result, 0);
+  Result := nil;
+  if FId = AId then Exit(Self);
+  Node := FFirstChild;
   while Assigned(Node) do begin
-     if Node.Id = AName then begin
-       SetLength(Result, Length(Result) + 1);
-       Result[Length(Result)] := Node;
-     end;
-     Node := Node.GetNext(Node, True);
+    Result := Node.GetElementById(AId);
+    if Assigned(Result) then Exit;
+    Node := Node.FNextSibling;
   end;
 end;
 
+(*
+  Get property value from inline style
+*)
 function THtmlNode.GetStyleValue(AName: String): String;
-// TODO: add support
+var
+  Names, Values: TStringList;
+  I: Integer;
 begin
   Result := '';
+  Names := TStringList.Create;
+  Values := TStringList.Create;
+  try
+    SplitDeclarations(FInlineStyle, Names, Values);
+    for I := Names.Count - 1 downto 0 do
+      if Names[I] = LowerCase(Trim(AName)) then Exit(Values[I]);
+  finally
+    Names.Free;
+    Values.Free;
+  end;
 end;
 
 procedure THtmlNode.SetHovered(AValue: Boolean);
@@ -2842,9 +4539,7 @@ procedure THtmlNode.SetInlineStyle(AValue: String);
 begin
   if FInlineStyle = AValue then Exit;
   FInlineStyle := AValue;
-  FCompStyle.Reset;
-  if Element = 'span' then FCompStyle.Display := cdtInline; // set default display-inline for span element
-  FCompStyle.Parse(FInlineStyle);
+  ApplyStyleForNode(Self);   // stylesheet + inline style
   Changed;
 
 {  if RootNode.FParentControl <> Nil then begin
@@ -2861,6 +4556,11 @@ end;
 finalization
 begin
   CSSColorList.Free;
+  CSSUtilityCache.Free;
+  CSSFontFamilyCache.Free;
+  {$ifndef fmx}
+  CSSMeasureBitmap.Free;
+  {$endif}
 end;
 
 end.
