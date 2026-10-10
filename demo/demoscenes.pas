@@ -433,6 +433,11 @@ begin
     '  <div class="px-4 py-2 bg-yellow-300 font-bold -skew-x-12">skew-x</div>' +
     '  <div class="size-16 rounded-lg bg-gradient-to-br from-pink-500 to-violet-600 rotate-45 shadow-lg"></div>' +
     '  <div class="px-3 py-1 rounded bg-sky-500 text-white origin-top-left rotate-12">origin</div>' +
+    '</div>' +
+    '<div class="flex justify-center gap-16 items-center py-4">' +
+    '  <div class="px-3 py-1 rounded-md border border-slate-300 text-slate-700">scale 1</div>' +
+    '  <div class="px-3 py-1 rounded-md border border-slate-300 text-slate-700 scale-150">scale-150</div>' +
+    '  <div class="px-3 py-1 rounded-md border border-slate-300 text-slate-700 scale-[2]">scale-[2]</div>' +
     '</div>');
 end;
 

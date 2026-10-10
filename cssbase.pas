@@ -10,7 +10,6 @@
   TODO (in random order):
   - transition support
   - opacity, inset box-shadow, line-height
-  - dashed/dotted borders along rounded corners (corners are solid for dashed borders)
   - radial gradients, multiple backgrounds
   - display:grid
   - delphi support
@@ -222,6 +221,19 @@ type
     A, B, C, D, E, F: Single;
   end;
   TCSSTransformKind = (tkNone, tkTranslate, tkGeneral);
+  THtmlNode = class;
+  TCSSLayoutState = record       // saved layout of node (transformed node is laid out again in higher resolution)
+    Node: THtmlNode;
+    ContentRect, MarginRect, Margin, Padding, Border, Position: TRect;
+    BaseLine, ContentWidth, ContentHeight, LayoutWidth, LayoutHeight: Integer;
+    FontSize: Single;
+    Transform: TCSSMatrix2D;
+    Kind: TCSSTransformKind;
+    Visible, LayoutRoot: Boolean;
+  end;
+  TCSSLayoutStates = array of TCSSLayoutState;
+
+
 
   TCSSCombinator = (ccNone, ccDescendant, ccChild);
   { TCSSCompoundSelector - one part of selector eg. "div.button:hover" }
@@ -368,7 +380,6 @@ type
     function RealContentRect: TRect; inline; // ContentRect - Border - Padding
   end;
 
-  THtmlNode = class;  // forward declaration
   THtmlNodeArray = array of THtmlNode;
 
   { THtmlNode }
@@ -413,6 +424,7 @@ type
     FVisible: Boolean;
     FPixelRatio: Single;          // root node only: scale factor for high dpi
     FPaintScale: Single;          // root node only: device pixels per canvas pixel (2 on macOS Retina)
+    FRenderScale: Single;         // root node only: scale of offscreen rendering of transformed node (default font is scaled)
     FLayoutRoot: Boolean;         // LayoutTo was called for this node
     FLayoutWidth,                 // size for root node set by LayoutTo (-1 = auto)
     FLayoutHeight: Integer;
@@ -457,6 +469,7 @@ type
     procedure OffsetSubtree(DX, DY: Integer);
     procedure PaintNodeTree(ACanvas: TCanvas; const AClipRect: TRect);
     procedure PaintTransformed(ACanvas: TCanvas; const AClipRect: TRect);
+    procedure SaveLayout(var AStates: TCSSLayoutStates);
   public
     constructor Create(AInlineStyle: String = '');virtual;
     destructor Destroy; override;
@@ -731,6 +744,7 @@ const
 var
   CSSColorList: TStringList;
   CSSFontFamilyCache: TStringList;   // resolved font-family values
+  CSSDefaultFontPx: Integer = 0;     // see CSSDefaultFontHeight
   {$ifndef fmx}
   CSSMeasureBitmap: TBitmap;         // canvas for text measurement
   {$endif}
@@ -2842,11 +2856,180 @@ begin
 end;
 
 (*
+  Pattern of dashed or dotted border side. Every side has own path: from middle of start corner (join with
+  previous side) through straight part to middle of end corner. Dashes (dots) are at both ends of path,
+  so corners are joined and dashes follow rounded corners.
+  Local frame of side: X along side (0 = start of side), Y from outer edge inside.
+*)
+type
+  TCSSSidePattern = record
+    Style: TCSSBorderStyle;     // cbsDashed, cbsDotted, other = solid
+    W, Len: Single;             // border width, side length
+    SA, SB, EA, EB: Single;     // radii of start and end corner (along side, cross side)
+    SMid, EMid: Single;         // middle radius of corner arcs
+    Origin: Single;             // local X of pattern position A0 (start of straight part)
+    A0, Total: Single;          // pattern length in start corner, total length of path
+    Dash, Gap: Single;
+    DotCount: Integer;
+    DotStep: Single;
+  end;
+  TCSSSidePatterns = array[TCSSSide] of TCSSSidePattern;
+
+procedure SideLocal(const S: TCSSPaintShape; ASide: TCSSSide; X, Y: Single; out LX, LY: Single); inline;
+begin
+  case ASide of
+    csTop: begin LX := X - S.L; LY := Y - S.T; end;
+    csRight: begin LX := Y - S.T; LY := S.R - X; end;
+    csBottom: begin LX := S.R - X; LY := S.B - Y; end;
+    else begin LX := S.B - Y; LY := X - S.L; end;
+  end;
+end;
+
+procedure SideToCanvas(const S: TCSSPaintShape; ASide: TCSSSide; LX, LY: Single; out X, Y: Single); inline;
+begin
+  case ASide of
+    csTop: begin X := S.L + LX; Y := S.T + LY; end;
+    csRight: begin X := S.R - LY; Y := S.T + LX; end;
+    csBottom: begin X := S.R - LX; Y := S.B - LY; end;
+    else begin X := S.L + LY; Y := S.B - LX; end;
+  end;
+end;
+
+function MakeSidePattern(const S: TCSSPaintShape; ASide: TCSSSide; AStyle: TCSSBorderStyle): TCSSSidePattern;
+const
+  START_CORNER: array[TCSSSide] of Integer = (0, 3, 2, 1);    // top, left, bottom, right
+  END_CORNER: array[TCSSSide] of Integer = (1, 0, 3, 2);
+  START_ADJ: array[TCSSSide] of TCSSSide = (csLeft, csBottom, csRight, csTop);
+  END_ADJ: array[TCSSSide] of TCSSSide = (csRight, csTop, csLeft, csBottom);
+var
+  P: TCSSSidePattern;
+  SC, EC, N: Integer;
+  Share, Ls, A1, EOrigin: Single;
+begin
+  P := Default(TCSSSidePattern);
+  P.Style := AStyle;
+  P.W := S.BW[ASide];
+  if ASide in [csTop, csBottom] then P.Len := S.R - S.L else P.Len := S.B - S.T;
+  SC := START_CORNER[ASide];
+  EC := END_CORNER[ASide];
+  if ASide in [csTop, csBottom] then begin
+    P.SA := S.RX[SC]; P.SB := S.RY[SC]; P.EA := S.RX[EC]; P.EB := S.RY[EC];
+  end else begin
+    P.SA := S.RY[SC]; P.SB := S.RX[SC]; P.EA := S.RY[EC]; P.EB := S.RX[EC];
+  end;
+  // part of corner arc which belongs to this side (join from outer to inner corner)
+  if (P.SA > 0) and (P.SB > 0) then begin
+    P.SMid := Max(0.5, (P.SA + P.SB) / 2 - P.W / 2);
+    if P.W + S.BW[START_ADJ[ASide]] > 0 then Share := P.W / (P.W + S.BW[START_ADJ[ASide]]) else Share := 1;
+    P.A0 := P.SMid * Pi / 2 * Share;
+    P.Origin := P.SA;
+  end else begin
+    P.A0 := 0;
+    P.Origin := S.BW[START_ADJ[ASide]] / 2;      // square corner: middle of corner
+    if AStyle = cbsDotted then P.Origin := Max(S.BW[START_ADJ[ASide]], P.W) / 2;   // whole dot inside
+  end;
+  if (P.EA > 0) and (P.EB > 0) then begin
+    P.EMid := Max(0.5, (P.EA + P.EB) / 2 - P.W / 2);
+    if P.W + S.BW[END_ADJ[ASide]] > 0 then Share := P.W / (P.W + S.BW[END_ADJ[ASide]]) else Share := 1;
+    A1 := P.EMid * Pi / 2 * Share;
+    EOrigin := P.Len - P.EA;
+  end else begin
+    A1 := 0;
+    EOrigin := P.Len - S.BW[END_ADJ[ASide]] / 2;
+    if AStyle = cbsDotted then EOrigin := P.Len - Max(S.BW[END_ADJ[ASide]], P.W) / 2;
+  end;
+  Ls := Max(0, EOrigin - P.Origin);
+  P.Total := P.A0 + Ls + A1;
+  if P.W <= 0 then Exit(P);
+  if AStyle = cbsDashed then begin
+    P.Dash := Max(2, 3 * P.W);
+    P.Gap := P.Dash;
+    N := Max(1, Round((P.Total + P.Gap) / (P.Dash + P.Gap)));
+    while (N > 1) and ((P.Total - N * P.Dash) / (N - 1) < P.W) do Dec(N);
+    if N > 1 then P.Gap := (P.Total - N * P.Dash) / (N - 1)
+      else P.Gap := -1;    // one dash in middle
+  end else
+  if AStyle = cbsDotted then begin
+    P.DotCount := Max(1, Round(P.Total / (2 * P.W)));
+    P.DotStep := P.Total / P.DotCount;
+  end;
+  Result := P;
+end;
+
+(*
+  Position T on path and distance V from outer edge for point of side
+*)
+procedure SidePathPos(const S: TCSSPaintShape; ASide: TCSSSide; const P: TCSSSidePattern; X, Y: Single; out T, V: Single);
+var
+  LX, LY, Phi, Delta: Single;
+begin
+  SideLocal(S, ASide, X, Y, LX, LY);
+  if (P.SA > 0) and (P.SB > 0) and (LX < P.SA) then begin
+    Phi := ArcTan2(LY - P.SB, LX - P.SA);
+    Delta := EnsureRange(-Pi / 2 - Phi, 0, Pi / 2);
+    T := P.A0 - Delta * P.SMid;
+    V := (P.SA + P.SB) / 2 - Sqrt(Sqr(LX - P.SA) + Sqr(LY - P.SB));
+  end else
+  if (P.EA > 0) and (P.EB > 0) and (LX > P.Len - P.EA) then begin
+    Phi := ArcTan2(LY - P.EB, LX - (P.Len - P.EA));
+    Delta := EnsureRange(Phi + Pi / 2, 0, Pi / 2);
+    T := P.Total - (P.Total - P.A0 - (P.Len - P.EA - P.Origin)) + Delta * P.EMid;
+    V := (P.EA + P.EB) / 2 - Sqrt(Sqr(LX - (P.Len - P.EA)) + Sqr(LY - P.EB));
+  end else begin
+    T := P.A0 + LX - P.Origin;
+    V := LY;
+  end;
+end;
+
+function PatternOnAt(const P: TCSSSidePattern; T, V: Single): Boolean;
+var
+  K: Integer;
+  M: Single;
+begin
+  case P.Style of
+    cbsDashed: begin
+      T := EnsureRange(T, 0, P.Total);
+      if P.Gap < 0 then
+        Result := Abs(T - P.Total / 2) <= P.Dash / 2
+      else begin
+        M := T - Floor(T / (P.Dash + P.Gap)) * (P.Dash + P.Gap);
+        Result := (M < P.Dash) or (T >= P.Total - 0.01);
+      end;
+    end;
+    cbsDotted: begin
+      K := EnsureRange(Round(T / P.DotStep), 0, P.DotCount);
+      Result := Sqr(T - K * P.DotStep) + Sqr(V - P.W / 2) <= Sqr(P.W / 2);
+    end;
+    else
+      Result := True;
+  end;
+end;
+
+function PatternOn(const S: TCSSPaintShape; ASide: TCSSSide; const P: TCSSSidePattern; X, Y: Single): Boolean;
+var
+  T, V: Single;
+begin
+  if not (P.Style in [cbsDashed, cbsDotted]) then Exit(True);
+  SidePathPos(S, ASide, P, X, Y, T, V);
+  Result := PatternOnAt(P, T, V);
+end;
+
+function PatternKey(const P: TCSSSidePattern): String;
+begin
+  if P.Style in [cbsDashed, cbsDotted] then
+    Result := Format('%d:%.2f:%.2f:%.2f', [Ord(P.Style), P.Total, P.A0, P.Origin])
+  else
+    Result := 's';
+end;
+
+(*
   Rasterize part of shape (background and borders) to bitmap with alpha
   AColors: background, top, left, bottom, right (alpha 0 = not painted)
 *)
 function RasterizeShape(const S: TCSSPaintShape; ACorner: Integer; X0, Y0, AWidth, AHeight: Integer;
-  const AColors: array of TCSSRGBA): TBitmap;
+  const AColors: array of TCSSRGBA; const APatterns: TCSSSidePatterns): TBitmap;
+const
+  KIND_TO_SIDE: array[TCSSSampleKind] of TCSSSide = (csTop, csTop, csTop, csLeft, csBottom, csRight);
 var
   Img: TLazIntfImage;
   X, Y, SX, SY, N: Integer;
@@ -2868,6 +3051,10 @@ begin
           for SX := 0 to N - 1 do begin
             Kind := SampleShape(S, ACorner, X0 + X + (SX + 0.5) * Step, Y0 + Y + (SY + 0.5) * Step);
             if Kind = cskOutside then Continue;
+            // dashed or dotted border: gap shows background
+            if (Kind in [cskTop, cskLeft, cskBottom, cskRight]) and
+              not PatternOn(S, KIND_TO_SIDE[Kind], APatterns[KIND_TO_SIDE[Kind]], X0 + X + (SX + 0.5) * Step, Y0 + Y + (SY + 0.5) * Step) then
+              Kind := cskBackground;
             C := AColors[Ord(Kind) - 1];
             if (C.A < 1) and (Kind <> cskBackground) then begin   // transparent border shows background
               SR := SR + AColors[0].R * AColors[0].A * (1 - C.A);
@@ -2921,14 +3108,14 @@ begin
 end;
 
 function CornerBitmap(const AKey: String; const S: TCSSPaintShape; ACorner: Integer; const ARect: TRect;
-  const AColors: array of TCSSRGBA): TBitmap;
+  const AColors: array of TCSSRGBA; const APatterns: TCSSSidePatterns): TBitmap;
 var
   X: Integer;
 begin
   CornerCache;
   if CSSCornerCache.Find(AKey, X) then Exit(TBitmap(CSSCornerCache.Objects[X]));
   if CSSCornerCache.Count > CSS_CORNER_CACHE_LIMIT then CSSCornerCache.Clear;
-  Result := RasterizeShape(S, ACorner, ARect.Left, ARect.Top, ARect.Width, ARect.Height, AColors);
+  Result := RasterizeShape(S, ACorner, ARect.Left, ARect.Top, ARect.Width, ARect.Height, AColors, APatterns);
   CSSCornerCache.AddObject(AKey, Result);
 end;
 
@@ -3891,7 +4078,8 @@ var
   Colors: array[0..4] of TCSSRGBA;
   BgImage, Key, Url: String;
   Kind: TBgKind;
-  Full, Repeating, AnyBorder, DottedAll: Boolean;
+  Full, Repeating, AnyBorder: Boolean;
+  Pat, PatD: TCSSSidePatterns;   // dashed/dotted patterns in canvas and device pixels
   Ys: array[0..5] of Integer;
   Slabs: array of TRect;
   Sc, FX, FY, TW, TH: Single;
@@ -3931,100 +4119,61 @@ var
     end else
       DrawBitmap(DR, DotBitmap(D, AColor));
   end;
+  // straight part of side (corners are rasterized)
   procedure FillSide(ASide: TCSSSide; const ARect: TRect);
   var
-    Horz: Boolean;
-    Len, Wd, N, K, Pos0: Integer;
-    Dash, Gap, Step, F: Single;
+    P: TCSSSidePattern;
+    B0, B1, T0, T1, LX0, LX1, CX, CY: Single;
+    K: Integer;
+    RR: TRect;
+    function LocalRect(AX0, AX1: Single): TRect;    // part of band from local X0 to X1
+    begin
+      case ASide of
+        csTop: Result := Rect(Round(S.L + AX0), ARect.Top, Round(S.L + AX1), ARect.Bottom);
+        csBottom: Result := Rect(Round(S.R - AX1), ARect.Top, Round(S.R - AX0), ARect.Bottom);
+        csRight: Result := Rect(ARect.Left, Round(S.T + AX0), ARect.Right, Round(S.T + AX1));
+        else Result := Rect(ARect.Left, Round(S.B - AX1), ARect.Right, Round(S.B - AX0));
+      end;
+    end;
   begin
     if not SideVisible[ASide] or (ARect.Right <= ARect.Left) or (ARect.Bottom <= ARect.Top) then Exit;
     ACanvas.Brush.Color := SideColor[ASide];
-    Horz := ASide in [csTop, csBottom];
-    if Horz then begin Len := ARect.Width; Wd := ARect.Height; Pos0 := ARect.Left; end
-      else begin Len := ARect.Height; Wd := ARect.Width; Pos0 := ARect.Top; end;
-    case cs.Border[ASide].Style of
+    P := Pat[ASide];
+    // band in local coordinates
+    case ASide of
+      csTop: begin B0 := ARect.Left - S.L; B1 := ARect.Right - S.L; end;
+      csBottom: begin B0 := S.R - ARect.Right; B1 := S.R - ARect.Left; end;
+      csRight: begin B0 := ARect.Top - S.T; B1 := ARect.Bottom - S.T; end;
+      else begin B0 := S.B - ARect.Bottom; B1 := S.B - ARect.Top; end;
+    end;
+    case P.Style of
       cbsDashed: begin
-        // dashes at both ends (they join corners), gaps are adjusted to fit
-        Dash := Max(2, 3 * Wd);
-        Gap := Dash;
-        N := Max(1, Round((Len + Gap) / (Dash + Gap)));
-        if N = 1 then begin
-          F := Min(Dash, Len);
-          if Horz then ACanvas.FillRect(Rect(Pos0 + Round((Len - F) / 2), ARect.Top, Pos0 + Round((Len + F) / 2), ARect.Bottom))
-            else ACanvas.FillRect(Rect(ARect.Left, Pos0 + Round((Len - F) / 2), ARect.Right, Pos0 + Round((Len + F) / 2)));
-        end else begin
-          Gap := (Len - N * Dash) / (N - 1);
-          for K := 0 to N - 1 do begin
-            F := K * (Dash + Gap);
-            if Horz then ACanvas.FillRect(Rect(Pos0 + Round(F), ARect.Top, Pos0 + Round(F + Dash), ARect.Bottom))
-              else ACanvas.FillRect(Rect(ARect.Left, Pos0 + Round(F), ARect.Right, Pos0 + Round(F + Dash)));
+        if P.Gap < 0 then begin
+          T0 := (P.Total - P.Dash) / 2;
+          LX0 := Max(B0, P.Origin + T0 - P.A0);
+          LX1 := Min(B1, P.Origin + T0 + P.Dash - P.A0);
+          if LX1 > LX0 then ACanvas.FillRect(LocalRect(LX0, LX1));
+        end else
+          for K := 0 to Round(P.Total / (P.Dash + P.Gap)) + 1 do begin
+            T0 := K * (P.Dash + P.Gap);
+            T1 := T0 + P.Dash;
+            LX0 := Max(B0, P.Origin + T0 - P.A0);
+            LX1 := Min(B1, P.Origin + T1 - P.A0);
+            if LX1 > LX0 then begin
+              RR := LocalRect(LX0, LX1);
+              if (RR.Right > RR.Left) and (RR.Bottom > RR.Top) then ACanvas.FillRect(RR);
+            end;
           end;
+      end;
+      cbsDotted:
+        for K := 0 to P.DotCount do begin
+          LX0 := P.Origin + K * P.DotStep - P.A0;     // dot center
+          if (LX0 < B0) or (LX0 > B1) then Continue;
+          SideToCanvas(S, ASide, LX0, P.W / 2, CX, CY);
+          DrawDot(CX, CY, Round(P.W), SideColor[ASide]);
         end;
-      end;
-      cbsDotted: begin
-        // round dots, spacing about 2x border width
-        N := Max(1, Round(Len / (2 * Wd)));
-        Step := Len / N;
-        for K := 0 to N - 1 do
-          if Horz then DrawDot(Pos0 + (K + 0.5) * Step, (ARect.Top + ARect.Bottom) / 2, Wd, SideColor[ASide])
-            else DrawDot((ARect.Left + ARect.Right) / 2, Pos0 + (K + 0.5) * Step, Wd, SideColor[ASide]);
-      end;
       else
         ACanvas.FillRect(ARect);
-    end;
-  end;
-  (*
-    All sides dotted (same width and color): dots along middle line of border around whole node (also around corners)
-  *)
-  procedure DottedPerimeter;
-  var
-    Pts: array of TPointF;
-    Lens: array of Single;
-    Wd, I, J, N, Seg: Integer;
-    L, T, R, B, Total, Step, S, F: Single;
-    Rad: array[0..3] of TPointF;
-    procedure Add(X, Y: Single);
-    begin
-      SetLength(Pts, Length(Pts) + 1);
-      Pts[High(Pts)] := PointF(X, Y);
-    end;
-    procedure Arc(CX, CY, RX, RY, A0: Single);
-    var
-      K, Steps: Integer;
-    begin
-      if (RX <= 0) or (RY <= 0) then begin
-        Add(CX, CY);
-        Exit;
-      end;
-      Steps := Max(4, Round(Max(RX, RY)));
-      for K := 0 to Steps do
-        Add(CX + RX * Cos(A0 + K / Steps * Pi / 2), CY + RY * Sin(A0 + K / Steps * Pi / 2));
-    end;
-  begin
-    Wd := BW[csTop];
-    L := Box.Left + Wd / 2; T := Box.Top + Wd / 2; R := Box.Right - Wd / 2; B := Box.Bottom - Wd / 2;
-    for I := 0 to 3 do Rad[I] := PointF(Max(0, P[I].x - Wd / 2), Max(0, P[I].y - Wd / 2));
-    Pts := nil;
-    Arc(L + Rad[0].x, T + Rad[0].y, Rad[0].x, Rad[0].y, Pi);            // top-left
-    Arc(R - Rad[1].x, T + Rad[1].y, Rad[1].x, Rad[1].y, 3 * Pi / 2);    // top-right
-    Arc(R - Rad[2].x, B - Rad[2].y, Rad[2].x, Rad[2].y, 0);             // bottom-right
-    Arc(L + Rad[3].x, B - Rad[3].y, Rad[3].x, Rad[3].y, Pi / 2);        // bottom-left
-    Add(Pts[0].x, Pts[0].y);
-    SetLength(Lens, Length(Pts));
-    Total := 0;
-    Lens[0] := 0;
-    for I := 1 to High(Pts) do begin
-      Total := Total + Sqrt(Sqr(Pts[I].x - Pts[I - 1].x) + Sqr(Pts[I].y - Pts[I - 1].y));
-      Lens[I] := Total;
-    end;
-    N := Max(4, Round(Total / (2 * Wd)));
-    Step := Total / N;
-    Seg := 1;
-    for J := 0 to N - 1 do begin
-      S := J * Step;
-      while (Seg < High(Lens)) and (Lens[Seg] < S) do Inc(Seg);
-      if Lens[Seg] > Lens[Seg - 1] then F := (S - Lens[Seg - 1]) / (Lens[Seg] - Lens[Seg - 1]) else F := 0;
-      DrawDot(Pts[Seg - 1].x + (Pts[Seg].x - Pts[Seg - 1].x) * F, Pts[Seg - 1].y + (Pts[Seg].y - Pts[Seg - 1].y) * F, Wd, SideColor[csTop]);
     end;
   end;
   function CornerRect(AIndex: Integer): TRect;
@@ -4082,10 +4231,6 @@ begin
     AnyBorder := AnyBorder or SideVisible[Side];
   end;
 
-  DottedAll := True;
-  for Side := Low(TCSSSide) to High(TCSSSide) do
-    DottedAll := DottedAll and SideVisible[Side] and (cs.Border[Side].Style = cbsDotted) and (BW[Side] = BW[csTop]) and
-      (SideColor[Side] = SideColor[csTop]);
   // kind of background
   BgImage := '';
   if cs.Background.Image <> '' then BgImage := Trim(ResolveVars(cs.Background.Image));
@@ -4140,6 +4285,10 @@ begin
     SS.RX[I] := S.RX[I] * Sc;
     SS.RY[I] := S.RY[I] * Sc;
   end;
+  for Side := Low(TCSSSide) to High(TCSSSide) do begin
+    Pat[Side] := MakeSidePattern(S, Side, cs.Border[Side].Style);
+    PatD[Side] := MakeSidePattern(SS, Side, cs.Border[Side].Style);
+  end;
   // corners overlap (small node, big borders), whole node is rasterized
   Full := (CW[0] + CW[1] > W) or (CW[3] + CW[2] > W) or (CH[0] + CH[3] > H) or (CH[1] + CH[2] > H) or
     (BW[csTop] + BW[csBottom] > H) or (BW[csLeft] + BW[csRight] > W);
@@ -4161,7 +4310,7 @@ begin
   // colors for rasterized parts: background, top, left, bottom, right
   if Kind = bkColor then Colors[0] := RGBAFromColor(cs.Background.Color.Value) else Colors[0] := RGBAFromColor(0, 0);
   for I := 0 to 3 do
-    if SideVisible[KIND_SIDE[I]] and not DottedAll then Colors[I + 1] := RGBAFromColor(SideColor[KIND_SIDE[I]])
+    if SideVisible[KIND_SIDE[I]] then Colors[I + 1] := RGBAFromColor(SideColor[KIND_SIDE[I]])
       else Colors[I + 1] := RGBAFromColor(0, 0);
 
   if Full then begin
@@ -4169,9 +4318,9 @@ begin
       Key := Format('F%d,%d,%d,%d,%d,%d,%d,%f', [W, H, BW[csTop], BW[csLeft], BW[csBottom], BW[csRight], Ord(CSSAntialiasing), Sc]);
       for I := 0 to 3 do Key := Key + Format(',%d,%d', [P[I].x, P[I].y]);
       for I := 0 to 4 do Key := Key + ',' + RGBAKey(Colors[I]);
-      DrawBitmap(Box, CornerBitmap(Key, SS, -1, ScaleRect(Box), Colors));
+      for Side := Low(TCSSSide) to High(TCSSSide) do Key := Key + ',' + PatternKey(PatD[Side]);
+      DrawBitmap(Box, CornerBitmap(Key, SS, -1, ScaleRect(Box), Colors, PatD));
     end;
-    if DottedAll then DottedPerimeter;
     Exit;
   end;
 
@@ -4262,14 +4411,12 @@ begin
           Rect(Round((R.Left - Box.Left) * Sc), Round((R.Top - Box.Top) * Sc), Round((R.Right - Box.Left) * Sc), Round((R.Bottom - Box.Top) * Sc))));
       end;
   // straight parts of borders
-  if not DottedAll then begin
-    FillSide(csTop, Rect(Box.Left + CW[0], Box.Top, Box.Right - CW[1], Box.Top + BW[csTop]));
-    FillSide(csBottom, Rect(Box.Left + CW[3], Box.Bottom - BW[csBottom], Box.Right - CW[2], Box.Bottom));
-    FillSide(csLeft, Rect(Box.Left, Box.Top + CH[0], Box.Left + BW[csLeft], Box.Bottom - CH[3]));
-    FillSide(csRight, Rect(Box.Right - BW[csRight], Box.Top + CH[1], Box.Right, Box.Bottom - CH[2]));
-  end;
+  FillSide(csTop, Rect(Box.Left + CW[0], Box.Top, Box.Right - CW[1], Box.Top + BW[csTop]));
+  FillSide(csBottom, Rect(Box.Left + CW[3], Box.Bottom - BW[csBottom], Box.Right - CW[2], Box.Bottom));
+  FillSide(csLeft, Rect(Box.Left, Box.Top + CH[0], Box.Left + BW[csLeft], Box.Bottom - CH[3]));
+  FillSide(csRight, Rect(Box.Right - BW[csRight], Box.Top + CH[1], Box.Right, Box.Bottom - CH[2]));
   // corners (borders and solid background)
-  if (Kind = bkColor) or (AnyBorder and not DottedAll) then
+  if (Kind = bkColor) or AnyBorder then
     for I := 0 to 3 do begin
       if (CW[I] <= 0) or (CH[I] <= 0) then Continue;
       R := CornerRect(I);
@@ -4282,9 +4429,14 @@ begin
         3: Key := Key + Format(',%d,%d,%s,%s', [BW[csLeft], BW[csBottom], RGBAKey(Colors[2]), RGBAKey(Colors[3])]);
       end;
       Key := Key + ',' + RGBAKey(Colors[0]);
-      DrawBitmap(R, CornerBitmap(Key, SS, I, ScaleRect(R), Colors));
+      case I of    // patterns of adjacent sides
+        0: Key := Key + ',' + PatternKey(PatD[csLeft]) + ',' + PatternKey(PatD[csTop]);
+        1: Key := Key + ',' + PatternKey(PatD[csTop]) + ',' + PatternKey(PatD[csRight]);
+        2: Key := Key + ',' + PatternKey(PatD[csRight]) + ',' + PatternKey(PatD[csBottom]);
+        3: Key := Key + ',' + PatternKey(PatD[csBottom]) + ',' + PatternKey(PatD[csLeft]);
+      end;
+      DrawBitmap(R, CornerBitmap(Key, SS, I, ScaleRect(R), Colors, PatD));
     end;
-  if DottedAll then DottedPerimeter;
   {$endif}
 end;
 
@@ -4623,10 +4775,67 @@ begin
   end;
 end;
 
+procedure THtmlNode.SaveLayout(var AStates: TCSSLayoutStates);
+var
+  N: THtmlNode;
+  I: Integer;
+begin
+  SetLength(AStates, Length(AStates) + 1);
+  I := High(AStates);
+  AStates[I].Node := Self;
+  AStates[I].ContentRect := FCompSize.ContentRect;
+  AStates[I].MarginRect := FCompSize.MarginRect;
+  AStates[I].Margin := FCompSize.Margin;
+  AStates[I].Padding := FCompSize.Padding;
+  AStates[I].Border := FCompSize.Border;
+  AStates[I].Position := FCompSize.Position;
+  AStates[I].BaseLine := FCompSize.BaseLine;
+  AStates[I].ContentWidth := FCompSize.ContentWidth;
+  AStates[I].ContentHeight := FCompSize.ContentHeight;
+  AStates[I].FontSize := FCompSize.FontSize;
+  AStates[I].Transform := FTransform;
+  AStates[I].Kind := FTransformKind;
+  AStates[I].Visible := FVisible;
+  AStates[I].LayoutRoot := FLayoutRoot;
+  AStates[I].LayoutWidth := FLayoutWidth;
+  AStates[I].LayoutHeight := FLayoutHeight;
+  N := FFirstChild;
+  while Assigned(N) do begin
+    N.SaveLayout(AStates);
+    N := N.FNextSibling;
+  end;
+end;
+
+procedure RestoreLayout(const AStates: TCSSLayoutStates);
+var
+  I: Integer;
+begin
+  for I := 0 to High(AStates) do
+    with AStates[I], Node do begin
+      FCompSize.ContentRect := ContentRect;
+      FCompSize.MarginRect := MarginRect;
+      FCompSize.Margin := Margin;
+      FCompSize.Padding := Padding;
+      FCompSize.Border := Border;
+      FCompSize.Position := Position;
+      FCompSize.BaseLine := BaseLine;
+      FCompSize.ContentWidth := ContentWidth;
+      FCompSize.ContentHeight := ContentHeight;
+      FCompSize.FontSize := FontSize;
+      FTransform := Transform;
+      FTransformKind := Kind;
+      FVisible := Visible;
+      FLayoutRoot := LayoutRoot;
+      FLayoutWidth := LayoutWidth;
+      FLayoutHeight := LayoutHeight;
+    end;
+end;
+
 (*
   Scaled, rotated or skewed node: node with children is painted to bitmap and the bitmap is transformed
-  Bitmap is painted on black and white background, so alpha is known also for widgetsets without alpha
-  support in canvas (GDI). Result is cached until styles or layout are changed.
+  On macOS the bitmap is transparent (canvas keeps alpha), on other widgetsets it is painted on black and white
+  background, so alpha is known also without alpha support in canvas (GDI).
+  Result is cached until styles or layout of node are changed.
 *)
 procedure THtmlNode.PaintTransformed(ACanvas: TCanvas; const AClipRect: TRect);
 var
@@ -4644,7 +4853,11 @@ var
   P: TPointF;
   X0, Y0, X1, Y1: Integer;
   PA, PR, PG, PB: Single;
-  OldScale: Single;
+  OldScale, OldRatio, K: Single;
+  Uniform: Boolean;
+  KR: TRect;                // source rect in layout of resolution K
+  KSW, KSH: Integer;
+  States: TCSSLayoutStates;
   Sig: LongWord;
   procedure SubtreeSignature(ANode: THtmlNode; AX, AY: Integer; var AHash: LongWord);
   var
@@ -4660,22 +4873,34 @@ var
       N := N.FNextSibling;
     end;
   end;
+  // AColor = clNone: transparent bitmap (canvas keeps alpha on macOS)
   function RenderOn(AColor: TColor): TLazIntfImage;
   var
     Bmp: TBitmap;
+    Tmp: TLazIntfImage;
   begin
     Bmp := TBitmap.Create;
     try
-      Bmp.SetSize(SW, SH);
-      Bmp.Canvas.Brush.Color := AColor;
-      Bmp.Canvas.FillRect(0, 0, SW, SH);
-      OffsetSubtree(-R.Left, -R.Top);
+      if AColor = clNone then begin
+        Tmp := NewAlphaImage(KSW, KSH);
+        try
+          Tmp.FillPixels(colTransparent);
+          Bmp.LoadFromIntfImage(Tmp);
+        finally
+          Tmp.Free;
+        end;
+      end else begin
+        Bmp.SetSize(KSW, KSH);
+        Bmp.Canvas.Brush.Color := AColor;
+        Bmp.Canvas.FillRect(0, 0, KSW, KSH);
+      end;
+      OffsetSubtree(-KR.Left, -KR.Top);
       FTransformKind := tkNone;
       try
-        PaintNodeTree(Bmp.Canvas, Rect(0, 0, SW, SH));
+        PaintNodeTree(Bmp.Canvas, Rect(0, 0, KSW, KSH));
       finally
         FTransformKind := tkGeneral;
-        OffsetSubtree(R.Left, R.Top);
+        OffsetSubtree(KR.Left, KR.Top);
       end;
       Result := Bmp.CreateIntfImage;
     finally
@@ -4684,7 +4909,7 @@ var
   end;
   function Sample(SX, SY: Integer): LongWord; inline;
   begin
-    if (SX < 0) or (SY < 0) or (SX >= SW) or (SY >= SH) then Result := 0 else Result := Src[SY * SW + SX];
+    if (SX < 0) or (SY < 0) or (SX >= KSW) or (SY >= KSH) then Result := 0 else Result := Src[SY * KSW + SX];
   end;
   function Ch(AP: LongWord; AShift: Byte): Single; inline;
   begin
@@ -4729,22 +4954,55 @@ begin
   if not (Assigned(FTransformBmp) and (FTransformKey = Key)) then begin
     FreeAndNil(FTransformBmp);
     FTransformKey := Key;
-    // source: node painted on black and white
+    // source: node painted on black and white in resolution K (node is laid out again with pixel ratio * K,
+    // so text and borders are sharp also when node is scaled up or on Retina display)
+    K := Sc * Max(1, Max(Sqrt(Sqr(FTransform.A) + Sqr(FTransform.B)), Sqrt(Sqr(FTransform.C) + Sqr(FTransform.D))));
+    K := Min(K, 4);
     OldScale := RootNode.FPaintScale;
+    OldRatio := RootNode.FPixelRatio;
+    States := nil;
+    KR := R;
+    if Abs(K - 1) > 0.01 then begin
+      SaveLayout(States);
+      RootNode.FPixelRatio := OldRatio * K;
+      RootNode.FRenderScale := K;
+      LayoutTo(0, 0, Round(FCompSize.MarginRect.Width * K), Round(FCompSize.MarginRect.Height * K));
+      KR := FCompSize.ContentRect;
+      InflateRect(KR, Round(E * K), Round(E * K));
+    end;
+    KSW := KR.Width;
+    KSH := KR.Height;
     RootNode.FPaintScale := 1;
-    Black := RenderOn(clBlack);
-    White := RenderOn(clWhite);
-    RootNode.FPaintScale := OldScale;
+    White := nil;
     try
-      SetLength(Src, SW * SH);
-      for Y := 0 to SH - 1 do
-        for X := 0 to SW - 1 do begin
+      {$ifdef darwin}
+      Black := RenderOn(clNone);       // macOS canvas keeps alpha channel (exact antialiased text)
+      {$else}
+      Black := RenderOn(clBlack);      // other widgetsets (GDI) don't write alpha: alpha from black and white
+      White := RenderOn(clWhite);
+      {$endif}
+    finally
+      RootNode.FPaintScale := OldScale;
+      RootNode.FPixelRatio := OldRatio;
+      RootNode.FRenderScale := 1;
+      if Length(States) > 0 then RestoreLayout(States);
+    end;
+    try
+      SetLength(Src, KSW * KSH);
+      for Y := 0 to KSH - 1 do
+        for X := 0 to KSW - 1 do begin
           CB0 := Black.Colors[X, Y];
+          if White = nil then begin     // transparent render (macOS returns premultiplied colors)
+            A := CB0.Alpha shr 8;
+            Src[Y * KSW + X] := (LongWord(A) shl 24) or (LongWord(Min(A, CB0.Red shr 8)) shl 16) or
+              (LongWord(Min(A, CB0.Green shr 8)) shl 8) or LongWord(Min(A, CB0.Blue shr 8));
+            Continue;
+          end;
           CW0 := White.Colors[X, Y];
           // alpha from difference, color on black is premultiplied color
           A := 255 - ((CW0.Red shr 8 - CB0.Red shr 8) + (CW0.Green shr 8 - CB0.Green shr 8) + (CW0.Blue shr 8 - CB0.Blue shr 8)) div 3;
           A := EnsureRange(A, 0, 255);
-          Src[Y * SW + X] := (LongWord(A) shl 24) or (LongWord(Min(A, CB0.Red shr 8)) shl 16) or
+          Src[Y * KSW + X] := (LongWord(A) shl 24) or (LongWord(Min(A, CB0.Red shr 8)) shl 16) or
             (LongWord(Min(A, CB0.Green shr 8)) shl 8) or LongWord(Min(A, CB0.Blue shr 8));
         end;
     finally
@@ -4752,6 +5010,8 @@ begin
       White.Free;
     end;
     // destination in device pixels: inverse mapping with bilinear sampling
+    Uniform := (Abs(FTransform.B) < 1E-6) and (Abs(FTransform.C) < 1E-6) and (Abs(Abs(FTransform.A) - Abs(FTransform.D)) < 1E-6) and
+      (Abs(Abs(FTransform.A) * Sc - KSW / SW) < 0.02);
     DW := Round(CB.Width * Sc);
     DH := Round(CB.Height * Sc);
     Img := NewAlphaImage(DW, DH);
@@ -4761,10 +5021,14 @@ begin
         WriterLine(Wr, Y);
         for X := 0 to DW - 1 do begin
           P := MatApply(Inv, PointF(CB.Left + (X + 0.5) / Sc, CB.Top + (Y + 0.5) / Sc));
-          U := P.x - R.Left - 0.5;
-          V := P.y - R.Top - 0.5;
+          U := (P.x - R.Left) * KSW / SW - 0.5;      // source pixel (resolution K)
+          V := (P.y - R.Top) * KSH / SH - 0.5;
+          if Uniform then begin    // source has same resolution as destination: nearest pixel (sharp text)
+            U := Round(U);
+            V := Round(V);
+          end;
           X0 := Floor(U); Y0 := Floor(V);
-          if (X0 < -1) or (Y0 < -1) or (X0 >= SW) or (Y0 >= SH) then begin
+          if (X0 < -1) or (Y0 < -1) or (X0 >= KSW) or (Y0 >= KSH) then begin
             WritePixel(Wr, X, 0, 0, 0, 0);
             Continue;
           end;
@@ -5001,6 +5265,38 @@ begin
 end;
 
 (*
+  Pixel height (em) of default font, measured once
+*)
+function CSSDefaultFontHeight: Integer;
+var
+  H0, H: Integer;
+begin
+  {$ifndef fmx}
+  if CSSDefaultFontPx > 0 then Exit(CSSDefaultFontPx);
+  if CSSMeasureBitmap = nil then begin
+    CSSMeasureBitmap := TBitmap.Create;
+    CSSMeasureBitmap.SetSize(1, 1);
+  end;
+  with CSSMeasureBitmap.Canvas do begin
+    Font.Name := 'default';
+    Font.Style := [];
+    Font.Size := 0;
+    H0 := TextHeight('Xg');
+    CSSDefaultFontPx := 13;
+    for H := 6 to 40 do begin
+      Font.Height := -H;
+      if TextHeight('Xg') >= H0 then begin
+        CSSDefaultFontPx := H;
+        Break;
+      end;
+    end;
+    Font.Size := 0;
+  end;
+  {$endif}
+  Result := CSSDefaultFontPx;
+end;
+
+(*
   Setup canvas font based on computed style
 *)
 procedure THtmlNode.AssignFontTo(AFont: TFont);
@@ -5018,6 +5314,8 @@ begin
   AFont.Name := CSSResolveFontFamily(FCompStyle.Font.Family);
   if FCompSize.FontSize > 0 then
     AFont.Height := -Round(FCompSize.FontSize * RootNode.FPixelRatio)
+  else if Abs(RootNode.FRenderScale - 1) > 0.01 then
+    AFont.Height := -Round(CSSDefaultFontHeight * RootNode.FRenderScale)   // default font in higher resolution
   else
     AFont.Size := 0;
   AFont.Style := St;
@@ -5129,6 +5427,7 @@ begin
   RootNode := Self;
   FPixelRatio := 1;
   FPaintScale := 1;
+  FRenderScale := 1;
   FViewportWidth := -1;
   FElementName := 'div';    // default
   FFreeMe := True;
@@ -6297,6 +6596,7 @@ end;
 procedure THtmlNode.LayoutTo(ALeft, ATop, AWidth, AHeight: Integer);
 var
   TempWidth, TempHeight: Integer;
+  Next: THtmlNode;
   CtrlNode: THtmlNode; // for align controls
   CtrlOldBounds, CtrlNewBounds: TRect;
   (*
@@ -6373,8 +6673,15 @@ begin
     else FLayoutHeight := Max(0, AHeight - Self.CompSize.TopSpace - Self.CompSize.BottomSpace);
 
 //  if not AAlignControls then begin
-  LayoutCalcPosition(Self, AWidth, AHeight, TempWidth, TempHeight);
-  AdjustPosition(Self, ALeft, ATop, True);
+  // only this node is laid out (not its next siblings)
+  Next := FNextSibling;
+  FNextSibling := nil;
+  try
+    LayoutCalcPosition(Self, AWidth, AHeight, TempWidth, TempHeight);
+    AdjustPosition(Self, ALeft, ATop, True);
+  finally
+    FNextSibling := Next;
+  end;
   UpdateTransforms(Self);
   //QueryPerformanceCounter(iTimerEnd);
   //  WriteLn( FloatToStr( 1000 * ((iTimerEnd - iTimerStart) / ifrequency)));

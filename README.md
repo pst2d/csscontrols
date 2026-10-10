@@ -31,15 +31,17 @@ CSSShape1.Changed;
   `align-items`, `align-self`, auto margins, `order`
 - Text: font size, family, weight, style, decoration, alignment, wrapping
 - Colors: all CSS named colors, `#rgb`, `#rrggbb`, `rgb()`, `rgba()`, `transparent`, `currentcolor`
-- Rounded borders, per-side border width, color and style (`solid`, `dashed`, `dotted`), painted with
-  antialiasing (same result on every platform, corners are cached, so repainting is fast)
+- Rounded borders, per-side border width, color and style (`solid`, `dashed`, `dotted`, also mixed),
+  painted with antialiasing (same result on every platform, corners are cached, so repainting is fast).
+  Dashes and dots follow rounded corners.
 - Backgrounds: colors with alpha, `linear-gradient(...)`, images (`url(...)`, `background-size`,
   `background-position`, `background-repeat`)
 - Shadows: `box-shadow` with offset, blur, spread, color, more shadows (inset shadows are not supported yet)
 - Transforms: `transform` (`translate`, `scale`, `rotate`, `skew`, `matrix`), `transform-origin` and the
   `translate`, `rotate`, `scale` properties. As in CSS, transforms don't change the layout. Hover, active
   and click use the transformed shape. Translated nodes are painted directly. Scaled and rotated nodes
-  are painted into a cached bitmap. LCL controls inside nodes are moved and scaled, but not rotated.
+  are laid out again in the target resolution and painted into a cached bitmap, so text stays sharp.
+  LCL controls inside nodes are moved and scaled, but not rotated.
 - Basic HTML markup (`csshtml.pas`), see below
 - Custom properties (`--name: value`) and `var()` in background images and shadows
 - Stylesheets with selectors: element, `*`, `.class`, `#id`, `:hover`, `:active`, `:first-child`,
@@ -139,9 +141,8 @@ lazbuild demo/renderdemo.lpi && demo/renderdemo demo/out 720
 ## Limitations
 
 - Delphi/FMX is not supported yet. Some code paths exist, but they are incomplete.
-- Dashed borders have solid rounded corners. Dotted borders follow rounded corners only if all sides
-  have the same width and color.
-- Scaled and rotated content is painted through a bitmap, so text in it is a bit softer than normal text.
+- Scaled and rotated nodes are painted through a bitmap. Content overflowing the node (except shadows)
+  is clipped.
 - Colors with alpha are blended with the nearest background color for text and borders. Backgrounds
   use a real alpha channel.
 - A shadow is also painted under the node itself, so it can be seen through a transparent background.

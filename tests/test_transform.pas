@@ -9,7 +9,7 @@ unit test_transform;
 interface
 
 uses
-  Classes, SysUtils, Types, Graphics, GraphType, IntfGraphics, FPImage, fpcunit, testregistry, cssbase, csstailwind;
+  Classes, SysUtils, Types, Math, Graphics, GraphType, IntfGraphics, FPImage, fpcunit, testregistry, cssbase, csstailwind;
 
 type
 
@@ -41,6 +41,9 @@ type
     procedure TestTailwindHoverScale;
     procedure TestDashedBorder;
     procedure TestDottedBorder;
+    procedure TestDashedRoundedCorner;
+    procedure TestMixedBorderStyles;
+    procedure TestTransformedTextSharp;
   end;
 
 implementation
@@ -299,6 +302,59 @@ begin
   AssertTrue('dots are painted', Dots > 20);
   AssertTrue('gaps between dots', Gaps > 20);
   AssertNotNull(A);
+end;
+
+procedure TTestTransform.TestDashedRoundedCorner;
+var
+  A: THtmlNode;
+begin
+  // dashes follow rounded corner, join of top and left side (middle of corner arc) is painted
+  A := HTMLDiv('width: 100px; height: 60px; border: 4px dashed red; border-radius: 20px').AppendTo(FRoot);
+  Render(140, 100);
+  CheckPixel('middle of corner arc', 20 + 7, 20 + 7, clRed);
+  CheckPixel('outside corner', 21, 21, clWhite);
+  CheckPixel('inside', 70, 50, clWhite);
+  AssertNotNull(A);
+end;
+
+procedure TTestTransform.TestMixedBorderStyles;
+var
+  A: THtmlNode;
+  X, Dash, Gap: Integer;
+  C: TFPColor;
+begin
+  A := HTMLDiv('width: 100px; height: 60px; border-top: 3px dashed blue; border-left: 6px solid red; border-radius: 10px').AppendTo(FRoot);
+  Render(140, 100);
+  CheckPixel('solid left side', 22, 50, clRed);
+  Dash := 0;
+  Gap := 0;
+  for X := 40 to 110 do begin      // middle line of top border
+    C := FImage.Colors[X, 21];
+    if (C.Blue shr 8 > 200) and (C.Red shr 8 < 60) then Inc(Dash);
+    if (C.Blue shr 8 > 200) and (C.Red shr 8 > 200) then Inc(Gap);
+  end;
+  AssertTrue('top has dashes', Dash > 10);
+  AssertTrue('top has gaps', Gap > 10);
+  AssertNotNull(A);
+end;
+
+procedure TTestTransform.TestTransformedTextSharp;
+var
+  A: THtmlNode;
+  X, Y, Darkest: Integer;
+  C: TFPColor;
+begin
+  // scaled text is rendered in target resolution: text keeps its color (not blurred to lighter color)
+  A := HTMLDiv('width: 60px; height: 20px; color: black; transform: scale(2); font-size: 12px').AppendTo(FRoot);
+  A.Text := 'Hello';
+  Render(160, 100);
+  Darkest := 255;
+  for Y := 0 to 99 do
+    for X := 0 to 159 do begin
+      C := FImage.Colors[X, Y];
+      Darkest := Min(Darkest, C.Red shr 8);
+    end;
+  AssertTrue('scaled text is dark', Darkest < 40);
 end;
 
 initialization
