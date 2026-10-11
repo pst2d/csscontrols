@@ -38,9 +38,12 @@ procedure BuildShop(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
 procedure BuildCalendar(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
 procedure BuildGrid(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
 procedure BuildAnimations(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
+procedure BuildUtilities(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
+procedure BuildDataTable(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
+procedure AddDarkVariants(ARoot: THtmlNode);
 
 const
-  DEMO_SCENES: array[0..19] of TDemoScene = (
+  DEMO_SCENES: array[0..21] of TDemoScene = (
     (Name: 'Card'; Build: @BuildCard; Height: 0),
     (Name: 'Buttons'; Build: @BuildButtons; Height: 0),
     (Name: 'Flexbox'; Build: @BuildFlex; Height: 0),
@@ -60,7 +63,9 @@ const
     (Name: 'Shop'; Build: @BuildShop; Height: 760),
     (Name: 'Calendar'; Build: @BuildCalendar; Height: 720),
     (Name: 'Grid'; Build: @BuildGrid; Height: 0),
-    (Name: 'Animations'; Build: @BuildAnimations; Height: 0)
+    (Name: 'Animations'; Build: @BuildAnimations; Height: 0),
+    (Name: 'Utilities'; Build: @BuildUtilities; Height: 0),
+    (Name: 'Data table'; Build: @BuildDataTable; Height: 760)
   );
 
 implementation
@@ -218,29 +223,30 @@ var
   I: Integer;
   Side, Main, Head, Stats, Card, Table, Row: THtmlNode;
 begin
-  ABody.SetClass('flex bg-slate-100 min-h-[420px]');
-  Side := N(ABody, 'w-48 shrink-0 bg-slate-800 p-4 flex flex-col gap-1');
+  ABody.SetClass('flex bg-slate-100 dark:bg-slate-950 min-h-[420px] transition-colors');
+  Side := N(ABody, 'w-48 shrink-0 bg-slate-800 dark:bg-slate-900 p-4 flex flex-col gap-1');
   N(Side, 'text-white font-bold text-lg mb-4', 'Acme');
   for I := 0 to High(MENU) do
     if I = 0 then N(Side, 'px-3 py-2 rounded-md bg-slate-700 text-white', MENU[I])
       else N(Side, 'px-3 py-2 rounded-md text-slate-300 hover:bg-slate-700 hover:text-white cursor-pointer', MENU[I]);
   Main := N(ABody, 'grow p-6 flex flex-col gap-6 min-w-0');
   Head := N(Main, 'flex items-center justify-between');
-  N(Head, 'text-2xl font-semibold text-slate-900', 'Dashboard');
+  N(Head, 'text-2xl font-semibold text-slate-900 dark:text-white', 'Dashboard');
   N(Head, 'px-3 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium cursor-pointer', 'New order');
   Stats := N(Main, 'flex flex-wrap gap-4');
   for I := 0 to High(STAT_DATA) do begin
-    Card := N(Stats, 'grow basis-40 p-4 bg-white rounded-xl shadow-sm flex flex-col gap-1');
-    N(Card, 'text-sm text-slate-500', STAT_DATA[I, 0]);
+    Card := N(Stats, 'grow basis-40 p-4 bg-white dark:bg-slate-800 rounded-xl shadow-sm flex flex-col gap-1 transition-colors');
+    N(Card, 'text-sm text-slate-500 dark:text-slate-400', STAT_DATA[I, 0]);
     N(Card, 'text-2xl font-bold ' + STAT_DATA[I, 2], STAT_DATA[I, 1]);
   end;
-  Table := N(Main, 'bg-white rounded-xl border border-slate-200 overflow-hidden');
-  Row := N(Table, 'flex px-4 py-2 bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-500');
+  Table := N(Main, 'bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 overflow-hidden');
+  Row := N(Table, 'flex px-4 py-2 bg-slate-50 dark:bg-slate-900/50 border-b border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-500 dark:text-slate-400');
   N(Row, 'w-24', 'ORDER');
   N(Row, 'grow', 'CUSTOMER');
   N(Row, 'w-24 text-right', 'TOTAL');
   for I := 1 to 4 do begin
-    Row := N(Table, 'flex px-4 py-2 border-b border-slate-100 last:border-b-0 text-sm text-slate-700 even:bg-slate-50 hover:bg-indigo-50');
+    Row := N(Table, 'flex px-4 py-2 border-b border-slate-100 dark:border-slate-700 last:border-b-0 text-sm text-slate-700 dark:text-slate-200 ' +
+      'even:bg-slate-50 dark:even:bg-slate-900/40 hover:bg-indigo-50 dark:hover:bg-slate-700');
     N(Row, 'w-24 font-mono', '#10' + IntToStr(I));
     N(Row, 'grow', 'Customer ' + IntToStr(I));
     N(Row, 'w-24 text-right', IntToStr(I * 37) + ' EUR');
@@ -737,13 +743,13 @@ end;
   is shown by PNG renderer. data-lcl="select" is a dropdown painted by renderer, items are shown in popup menu.
 *)
 const
-  INPUT_WRAP = 'flex items-center gap-2 px-3 rounded-xl border border-slate-300 bg-white shadow-sm ' +
+  INPUT_WRAP = 'flex items-center gap-2 px-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 shadow-sm ' +
     'focus-within:border-indigo-500 focus-within:ring-4 focus-within:ring-indigo-100';
 
 function Field(const ALabel, AInner: String; const AHint: String = ''; ARequired: Boolean = False; const AError: String = ''): String;
 begin
   Result := '<div class="flex flex-col gap-1.5">' +
-    '<div class="flex gap-1 text-sm font-medium text-slate-700"><span>' + ALabel + '</span>';
+    '<div class="flex gap-1 text-sm font-medium text-slate-700 dark:text-slate-300"><span>' + ALabel + '</span>';
   if ARequired then Result := Result + '<span class="text-rose-500">*</span>';
   Result := Result + '</div>' + AInner;
   if AError <> '' then
@@ -842,22 +848,23 @@ end;
 
 function SettingsRow(const ATitle, AText, AControl: String): String;
 begin
-  Result := '<div class="flex items-center gap-4 py-4 border-b border-slate-100 last:border-b-0">' +
-    '<div class="grow min-w-0 flex flex-col"><span class="font-medium text-slate-900">' + ATitle + '</span>' +
-    '<span class="text-sm text-slate-500">' + AText + '</span></div>' + AControl + '</div>';
+  Result := '<div class="flex items-center gap-4 py-4 border-b border-slate-100 dark:border-slate-800 last:border-b-0">' +
+    '<div class="grow min-w-0 flex flex-col"><span class="font-medium text-slate-900 dark:text-white">' + ATitle + '</span>' +
+    '<span class="text-sm text-slate-500 dark:text-slate-400">' + AText + '</span></div>' + AControl + '</div>';
 end;
 
 function ThemeCard(const AName, APreview: String; AChecked: Boolean): String;
 const
-  ON_CLS = 'border-indigo-500 ring-4 ring-indigo-100';
+  ON_CLS = 'border-indigo-500 ring-4 ring-indigo-100 dark:ring-indigo-500/30';
 var
   Cls: String;
 begin
-  Cls := 'grow basis-32 flex flex-col gap-2 p-2 rounded-xl border-2 border-slate-200 cursor-pointer hover:border-slate-300';
+  Cls := 'grow basis-32 flex flex-col gap-2 p-2 rounded-xl border-2 border-slate-200 dark:border-slate-700 cursor-pointer hover:border-slate-300';
   if AChecked then Cls := Cls + ' ' + ON_CLS;
-  Result := '<div class="' + Cls + '" data-group="theme" data-active="' + ON_CLS + '"';
+  // data-theme: demo application switches dark mode (CSSSetDarkMode)
+  Result := '<div class="' + Cls + '" data-group="theme" data-active="' + ON_CLS + '" data-theme="' + LowerCase(AName) + '"';
   if AChecked then Result := Result + ' data-checked="1"';
-  Result := Result + '>' + APreview + '<span class="text-sm font-medium text-slate-700 px-1">' + AName + '</span></div>';
+  Result := Result + '>' + APreview + '<span class="text-sm font-medium text-slate-700 dark:text-slate-300 px-1">' + AName + '</span></div>';
 end;
 
 (*
@@ -865,35 +872,35 @@ end;
 *)
 procedure BuildSettings(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
 const
-  MENU_ON = 'bg-indigo-50 text-indigo-700 font-semibold';
+  MENU_ON = 'bg-indigo-50 text-indigo-700 font-semibold dark:bg-indigo-500/20 dark:text-indigo-300';
   function MenuItem(const AText: String; AActive: Boolean): String;
   begin
     if AActive then
-      Result := '<div class="px-3 py-2 rounded-lg cursor-pointer text-slate-600 hover:bg-slate-100 ' + MENU_ON + '" data-group="menu" data-active="' + MENU_ON + '" data-checked="1">' + AText + '</div>'
+      Result := '<div class="px-3 py-2 rounded-lg cursor-pointer text-slate-600 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800 ' + MENU_ON + '" data-group="menu" data-active="' + MENU_ON + '" data-checked="1">' + AText + '</div>'
     else
-      Result := '<div class="px-3 py-2 rounded-lg cursor-pointer text-slate-600 hover:bg-slate-100" data-group="menu" data-active="' + MENU_ON + '">' + AText + '</div>';
+      Result := '<div class="px-3 py-2 rounded-lg cursor-pointer text-slate-600 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800" data-group="menu" data-active="' + MENU_ON + '">' + AText + '</div>';
   end;
 begin
   RegisterCoverImage;
   AStyleSheet.Style := AStyleSheet.Style + SWITCH_CSS;
-  ABody.SetClass('bg-slate-50');
+  ABody.SetClass('bg-slate-50 dark:bg-slate-950');
   ABody.AppendHTML(
     '<div class="flex h-full min-h-[420px]">' +
-    '  <div class="hidden md:flex w-56 shrink-0 flex-col gap-1 p-4 border-r border-slate-200 bg-white">' +
-    '    <span class="px-3 pb-3 text-lg font-bold text-slate-900">Settings</span>' +
+    '  <div class="hidden md:flex w-56 shrink-0 flex-col gap-1 p-4 border-r border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">' +
+    '    <span class="px-3 pb-3 text-lg font-bold text-slate-900 dark:text-white">Settings</span>' +
          MenuItem('Account', True) + MenuItem('Notifications', False) + MenuItem('Appearance', False) +
          MenuItem('Privacy', False) + MenuItem('Billing', False) +
     '  </div>' +
     '  <div class="grow min-w-0 overflow-y-auto">' +
     '    <div class="max-w-2xl mx-auto p-8 flex flex-col gap-6">' +
     // profile
-    '      <div class="p-6 bg-white rounded-2xl shadow-sm border border-slate-200 flex flex-col gap-5">' +
-    '        <div class="flex flex-col"><span class="text-lg font-semibold text-slate-900">Profile</span>' +
-    '          <span class="text-sm text-slate-500">This information is visible to your team.</span></div>' +
+    '      <div class="p-6 bg-white dark:bg-slate-900 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800 transition-colors flex flex-col gap-5">' +
+    '        <div class="flex flex-col"><span class="text-lg font-semibold text-slate-900 dark:text-white">Profile</span>' +
+    '          <span class="text-sm text-slate-500 dark:text-slate-400">This information is visible to your team.</span></div>' +
     // relative z-10: tooltips below buttons are painted over next rows
     '        <div class="relative z-10 flex items-center gap-4">' +
     '          <img class="size-16 rounded-full object-cover ring-4 ring-slate-100" src="/img/cover.png">' +
-             Tooltip('<div class="px-3 py-1.5 rounded-lg border border-slate-300 text-sm font-medium text-slate-700 hover:bg-slate-50 cursor-pointer">Change</div>',
+             Tooltip('<div class="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer">Change</div>',
                'Upload a photo &middot; JPG or PNG, max. 2 MB', 'bottom') +
              Tooltip('<div class="px-3 py-1.5 rounded-lg text-sm font-medium text-rose-600 hover:bg-rose-50 cursor-pointer">Remove</div>',
                'Use initials instead of photo', 'bottom') +
@@ -904,15 +911,15 @@ begin
     '        </div>' +
     // notifications
     '      </div>' +
-    '      <div class="px-6 py-2 bg-white rounded-2xl shadow-sm border border-slate-200 flex flex-col">' +
-    '        <span class="pt-4 text-lg font-semibold text-slate-900">Notifications</span>' +
+    '      <div class="px-6 py-2 bg-white dark:bg-slate-900 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800 transition-colors flex flex-col">' +
+    '        <span class="pt-4 text-lg font-semibold text-slate-900 dark:text-white">Notifications</span>' +
            SettingsRow('Comments', 'Notify me when someone comments on my post.', Switch(True)) +
            SettingsRow('Mentions', 'Notify me when someone mentions me.', Switch(True)) +
            SettingsRow('Weekly summary', 'A short e-mail with activity of your team.', Switch(False)) +
     '      </div>' +
     // appearance
-    '      <div class="p-6 bg-white rounded-2xl shadow-sm border border-slate-200 flex flex-col gap-4">' +
-    '        <span class="text-lg font-semibold text-slate-900">Appearance</span>' +
+    '      <div class="p-6 bg-white dark:bg-slate-900 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800 transition-colors flex flex-col gap-4">' +
+    '        <span class="text-lg font-semibold text-slate-900 dark:text-white">Appearance</span>' +
     '        <div class="flex flex-wrap gap-4">' +
            ThemeCard('Light', '<div class="h-20 rounded-lg bg-slate-100 p-2 flex gap-1.5"><div class="w-6 rounded bg-white"></div>' +
              '<div class="grow flex flex-col gap-1.5"><div class="h-3 rounded bg-white"></div><div class="h-3 w-2/3 rounded bg-white"></div></div></div>', True) +
@@ -1213,6 +1220,188 @@ begin
     '  </div>' +
     '  <span class="text-xs text-slate-400">animate-pulse (loading skeleton)</span>' +
     '</div>');
+end;
+
+
+(*
+  Utilities: space-*, divide-*, line-clamp, aspect-ratio, sticky, shadow-inner and dark: variant
+*)
+procedure BuildUtilities(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
+const
+  CARD = 'flex flex-col gap-3 p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 transition-colors';
+  TITLE = 'text-sm font-semibold text-slate-500 dark:text-slate-400';
+  LOREM = 'Lightweight CSS layout and drawing for Lazarus. Utility classes describe the look, the engine paints it with ' +
+    'antialiased corners, shadows and gradients. Long text is cut to a few lines with an ellipsis by line-clamp.';
+  function Contacts(const ALetter: String; const ANames: array of String): String;
+  var
+    I: Integer;
+  begin
+    Result := '<div><div class="sticky top-0 z-10 px-3 py-1 bg-slate-100/95 dark:bg-slate-800/95 text-xs font-bold text-slate-500 dark:text-slate-400">' + ALetter + '</div>' +
+      '<div class="divide-y divide-slate-100 dark:divide-slate-800">';
+    for I := 0 to High(ANames) do
+      Result := Result + '<div class="px-3 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800">' + ANames[I] + '</div>';
+    Result := Result + '</div></div>';
+  end;
+begin
+  ABody.SetClass('p-8 bg-slate-50 dark:bg-slate-950 transition-colors');
+  ABody.AppendHTML(
+    '<div class="max-w-4xl mx-auto flex flex-col gap-6">' +
+    '  <div class="flex flex-col gap-1"><span class="text-2xl font-bold text-slate-900 dark:text-white">Utilities</span>' +
+    '    <span class="text-slate-500 dark:text-slate-400">space-*, divide-*, line-clamp, aspect-*, sticky, shadow-inner, dark: (switch Dark mode on the left)</span></div>' +
+    '  <div class="grid grid-cols-1 md:grid-cols-2 gap-6">' +
+    // space and divide
+    '    <div class="' + CARD + '"><span class="' + TITLE + '">space-x-2 / divide-y</span>' +
+    '      <div class="flex space-x-2">' +
+    '        <span class="px-3 py-1 rounded-full bg-indigo-50 dark:bg-indigo-500/20 text-indigo-700 dark:text-indigo-300 text-sm">Design</span>' +
+    '        <span class="px-3 py-1 rounded-full bg-emerald-50 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 text-sm">Pascal</span>' +
+    '        <span class="px-3 py-1 rounded-full bg-amber-50 dark:bg-amber-500/20 text-amber-700 dark:text-amber-300 text-sm">Lazarus</span></div>' +
+    '      <div class="divide-y divide-slate-100 dark:divide-slate-800 rounded-xl border border-slate-200 dark:border-slate-800">' +
+    '        <div class="flex justify-between px-4 py-2.5 text-sm"><span class="text-slate-700 dark:text-slate-200">Storage</span><span class="text-slate-500">12.4 GB</span></div>' +
+    '        <div class="flex justify-between px-4 py-2.5 text-sm"><span class="text-slate-700 dark:text-slate-200">Members</span><span class="text-slate-500">8</span></div>' +
+    '        <div class="flex justify-between px-4 py-2.5 text-sm"><span class="text-slate-700 dark:text-slate-200">Plan</span><span class="text-slate-500">Pro</span></div></div></div>' +
+    // sticky
+    '    <div class="' + CARD + '"><span class="' + TITLE + '">sticky top-0 (scroll the list)</span>' +
+    '      <div class="h-52 overflow-y-auto rounded-xl border border-slate-200 dark:border-slate-800">' +
+           Contacts('A', ['Alice Walker', 'Amelia Stone', 'Anton Novak']) +
+           Contacts('B', ['Ben Carter', 'Bianca Ross', 'Boris Kral', 'Brenda Hill']) +
+           Contacts('C', ['Carla Diaz', 'Cyril Moss', 'Cora Lane']) +
+           Contacts('D', ['Daniel Fox', 'Diana Prince', 'Dominik Horak']) +
+    '      </div></div>' +
+    // line clamp
+    '    <div class="' + CARD + '"><span class="' + TITLE + '">line-clamp-2</span>' +
+    '      <span class="text-slate-700 dark:text-slate-300 line-clamp-2">' + LOREM + '</span>' +
+    '      <span class="' + TITLE + '">line-clamp-3</span>' +
+    '      <span class="text-slate-700 dark:text-slate-300 line-clamp-3">' + LOREM + ' ' + LOREM + '</span></div>' +
+    // aspect and shadow-inner
+    '    <div class="' + CARD + '"><span class="' + TITLE + '">aspect-video / aspect-square / shadow-inner</span>' +
+    '      <div class="flex gap-3 items-start">' +
+    '        <div class="grow aspect-video rounded-xl bg-gradient-to-br from-indigo-500 to-fuchsia-500"></div>' +
+    '        <div class="w-20 aspect-square rounded-xl bg-gradient-to-br from-amber-300 to-rose-400"></div></div>' +
+    '      <div class="p-3 rounded-xl bg-slate-100 dark:bg-slate-800 shadow-inner text-sm text-slate-600 dark:text-slate-300">Inset well with shadow-inner</div></div>' +
+    '  </div>' +
+    '</div>');
+end;
+
+
+(*
+  Many nodes: table with 1000 rows (5000+ nodes) in scrolled container with sticky header
+*)
+procedure BuildDataTable(ABody: THtmlNode; AStyleSheet: TCSSStyleSheet);
+const
+  FIRST: array[0..9] of String = ('Anna', 'Ben', 'Clara', 'David', 'Eva', 'Filip', 'Greta', 'Hugo', 'Iris', 'Jonas');
+  LAST: array[0..9] of String = ('Novak', 'Carter', 'Lane', 'Moss', 'Stone', 'Kral', 'Hill', 'Fox', 'Ross', 'Walker');
+  STATUS: array[0..2, 0..1] of String = (('Paid', 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300'),
+    ('Pending', 'bg-amber-50 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300'), ('Failed', 'bg-rose-50 text-rose-700 dark:bg-rose-500/15 dark:text-rose-300'));
+  COLORS: array[0..4] of String = ('from-indigo-400 to-violet-500', 'from-sky-400 to-blue-500', 'from-emerald-400 to-teal-500',
+    'from-amber-400 to-orange-500', 'from-pink-400 to-rose-500');
+var
+  I, S: Integer;
+  F, L, Rows: String;
+begin
+  Rows := '';
+  for I := 1 to 1000 do begin
+    F := FIRST[I mod 10];
+    L := LAST[(I * 7) mod 10];
+    S := (I * 13) mod 7;
+    if S > 2 then S := 0;
+    Rows := Rows +
+      '<div class="flex items-center gap-4 px-6 py-2.5 hover:bg-slate-50 dark:hover:bg-slate-800/60">' +
+      '<span class="w-14 text-sm text-slate-400 font-mono">' + IntToStr(I) + '</span>' +
+      '<div class="size-8 shrink-0 rounded-full bg-gradient-to-br ' + COLORS[I mod 5] + ' flex items-center justify-center text-xs font-semibold text-white">' +
+        F[1] + L[1] + '</div>' +
+      '<div class="grow min-w-0 flex flex-col"><span class="text-sm font-medium text-slate-900 dark:text-white truncate">' + F + ' ' + L + '</span>' +
+      '<span class="text-xs text-slate-500 dark:text-slate-400 truncate">' + LowerCase(F) + '.' + LowerCase(L) + '@example.com</span></div>' +
+      '<span class="w-20 px-2 py-0.5 rounded-full text-xs font-medium text-center ' + STATUS[S, 1] + '">' + STATUS[S, 0] + '</span>' +
+      '<span class="w-24 text-sm text-right text-slate-700 dark:text-slate-200">' + IntToStr(10 + (I * 37) mod 990) + ' EUR</span>' +
+      '</div>';
+  end;
+  ABody.SetClass('bg-slate-50 dark:bg-slate-950');
+  ABody.AppendHTML(
+    '<div class="flex flex-col h-full min-h-[420px] p-6 gap-4">' +
+    '  <div class="flex items-end justify-between"><div class="flex flex-col"><span class="text-2xl font-bold text-slate-900 dark:text-white">Invoices</span>' +
+    '    <span class="text-sm text-slate-500 dark:text-slate-400">1000 rows, more than 5000 nodes &middot; only visible rows are painted</span></div></div>' +
+    '  <div class="grow min-h-0 overflow-y-auto rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">' +
+    '    <div class="sticky top-0 z-10 flex items-center gap-4 px-6 py-3 bg-slate-50/95 dark:bg-slate-800/95 border-b border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-500 dark:text-slate-400">' +
+    '      <span class="w-14">#</span><span class="w-8"></span><span class="grow">CUSTOMER</span><span class="w-20 text-center">STATUS</span><span class="w-24 text-right">AMOUNT</span></div>' +
+    '    <div class="divide-y divide-slate-100 dark:divide-slate-800">' + Rows + '</div>' +
+    '  </div>' +
+    '</div>');
+end;
+
+
+(*
+  Demo helper: adds dark: variants for common light classes of scenes without own dark: classes
+  (bg-white -> dark:bg-slate-900, text-slate-700 -> dark:text-slate-200 ...). Nodes with dark: classes are
+  not changed. In an application dark: classes are written in markup, this only saves repeating them here.
+*)
+function DarkVariant(const AClass: String): String;
+const
+  MAP: array[0..35, 0..1] of String = (
+    ('bg-slate-900', 'bg-slate-700'), ('hover:bg-slate-700', 'hover:bg-slate-600'),
+    ('bg-white', 'bg-slate-900'), ('bg-slate-50', 'bg-slate-950'), ('bg-slate-100', 'bg-slate-800'),
+    ('bg-slate-200', 'bg-slate-700'), ('bg-slate-300', 'bg-slate-600'), ('bg-gray-50', 'bg-slate-950'),
+    ('text-black', 'text-white'), ('text-slate-900', 'text-white'), ('text-slate-800', 'text-slate-100'),
+    ('text-slate-700', 'text-slate-200'), ('text-slate-600', 'text-slate-300'), ('text-slate-500', 'text-slate-400'),
+    ('text-slate-400', 'text-slate-500'), ('border-slate-100', 'border-slate-800'), ('border-slate-200', 'border-slate-800'),
+    ('border-slate-300', 'border-slate-700'), ('hover:bg-slate-50', 'hover:bg-slate-800'), ('hover:bg-slate-100', 'hover:bg-slate-800'),
+    ('hover:bg-slate-200', 'hover:bg-slate-700'), ('ring-white', 'ring-slate-900'), ('ring-slate-100', 'ring-slate-800'),
+    ('divide-slate-100', 'divide-slate-800'), ('divide-slate-200', 'divide-slate-800'), ('bg-stone-100', 'bg-stone-800'),
+    ('text-stone-900', 'text-stone-100'), ('text-stone-700', 'text-stone-300'), ('text-stone-500', 'text-stone-400'),
+    ('border-stone-200', 'border-stone-700'), ('from-stone-100', 'from-stone-800'), ('to-stone-200/70', 'to-stone-900'),
+    ('bg-[#d9fdd3]', 'bg-[#005c4b]'), ('hover:border-stone-400', 'hover:border-stone-500'), ('bg-white/90', 'bg-slate-900/90'),
+    ('bg-white/80', 'bg-slate-900/80'));
+  COLORS: array[0..16] of String = ('red', 'rose', 'pink', 'amber', 'orange', 'yellow', 'green', 'emerald', 'teal', 'sky', 'indigo',
+    'violet', 'purple', 'fuchsia', 'blue', 'cyan', 'lime');
+var
+  I: Integer;
+  C: String;
+begin
+  Result := '';
+  for I := 0 to High(MAP) do
+    if MAP[I, 0] = AClass then Exit('dark:' + MAP[I, 1]);
+  if Copy(AClass, 1, 8) = 'bg-[url(' then Exit('dark:bg-none dark:bg-slate-950');   // light pattern
+  for I := 0 to High(COLORS) do begin   // light tints of colors
+    C := COLORS[I];
+    if AClass = 'bg-' + C + '-50' then Exit('dark:bg-' + C + '-500/10');
+    if AClass = 'bg-' + C + '-100' then Exit('dark:bg-' + C + '-500/20');
+    if AClass = 'hover:bg-' + C + '-50' then Exit('dark:hover:bg-' + C + '-500/10');
+    if (AClass = 'text-' + C + '-700') or (AClass = 'text-' + C + '-800') then Exit('dark:text-' + C + '-300');
+  end;
+end;
+
+function AddDarkToClasses(const AClasses: String): String;
+var
+  Parts: TStringArray;
+  I: Integer;
+  D: String;
+begin
+  Result := AClasses;
+  if Pos('dark:', AClasses) > 0 then Exit;
+  Parts := AClasses.Split([' '], TStringSplitOptions.ExcludeEmpty);
+  for I := 0 to High(Parts) do begin
+    D := DarkVariant(Parts[I]);
+    if D <> '' then Result := Result + ' ' + D;
+  end;
+end;
+
+procedure AddDarkVariants(ARoot: THtmlNode);
+var
+  N: THtmlNode;
+  S: String;
+begin
+  if Pos('dark:', ARoot.ClassList.Name) = 0 then begin
+    S := AddDarkToClasses(ARoot.ClassList.Name);
+    if Pos('dark:bg-', S) = 0 then S := S + ' dark:bg-slate-950';      // page background
+    S := S + ' dark:text-slate-100';                                     // text without own color
+    ARoot.ClassList.Name := S;
+  end;
+  N := ARoot.GetNext(ARoot, True);
+  while Assigned(N) do begin
+    S := N.ClassList.Name;
+    if S <> '' then N.ClassList.Name := AddDarkToClasses(S);
+    if N.Attributes['data-active'] <> '' then N.Attributes['data-active'] := AddDarkToClasses(N.Attributes['data-active']);
+    N := N.GetNext(N, True);
+  end;
 end;
 
 

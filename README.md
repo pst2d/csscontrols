@@ -44,7 +44,10 @@ Scenes of the demo application (`demo/csscontrols_demo.lpi`), painted by the eng
 - Box model: margin, padding, border, `box-sizing`, `min-*`/`max-*` sizes, `px`, `pt`, `em`, `rem`, `%`
 - Layout: block, inline, `float`, `position` (relative, absolute), `z-index`, `margin: auto`
 - Scrolling: `overflow: auto | scroll | hidden` (also `overflow-x`, `overflow-y`) with thin overlay
-  scrollbars, mouse wheel and dragging of the scrollbar thumb. Scrolling only repaints the control, the
+  scrollbars (`scrollbar-width: none` hides them), mouse wheel and dragging of the scrollbar thumb. Steps of
+  the mouse wheel are scrolled smoothly, touchpads scroll by exact pixels. The vertical wheel scrolls
+  content which scrolls only horizontally (for example tabs). The wheel over LCL controls in nodes
+  (`TEdit` ...) scrolls the content too. Scrolling only repaints the control, the
   layout is not recalculated. Content that overflows at the top (for example a chat list with
   `justify-content: flex-end`) starts at the bottom. Children touching the rounded corners of a parent
   with `overflow: hidden` get its inner radius, so input groups and cards with images look right.
@@ -55,6 +58,9 @@ Scenes of the demo application (`demo/csscontrols_demo.lpi`), painted by the eng
   `grid-row: span N`, `gap`, `align-items`/`align-self` in cells. Line numbers, template areas,
   `auto-fill` and dense placement are not supported.
 - Opacity, transitions and animations (minimal), see below
+- Dark mode: `dark:` variant of utility classes, switched by `CSSSetDarkMode(True)`
+- `position: sticky` (vertical, for example headers of sections in a scrolled list), `line-clamp`
+  (text cut to N lines with an ellipsis), `aspect-ratio`
 - Text: font size, family, weight, style, decoration, alignment, wrapping
 - Colors: all CSS named colors, `#rgb`, `#rrggbb`, `rgb()`, `rgba()`, `transparent`, `currentcolor`
 - Rounded borders, per-side border width, color and style (`solid`, `dashed`, `dotted`, also mixed),
@@ -62,7 +68,7 @@ Scenes of the demo application (`demo/csscontrols_demo.lpi`), painted by the eng
   Dashes and dots follow rounded corners.
 - Backgrounds: colors with alpha, `linear-gradient(...)`, images (`url(...)`, `background-size`,
   `background-position`, `background-repeat`)
-- Shadows: `box-shadow` with offset, blur, spread, color, more shadows (inset shadows are not supported yet)
+- Shadows: `box-shadow` with offset, blur, spread, color, more shadows, `inset` shadows
 - Transforms: `transform` (`translate`, `scale`, `rotate`, `skew`, `matrix`), `transform-origin` and the
   `translate`, `rotate`, `scale` properties. As in CSS, transforms don't change the layout. Hover, active
   and click use the transformed shape. Translated nodes are painted directly. Scaled and rotated nodes
@@ -72,6 +78,8 @@ Scenes of the demo application (`demo/csscontrols_demo.lpi`), painted by the eng
   `opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none`
 - `pointer-events: none` (the node and its children are ignored by the mouse)
 - Basic HTML markup (`csshtml.pas`), see below
+- Ready made components (`csscomponents.pas`): `TCSSButton`, `TCSSToggle`, `TCSSBadge`, `TCSSAvatar`,
+  `TCSSTabs`, and `HTML`, `CSS` and `BodyClass` properties of `TCSSShape` for the form designer, see below
 - Custom properties (`--name: value`) and `var()` in background images and shadows
 - Stylesheets with selectors: element, `*`, `.class`, `#id`, `:hover`, `:active`, `:first-child`,
   `:last-child`, descendant and child (`>`) combinators, cascade by specificity and order
@@ -95,30 +103,31 @@ don't need a generated stylesheet. It covers a subset of Tailwind CSS v3:
 
 | Group | Classes |
 |---|---|
-| Layout | `block` `inline-block` `inline` `flex` `inline-flex` `hidden` `relative` `absolute` `inset-*` `top-*` `left-*` ... `float-*` `overflow-*` `box-border` |
+| Layout | `block` `inline-block` `inline` `flex` `inline-flex` `hidden` `relative` `absolute` `sticky` `inset-*` `top-*` `left-*` ... `float-*` `overflow-*` `box-border` |
 | Flexbox | `flex-row` `flex-col` `flex-wrap` `flex-1` `flex-none` `grow` `shrink-0` `basis-*` `order-*` `justify-*` `items-*` `self-*` `gap-*` `gap-x-*` `gap-y-*` |
 | Grid | `grid` `grid-cols-3` `grid-cols-[200px_1fr]` `grid-rows-*` `col-span-2` `col-span-full` `row-span-2` |
-| Spacing | `p-*` `px-*` `py-*` `pt-*` ... `m-*` `mx-auto` `-mt-2` ... |
-| Sizing | `w-*` `h-*` `size-*` `min-w-*` `max-w-md` ... (spacing scale, fractions `w-1/2`, `full`, `screen`) |
-| Typography | `text-xs` ... `text-9xl`, `text-center`, `text-{color}`, `font-bold` ..., `font-mono`, `italic`, `underline`, `line-through`, `truncate` |
+| Spacing | `p-*` `px-*` `py-*` `pt-*` ... `m-*` `mx-auto` `-mt-2` ... `space-x-*` `space-y-*` |
+| Sizing | `w-*` `h-*` `size-*` `min-w-*` `max-w-md` ... (spacing scale, fractions `w-1/2`, `full`, `screen`), `aspect-square` `aspect-video` `aspect-[4/3]` |
+| Typography | `text-xs` ... `text-9xl`, `text-center`, `text-{color}`, `font-bold` ..., `font-mono`, `italic`, `underline`, `line-through`, `truncate`, `line-clamp-2` |
 | Backgrounds | `bg-{color}` `bg-gradient-to-r` `from-*` `via-*` `to-*` `bg-[url(file.png)]` `bg-cover` `bg-contain` `bg-center` `bg-no-repeat` ... |
-| Borders | `border` `border-2` `border-t` ... `border-{color}` `border-t-{color}` ... `border-dashed` `rounded` `rounded-lg` `rounded-full` `rounded-t-xl` ... |
-| Shadows | `shadow-sm` `shadow` `shadow-md` `shadow-lg` `shadow-xl` `shadow-2xl` `shadow-none` `shadow-{color}` |
+| Borders | `border` `border-2` `border-t` ... `border-{color}` `border-t-{color}` ... `border-dashed` `rounded` `rounded-lg` `rounded-full` `rounded-t-xl` ... `divide-y` `divide-x` `divide-{color}` |
+| Shadows | `shadow-sm` `shadow` `shadow-md` `shadow-lg` `shadow-xl` `shadow-2xl` `shadow-inner` `shadow-none` `shadow-{color}` |
 | Transforms | `translate-x-*` `-translate-y-1/2` `rotate-45` `scale-105` `scale-x-*` `skew-x-*` `origin-*` |
 | Images | `object-cover` `object-contain` `object-fill` `object-center` ... |
 | Rings | `ring` `ring-2` `ring-{color}` (composed with `shadow-*`) |
 | Effects | `opacity-50` `transition` `transition-colors` `transition-opacity` `transition-transform` `transition-all` `duration-300` `delay-*` `ease-out` ... `animate-spin` `animate-ping` `animate-pulse` `animate-bounce` |
-| Other | `cursor-*` `z-*` `overflow-x-auto` `overflow-y-auto` `pointer-events-none` |
+| Other | `cursor-*` `z-*` `overflow-x-auto` `overflow-y-auto` `scrollbar-none` `pointer-events-none` |
 
 - Full Tailwind color palette (`slate` ... `rose`, shades `50` to `950`)
 - Arbitrary values: `w-[200px]`, `bg-[#ff8800]`, `text-[13px]`, `bg-[length:60px_40px]`
 - Opacity modifiers: `bg-black/50`, `text-white/70`, `border-slate-900/10`
-- Variants: `hover:`, `active:`, `focus:`, `focus-within:`, `first:`, `last:`, `odd:`, `even:`, `group-hover:`
+- Variants: `hover:`, `active:`, `focus:`, `focus-within:`, `first:`, `last:`, `odd:`, `even:`, `group-hover:`,
+  `dark:` (variants can be combined, for example `dark:hover:bg-slate-700`)
 - Responsive variants `sm:` `md:` `lg:` `xl:` `2xl:` use the width of the `TCSSShape` control, so they act
   like container queries
 - Utility classes can be mixed with a regular stylesheet. Utilities are applied after stylesheet rules.
 
-Not supported yet: `shadow-inner`, `space-x-*`, dark mode.
+Not supported yet: `divide-dashed`, negative `space-*`, `backdrop-blur`.
 
 ## HTML markup
 
@@ -161,11 +170,24 @@ Minimal on purpose, there is no `@keyframes` parser:
   rendered once per animation and then only resampled, so a fade or spin is cheap. For muted text, a color
   with alpha (`text-white/70`) is still cheaper than `opacity-70`.
 
-## Own components and LCL controls
+## Dark mode
 
-The engine paints, you write normal Lazarus components. `demo/cssbutton.pas` is a complete example: a
-`TCSSShape` descendant with published `Caption` and `Kind` properties, which only sets the classes of its
-node. Hover, active state and transitions are done by the engine, `OnClick` is the usual control event.
+Add `dark:` classes and switch the mode for all `TCSSShape` controls:
+
+```pascal
+Card.SetClass('p-6 rounded-xl bg-white dark:bg-slate-900 text-slate-900 dark:text-white transition-colors');
+CSSSetDarkMode(True);     // styles are applied again, changes with transition are animated
+```
+
+Native LCL controls (`TEdit` ...) keep their own colors, set them in code when the mode is changed.
+
+## Components and form designer
+
+`csscomponents.pas` (palette page *CSS*) contains ready made components: `TCSSButton` (`Caption`, `Kind`),
+`TCSSToggle` (animated switch, `Checked`, `OnChange`), `TCSSBadge`, `TCSSAvatar` (initials or image) and
+`TCSSTabs` (segmented control, `Tabs`, `TabIndex`, `OnChange`; the indicator moves with a transition, many
+tabs scroll horizontally). They are normal Lazarus components, each one
+only sets utility classes of its nodes, so it is also an example for own components (about 50 lines each).
 
 ```pascal
 Btn := TCSSButton.Create(Self);
@@ -175,6 +197,16 @@ Btn.Caption := 'Delete';
 Btn.Kind := cbkDanger;
 Btn.OnClick := @DeleteClick;
 ```
+
+`TCSSShape` has `HTML`, `CSS` and `BodyClass` properties, so content can be written in the Object Inspector
+and is shown in the form designer (the package enables utility classes in the IDE). The application calls
+`CSSTailwindEnable` before forms are created, nodes from the markup are found by id:
+
+```pascal
+CSSShape1.Body.GetElementById('save').OnClick := @SaveClick;
+```
+
+## LCL controls in nodes
 
 Inputs are real LCL controls placed in nodes, so their values and events are the usual ones:
 
@@ -224,7 +256,11 @@ Open `csspckg_lazarus.lpk` in Lazarus, compile it and install it (*Use > Install
   The demo application builds these from `data-lcl` attributes in the markup. Toggles and selections are
   wired the same way with `data-active` and `data-group`. *Inspect (debug)* turns on the inspect mode.
   The Grid scene shows a bento layout with spans, the Animations scene transitions and built-in animations,
-  the Buttons scene CSS-only tooltips. The *LCL controls* scene contains `TCSSButton`, an own component.
+  the Buttons scene CSS-only tooltips, the Utilities scene `space`, `divide`, `line-clamp`, `aspect`,
+  `sticky` and `shadow-inner`. The *Components* scene shows LCL controls in nodes and the components of
+  `csscomponents.pas`, the *Data table* scene 1000 rows. *Dark mode* switches the `dark:` variant: Settings,
+  Dashboard, Utilities, Components and Data table have own `dark:` classes, other scenes get them from a
+  small demo helper (`AddDarkVariants`) which adds dark variants of common light classes.
 - `demo/renderdemo.lpi`: renders the demo scenes to PNG files, which is handy for checking changes visually
   (`renderdemo out 720 Borders 4` renders one scene zoomed 4x, `renderdemo bench` measures paint time)
 - `tests/csstests.lpi`: fpcunit tests (console runner)
@@ -237,6 +273,7 @@ lazbuild demo/renderdemo.lpi && demo/renderdemo demo/out 720
 ## Limitations
 
 - Delphi/FMX is not supported yet. Some code paths exist, but they are incomplete.
+- `position: sticky` works vertically (`top`), `line-clamp` cuts text at whole words.
 - Native LCL controls are always painted above the CSS content, so a dropdown drawn by the renderer can't
   overlap a `TEdit`.
 - `overflow: hidden` clips by a rectangle. Only children touching the rounded corners are rounded, so
@@ -254,6 +291,13 @@ lazbuild demo/renderdemo.lpi && demo/renderdemo demo/out 720
 ## Performance
 
 Painting is done with the LCL canvas only, no extra libraries are used:
+
+- Hover, active and focus states apply styles only to changed nodes. Layout is computed only when sizes
+  change, a hover which changes colors only repaints the changed area. Nodes outside the visible area are
+  skipped when painting. The *Data table* scene (1000 rows, more than 5000 nodes) needs about 1.5 ms per
+  mouse move and 2 ms per paint.
+- When many nodes are created in code, call `CSSBeginUpdate` before and `CSSEndUpdate` and `Changed` of the
+  shape after, so the layout is computed once (`AppendHTML` does it itself).
 
 - Straight parts of backgrounds and borders are drawn with `FillRect`.
 - Background images and horizontal or vertical gradients are drawn with `StretchDraw`.

@@ -9,11 +9,11 @@ uses
   Classes, SysUtils,  Types, Math,
   strutils,
   {$ifdef fpc}
-  Controls,  Graphics, Forms, ExtCtrls,
+  Controls,  Graphics, Forms, ExtCtrls, StdCtrls,
   LMessages,LCLIntf, LazUTF8,
   FPimage, LCLType, LCLProc, IntfGraphics, GraphType, EasyLazFreeType, LazFreeTypeIntfDrawer,      // font rendering
   {$endif}
-  cssbase;
+  cssbase, csshtml, csstailwind;
 
 type
 
@@ -33,16 +33,33 @@ type
     FScaleByDPI: Boolean;
     FDragNode: THtmlNode;           // node with dragged scrollbar thumb
     FDragAxis, FDragStart, FDragScroll: Integer;
-    FAnimTimer: TTimer;             // runs only while some nodes are animated
+    FAnimTimer: TTimer;             // runs only while some nodes are animated (or smooth scroll)
+    FSmoothNode: THtmlNode;         // smooth scroll (mouse wheel): node, start and target position
+    FSmoothFrom, FSmoothTo: TPoint;
+    FSmoothStart: QWord;
+    FLastWheel: QWord;
+    FWheelControls: TList;          // LCL controls in nodes, mouse wheel over them scrolls content
+    FHTML, FCSS: TStrings;          // markup and stylesheet set in Object Inspector (design time)
+    FBodyClass: String;
+    FSheet: TCSSStyleSheet;
     FInspect: Boolean;              // debug overlay of node under mouse (like browser inspector)
     FInspectNode: THtmlNode;
     FOnInspect: TCSSNodeEvent;
     procedure SetInspect(AValue: Boolean);
+    procedure SetHTML(AValue: TStrings);
+    procedure SetCSS(AValue: TStrings);
+    procedure SetBodyClass(const AValue: String);
+    procedure MarkupChanged(Sender: TObject);
     procedure AnimTimer(Sender: TObject);
     procedure InvalidateArea(const ARect: TRect);
     function FocusControlOf(ANode: THtmlNode): Boolean;
     function GetBodyNode: THtmlNode;
-    function ScrollAt(const APos: TPoint; DX, DY: Integer): Boolean;
+    function ScrollAt(const APos: TPoint; DX, DY: Integer; ASmooth: Boolean = False): Boolean;
+    function ScrollNodeAt(const APos: TPoint; var DX, DY: Integer): THtmlNode;
+    function TickSmoothScroll: Boolean;
+    function WheelScroll(const APos: TPoint; WheelDelta: Integer; AHorz: Boolean): Boolean;
+    procedure ControlMouseWheel(Sender: TObject; Shift: TShiftState; WheelDelta: Integer; MousePos: TPoint; var Handled: Boolean);
+    procedure HookControlWheels;
     procedure ScrollChanged;
     procedure ActiveControlChanged(Sender: TObject; LastControl: TControl);
     function GetStyle: String;
@@ -52,10 +69,14 @@ type
     procedure UpdatePixelRatio;
     procedure UpdateViewport(AWidth: Integer);
     procedure SetActiveNodes(X, Y: Integer; AActive: Boolean);
+    procedure RestyleNodes(ANodes: TList);
   protected
     procedure CalculatePreferredSize(var PreferredWidth,
       PreferredHeight: Integer; WithThemeSpace: Boolean); override;
     procedure Paint; override;
+    procedure Loaded; override;
+    procedure Notification(AComponent: TComponent; Operation: TOperation); override;
+    procedure RebuildMarkup; virtual;
     procedure PaintInspector(ACanvas: TCanvas; ANode: THtmlNode);
     procedure SetParent(NewParent: TWinControl); override;
     procedure MouseDown(Button: TMouseButton; Shift: TShiftState; X, Y: Integer
@@ -82,6 +103,9 @@ type
     property AutoSize;
     property Anchors;
     property Body: THtmlNode read GetBodyNode;
+    property BodyClass: String read FBodyClass write SetBodyClass;   // utility classes of body node
+    property CSS: TStrings read FCSS write SetCSS;                    // stylesheet rules
+    property HTML: TStrings read FHTML write SetHTML;                 // markup of content (csshtml), nodes are found by GetElementById
     property BorderSpacing;
     property Constraints;
     property DragCursor;
@@ -149,6 +173,7 @@ type
 
   function HTMLFa(AInlineStyle: String; AIcon: String = ''; AId: String = ''): THTMLFaNode;
   procedure SetFontAwesomeFile(const AFileName: String);
+  procedure CSSSetDarkMode(AValue: Boolean);    // dark: variant on/off, all TCSSShape controls are updated
   procedure Register;
 
 implementation
@@ -156,6 +181,20 @@ implementation
 
 var
   FAFont: TFreeTypeFont;
+  CSSShapes: TList;           // all TCSSShape controls (dark mode is applied to them)
+
+procedure CSSSetDarkMode(AValue: Boolean);
+var
+  I: Integer;
+begin
+  CSSDarkMode := AValue;
+  if CSSShapes = nil then Exit;
+  for I := 0 to CSSShapes.Count - 1 do
+    with TCSSShape(CSSShapes[I]) do begin
+      Body.ApplyStyles;
+      Changed;
+    end;
+end;
 
 
 function HTMLFa(AInlineStyle: String; AIcon: String; AId: String): THTMLFaNode;
@@ -169,6 +208,7 @@ end;
 
 procedure Register;
 begin
+  CSSTailwindEnable;     // utility classes are shown in form designer (application calls CSSTailwindEnable too)
 	RegisterComponents('CSS',[ TCSSShape]);
 end;
 
@@ -331,6 +371,7 @@ begin
     UpdateViewport(AWidth);
     Body.LayoutTo(0, 0, AWidth, AHeight);
     Body.AlignControlsTo(Left, Top);
+    HookControlWheels;
     FLayoutValid := True;
   end;
   FCachedWidth := AWidth;
@@ -342,6 +383,15 @@ procedure TCSSShape.Paint;
 var
   R: TRect;
 begin
+  if (csDesigning in ComponentState) and (Body.FirstChild = nil) and (Body.Text = '') then begin
+    Canvas.Pen.Style := psDash;      // empty shape in form designer
+    Canvas.Pen.Color := clGray;
+    Canvas.Brush.Style := bsClear;
+    Canvas.Rectangle(ClientRect);
+    Canvas.Font.Color := clGray;
+    Canvas.TextOut(4, 4, Name);
+    Exit;
+  end;
   if Assigned(Parent) then Body.PaintScale := Parent.GetCanvasScaleFactor;   // 2 on macOS Retina
   if not FLayoutValid then begin     // layout was changed by CalculatePreferredSize
     Body.LayoutTo(0, 0, Width, Height);
@@ -366,18 +416,21 @@ procedure TCSSShape.AnimTimer(Sender: TObject);
 var
   Before, After: TCSSRectArray;
   I: Integer;
+  Smooth: Boolean;
 begin
+  Smooth := TickSmoothScroll;
   Before := Body.AnimationRects;
   if not Body.AnimationTick(GetTickCount64) then begin
-    FAnimTimer.Enabled := False;
+    if not Smooth then FAnimTimer.Enabled := False;
     Exit;
   end;
+  if Smooth then FAnimTimer.Interval := 15;
   if FInspect then begin
     Invalidate;
     Exit;
   end;
   // transitions are smooth (60 fps), endless built-in animations (spinner ...) use 30 fps to save CPU
-  if Body.AnimatingTransitions then FAnimTimer.Interval := 15 else FAnimTimer.Interval := 33;
+  if Body.AnimatingTransitions or Smooth then FAnimTimer.Interval := 15 else FAnimTimer.Interval := 33;
   // every animated node is repainted separately (old and new position), not union of all nodes
   After := Body.AnimationRects;
   for I := 0 to High(Before) do InvalidateArea(Before[I]);
@@ -397,6 +450,50 @@ begin
   if R.IsEmpty then Exit;
   OffsetRect(R, Left, Top);
   LCLIntf.InvalidateRect(Parent.Handle, @R, False);
+end;
+
+procedure TCSSShape.SetHTML(AValue: TStrings);
+begin
+  FHTML.Assign(AValue);
+end;
+
+procedure TCSSShape.SetCSS(AValue: TStrings);
+begin
+  FCSS.Assign(AValue);
+end;
+
+procedure TCSSShape.SetBodyClass(const AValue: String);
+begin
+  if FBodyClass = AValue then Exit;
+  FBodyClass := AValue;
+  MarkupChanged(nil);
+end;
+
+procedure TCSSShape.MarkupChanged(Sender: TObject);
+begin
+  if not (csLoading in ComponentState) then RebuildMarkup;
+end;
+
+procedure TCSSShape.Loaded;
+begin
+  inherited Loaded;
+  if (FHTML.Count > 0) or (FCSS.Count > 0) or (FBodyClass <> '') then RebuildMarkup;
+end;
+
+(*
+  Content from HTML, CSS and BodyClass properties (content created in code is replaced)
+*)
+procedure TCSSShape.RebuildMarkup;
+begin
+  if FCSS.Count > 0 then begin
+    if FSheet = nil then FSheet := TCSSStyleSheet.Create(Self);
+    FSheet.Style := FCSS.Text;
+    Body.StyleSheet := FSheet;
+  end;
+  Body.SetHTML(FHTML.Text);
+  Body.SetClass(FBodyClass);
+  Body.ApplyStyles;
+  Changed;
 end;
 
 procedure TCSSShape.SetInspect(AValue: Boolean);
@@ -571,31 +668,38 @@ end;
 procedure TCSSShape.SetActiveNodes(X, Y: Integer; AActive: Boolean);
 var
   Node: THtmlNode;
-  NewActive, Modified: Boolean;
+  NewActive: Boolean;
+  ChangedNodes: TList;
 begin
-  Modified := False;
-  Node := FBodyNode;
-  while Assigned(Node) do begin
-    NewActive := AActive and Node.Visible and Node.HitTest(Point(X, Y));
-    if Node.Active <> NewActive then begin
-      Node.Active := NewActive;
-      Modified := True;
+  ChangedNodes := TList.Create;
+  try
+    Node := FBodyNode;
+    while Assigned(Node) do begin
+      NewActive := AActive and Node.Visible and Node.HitTest(Point(X, Y));
+      if Node.Active <> NewActive then begin
+        Node.Active := NewActive;
+        ChangedNodes.Add(Node);
+      end;
+      Node := Node.GetNext(Node, True);
     end;
-    Node := Node.GetNext(Node, True);
-  end;
-  if Modified then begin
-    Body.ApplyStyles;
-    Changed;
+    RestyleNodes(ChangedNodes);
+  finally
+    ChangedNodes.Free;
   end;
 end;
 
 (*
   Scroll deepest scrollable node at position (or its parent when it is at the end)
 *)
-function TCSSShape.ScrollAt(const APos: TPoint; DX, DY: Integer): Boolean;
+(*
+  Deepest scrollable node at position which can scroll by DX, DY (or its parent when it is at the end).
+  Vertical wheel scrolls horizontally in node which scrolls only horizontally (eg. tabs).
+*)
+function TCSSShape.ScrollNodeAt(const APos: TPoint; var DX, DY: Integer): THtmlNode;
 var
   List: TList;
   I: Integer;
+  N: THtmlNode;
   procedure Collect(ANode: THtmlNode);
   var
     Children: THtmlNodeArray;
@@ -607,19 +711,92 @@ var
     for K := 0 to High(Children) do Collect(Children[K]);
   end;
 begin
-  Result := False;
+  Result := nil;
   List := TList.Create;
   try
     Collect(FBodyNode);
-    for I := List.Count - 1 downto 0 do
-      if THtmlNode(List[I]).CanScroll(DX, DY) then begin
-        Result := THtmlNode(List[I]).ScrollBy(DX, DY);
-        Break;
+    for I := List.Count - 1 downto 0 do begin
+      N := THtmlNode(List[I]);
+      if N.CanScroll(DX, DY) then Exit(N);
+      if (DX = 0) and (N.ScrollMax.Y = N.ScrollMin.Y) and N.CanScroll(DY, 0) then begin
+        DX := DY;
+        DY := 0;
+        Exit(N);
       end;
+    end;
   finally
     List.Free;
   end;
+end;
+
+function TCSSShape.ScrollAt(const APos: TPoint; DX, DY: Integer; ASmooth: Boolean): Boolean;
+var
+  N: THtmlNode;
+  P: TPoint;
+begin
+  Result := False;
+  N := ScrollNodeAt(APos, DX, DY);
+  if N = nil then Exit;
+  if ASmooth then begin
+    // smooth scroll (as in browser): next wheel step continues from target
+    if N = FSmoothNode then P := FSmoothTo else P := Point(N.ScrollX, N.ScrollY);
+    FSmoothTo := Point(EnsureRange(P.X + DX, N.ScrollMin.X, N.ScrollMax.X), EnsureRange(P.Y + DY, N.ScrollMin.Y, N.ScrollMax.Y));
+    FSmoothFrom := Point(N.ScrollX, N.ScrollY);
+    FSmoothStart := GetTickCount64;
+    FSmoothNode := N;
+    FAnimTimer.Interval := 15;
+    FAnimTimer.Enabled := True;
+    Exit(True);
+  end;
+  if N = FSmoothNode then FSmoothNode := nil;
+  Result := N.ScrollBy(DX, DY);
   if Result then ScrollChanged;
+end;
+
+(*
+  Next step of smooth scroll, False when it is finished
+*)
+function TCSSShape.TickSmoothScroll: Boolean;
+const
+  DURATION = 160;
+var
+  N: THtmlNode;
+  T: Single;
+begin
+  Result := False;
+  if FSmoothNode = nil then Exit;
+  N := FBodyNode;      // node can be removed from tree
+  while Assigned(N) and (N <> FSmoothNode) do N := N.GetNext(N, True);
+  if N = nil then begin
+    FSmoothNode := nil;
+    Exit;
+  end;
+  T := Min(1, (GetTickCount64 - FSmoothStart) / DURATION);
+  T := 1 - (1 - T) * (1 - T) * (1 - T);        // ease-out
+  N.SetScroll(FSmoothFrom.X + Round((FSmoothTo.X - FSmoothFrom.X) * T), FSmoothFrom.Y + Round((FSmoothTo.Y - FSmoothFrom.Y) * T));
+  ScrollChanged;
+  if T >= 1 then FSmoothNode := nil else Result := True;
+end;
+
+(*
+  Mouse wheel: steps of wheel (multiples of 120) are scrolled smoothly by 48 px, touchpads with precise
+  deltas scroll directly (macOS sends pixels * 8 vertically, pixels * 120 horizontally)
+*)
+function TCSSShape.WheelScroll(const APos: TPoint; WheelDelta: Integer; AHorz: Boolean): Boolean;
+var
+  D: Integer;
+  Notch: Boolean;
+begin
+  Notch := (WheelDelta mod 120 = 0) and (GetTickCount64 - FLastWheel > 50);
+  FLastWheel := GetTickCount64;
+  D := Round(WheelDelta * 0.4);     // 120 = 48 px
+  {$ifdef darwin}
+  if not Notch then
+    if AHorz then D := Round(WheelDelta / 120) else D := Round(WheelDelta / 8);
+  {$endif}
+  if D = 0 then D := Sign(WheelDelta);
+  if AHorz then Result := ScrollAt(APos, D, 0, Notch)
+    else Result := ScrollAt(APos, 0, -D, Notch);
 end;
 
 (*
@@ -636,27 +813,52 @@ begin
 end;
 
 function TCSSShape.DoMouseWheel(Shift: TShiftState; WheelDelta: Integer; MousePos: TPoint): Boolean;
-var
-  P: TPoint;
-  D: Integer;
 begin
   Result := inherited DoMouseWheel(Shift, WheelDelta, MousePos);
   if Result then Exit;
-  P := ScreenToControl(Mouse.CursorPos);
-  D := -Round(WheelDelta * 0.4);    // 120 = 48 px
-  if D = 0 then D := -Sign(WheelDelta);
-  if ssShift in Shift then Result := ScrollAt(P, D, 0) else Result := ScrollAt(P, 0, D);
+  if ssShift in Shift then Result := WheelScroll(ScreenToControl(Mouse.CursorPos), -WheelDelta, True)
+    else Result := WheelScroll(ScreenToControl(Mouse.CursorPos), WheelDelta, False);
 end;
 
 function TCSSShape.DoMouseWheelHorz(Shift: TShiftState; WheelDelta: Integer; MousePos: TPoint): Boolean;
-var
-  D: Integer;
 begin
   Result := inherited DoMouseWheelHorz(Shift, WheelDelta, MousePos);
   if Result then Exit;
-  D := Round(WheelDelta * 0.4);
-  if D = 0 then D := Sign(WheelDelta);
-  Result := ScrollAt(ScreenToControl(Mouse.CursorPos), D, 0);
+  Result := WheelScroll(ScreenToControl(Mouse.CursorPos), WheelDelta, True);
+end;
+
+(*
+  Mouse wheel over LCL control in node (TEdit ...) scrolls content of shape. Controls which scroll
+  themselves (memo, list) keep the wheel.
+*)
+procedure TCSSShape.ControlMouseWheel(Sender: TObject; Shift: TShiftState; WheelDelta: Integer; MousePos: TPoint; var Handled: Boolean);
+begin
+  if Handled or (Sender is TCustomMemo) or (Sender is TCustomListBox) or (Sender is TCustomComboBox) or
+    (Sender is TScrollingWinControl) then Exit;
+  if ssShift in Shift then Handled := WheelScroll(ScreenToControl(Mouse.CursorPos), -WheelDelta, True)
+    else Handled := WheelScroll(ScreenToControl(Mouse.CursorPos), WheelDelta, False);
+end;
+
+procedure TCSSShape.HookControlWheels;
+var
+  N: THtmlNode;
+begin
+  if csDesigning in ComponentState then Exit;
+  N := FBodyNode;
+  while Assigned(N) do begin
+    if Assigned(N.AlignControl) and (FWheelControls.IndexOf(N.AlignControl) < 0) then begin
+      FWheelControls.Add(N.AlignControl);
+      N.AlignControl.AddHandlerOnMouseWheel(ControlMouseWheel);
+      N.AlignControl.FreeNotification(Self);
+    end;
+    N := N.GetNext(N, True);
+  end;
+end;
+
+procedure TCSSShape.Notification(AComponent: TComponent; Operation: TOperation);
+begin
+  inherited Notification(AComponent, Operation);
+  if (Operation = opRemove) and Assigned(FWheelControls) then FWheelControls.Remove(AComponent);
 end;
 
 (*
@@ -735,11 +937,11 @@ begin
 end;
 
 procedure TCSSShape.MouseMove(Shift: TShiftState; X, Y: Integer);
-// TODO: move this part into Node handling to provide support for various controls
 var
   Node: THtmlNode;
   Modified: Boolean;
   NewCursor: TCursor;
+  ChangedNodes: TList;
 begin
   inherited MouseMove(Shift, X, Y);
   if FInspect then begin
@@ -757,28 +959,54 @@ begin
     Exit;
   end;
   Node :=  GetBodyNode;
-  Modified := False;
   NewCursor :=  crNone;
-  while Assigned(Node) do begin
-    if Node.Visible and Node.HitTest(Point(X, Y)) then begin
-      if Node.CompStyle.Cursor <> crDefault then NewCursor := Node.CompStyle.Cursor;
-      if not Node.Hovered then begin
-        Node.Hovered := True;
-        Modified := True;
+  ChangedNodes := TList.Create;
+  try
+    while Assigned(Node) do begin
+      if Node.Visible and Node.HitTest(Point(X, Y)) then begin
+        if Node.CompStyle.Cursor <> crDefault then NewCursor := Node.CompStyle.Cursor;
+        if not Node.Hovered then begin
+          Node.Hovered := True;
+          ChangedNodes.Add(Node);
+        end;
+      end else begin
+        if (Node.Hovered) then begin    // remove hovered styles
+          Node.Hovered := False;
+          ChangedNodes.Add(Node);
+        end;
       end;
-    end else begin
-      if (Node.Hovered) then begin    // remove hovered styles -> rebuild styles
-        Node.Hovered := False;
-        Modified := True;
-      end;
+      Node := Node.GetNext(Node, True);
     end;
-    Node := Node.GetNext(Node, True);
+    if NewCursor <> crNone then Self.Cursor := NewCursor else Self.Cursor := crDefault;
+    RestyleNodes(ChangedNodes);
+  finally
+    ChangedNodes.Free;
   end;
-  if NewCursor <> crNone then Self.Cursor := NewCursor else Self.Cursor := crDefault;
-  if Modified then begin
-    Body.ApplyStyles;
-    Changed;
+end;
+
+(*
+  Styles of nodes with changed state (hover, active, focus) are applied again. Layout is computed only
+  when sizes are changed, otherwise only changed area is repainted (fast also with thousands of nodes).
+*)
+procedure TCSSShape.RestyleNodes(ANodes: TList);
+var
+  I: Integer;
+  N: THtmlNode;
+  Dirty: TRect;
+  NeedLayout, StateRules: Boolean;
+begin
+  if ANodes.Count = 0 then Exit;
+  // descendants depend on state of node: group-hover, or stylesheet rules with state of ancestor
+  StateRules := Assigned(Body.StyleSheet) and ((Pos(':hover', Body.StyleSheet.Style) > 0) or
+    (Pos(':active', Body.StyleSheet.Style) > 0) or (Pos(':focus', Body.StyleSheet.Style) > 0));
+  NeedLayout := False;
+  Dirty := Rect(0, 0, 0, 0);
+  for I := 0 to ANodes.Count - 1 do begin
+    N := THtmlNode(ANodes[I]);
+    if N.RestyleState(StateRules or N.ClassList.Contains('group'), Dirty) then NeedLayout := True;
   end;
+  if NeedLayout or FInspect then Changed
+    else InvalidateArea(Dirty);
 end;
 
 procedure TCSSShape.MouseLeave;
@@ -823,6 +1051,13 @@ begin
   FBodyNode.ParentControl := Self;
   FIsChanged := True;
   FScaleByDPI := True;
+  if CSSShapes = nil then CSSShapes := TList.Create;
+  CSSShapes.Add(Self);
+  FHTML := TStringList.Create;
+  TStringList(FHTML).OnChange := MarkupChanged;
+  FCSS := TStringList.Create;
+  TStringList(FCSS).OnChange := MarkupChanged;
+  FWheelControls := TList.Create;
   FAnimTimer := TTimer.Create(Self);
   FAnimTimer.Enabled := False;
   FAnimTimer.Interval := 15;
@@ -832,7 +1067,17 @@ begin
 end;
 
 destructor TCSSShape.Destroy;
+var
+  I: Integer;
 begin
+  if Assigned(CSSShapes) then CSSShapes.Remove(Self);
+  for I := 0 to FWheelControls.Count - 1 do begin
+    TControl(FWheelControls[I]).RemoveHandlerOnMouseWheel(ControlMouseWheel);
+    TControl(FWheelControls[I]).RemoveFreeNotification(Self);
+  end;
+  FreeAndNil(FWheelControls);
+  FreeAndNil(FHTML);
+  FreeAndNil(FCSS);
   Screen.RemoveHandlerActiveControlChanged(ActiveControlChanged);
   FBodyNode.Free;
   inherited Destroy;
@@ -889,6 +1134,7 @@ end;
 finalization
 begin
 	FAFont.Free;
+  FreeAndNil(CSSShapes);
 end;
 
 end.

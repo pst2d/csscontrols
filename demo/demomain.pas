@@ -6,7 +6,7 @@ interface
 
 uses
   Classes, SysUtils, Forms, Controls, StdCtrls, ExtCtrls, Graphics, Menus,
-  cssbase, CSSCtrls, csstailwind, demoscenes, cssbutton;
+  cssbase, CSSCtrls, csstailwind, demoscenes, csscomponents;
 
 type
 
@@ -16,6 +16,7 @@ type
   private
     FList: TListBox;
     FInspect: TCheckBox;
+    FDark: TCheckBox;
     FShape: TCSSShape;
     FSheet: TCSSStyleSheet;
     FStatus: TLabel;
@@ -23,12 +24,15 @@ type
     FSelectMenu: TPopupMenu;
     FSelectNode: THtmlNode;
     procedure InspectClick(Sender: TObject);
+    procedure DarkChange(Sender: TObject);
+    procedure UpdateControlColors;
     procedure ShapeInspect(Sender: TObject; ANode: THtmlNode);
     procedure SelectClick(Sender: TObject);
     procedure SelectItemClick(Sender: TObject);
     procedure PhoneChange(Sender: TObject);
     procedure SaveClick(Sender: TObject);
     procedure ButtonClick(Sender: TObject);
+    procedure ComponentChange(Sender: TObject);
     procedure ListClick(Sender: TObject);
     procedure NodeClick(Sender: TObject);
     procedure ToggleClick(Sender: TObject);
@@ -48,6 +52,8 @@ var
   DemoForm: TDemoForm;
 
 implementation
+
+function BackdropColor(ANode: THtmlNode): TColor; forward;
 
 { TDemoForm }
 
@@ -75,11 +81,17 @@ begin
   FInspect.BorderSpacing.Around := 6;
   FInspect.Caption := 'Inspect (debug)';
   FInspect.OnClick := @InspectClick;
+  FDark := TCheckBox.Create(Self);
+  FDark.Parent := Panel;
+  FDark.Align := alBottom;
+  FDark.BorderSpacing.Around := 6;
+  FDark.Caption := 'Dark mode';
+  FDark.OnChange := @DarkChange;
   FList := TListBox.Create(Self);
   FList.Parent := Panel;
   FList.Align := alClient;
   for I := 0 to High(DEMO_SCENES) do FList.Items.Add(DEMO_SCENES[I].Name);
-  FList.Items.Add('LCL controls');
+  FList.Items.Add('Components');
   FList.OnClick := @ListClick;
   FSelectMenu := TPopupMenu.Create(Self);
 
@@ -114,6 +126,31 @@ end;
 procedure TDemoForm.ListClick(Sender: TObject);
 begin
   if FList.ItemIndex >= 0 then ShowScene(FList.ItemIndex);
+end;
+
+(*
+  dark: variant of utility classes for all shapes; native LCL controls get colors of their nodes
+*)
+procedure TDemoForm.DarkChange(Sender: TObject);
+begin
+  if CSSDarkMode = FDark.Checked then Exit;
+  CSSSetDarkMode(FDark.Checked);
+  UpdateControlColors;
+end;
+
+procedure TDemoForm.UpdateControlColors;
+var
+  N: THtmlNode;
+begin
+  N := FShape.Body;
+  while Assigned(N) do begin
+    if N.AlignControl is TCustomEdit then begin
+      TCustomEdit(N.AlignControl).Color := BackdropColor(N);
+      if CSSDarkMode then TCustomEdit(N.AlignControl).Font.Color := RGBToColor(226, 232, 240)
+        else TCustomEdit(N.AlignControl).Font.Color := clDefault;
+    end;
+    N := N.GetNext(N, True);
+  end;
 end;
 
 procedure TDemoForm.InspectClick(Sender: TObject);
@@ -222,6 +259,9 @@ begin
   end else
     SetChecked(Node, Node.Attributes['data-checked'] <> '1');
   if Node.Attributes['data-checked'] = '1' then FStatus.Caption := 'Toggle: on' else FStatus.Caption := 'Toggle: off';
+  // theme cards of Settings scene switch dark mode
+  if Node.Attributes['data-theme'] = 'dark' then FDark.Checked := True
+  else if Node.Attributes['data-theme'] = 'light' then FDark.Checked := False;
   FShape.Body.ApplyStyles;     // styles of children can depend on classes of node (stylesheet rules)
   FShape.Changed;
 end;
@@ -277,6 +317,14 @@ end;
 procedure TDemoForm.ButtonClick(Sender: TObject);
 begin
   FStatus.Caption := 'TCSSButton clicked: ' + TCSSButton(Sender).Caption;
+end;
+
+procedure TDemoForm.ComponentChange(Sender: TObject);
+begin
+  if Sender is TCSSToggle then
+    FStatus.Caption := 'TCSSToggle.Checked = ' + BoolToStr(TCSSToggle(Sender).Checked, True)
+  else if Sender is TCSSTabs then
+    FStatus.Caption := 'TCSSTabs.TabIndex = ' + IntToStr(TCSSTabs(Sender).TabIndex);
 end;
 
 (*
@@ -397,70 +445,131 @@ end;
 
 procedure TDemoForm.ShowScene(AIndex: Integer);
 begin
-  ClearScene;
-  if AIndex <= High(DEMO_SCENES) then
-    DEMO_SCENES[AIndex].Build(FShape.Body, FSheet)
-  else
-    BuildControlsScene;
-  FShape.Body.InlineStyle := 'overflow-y: auto';    // page is scrolled by renderer
-  FShape.Body.ApplyStyles;
-  SetupScene(FShape.Body.FirstChild);
-  FShape.Body.ApplyStyles;
+  CSSBeginUpdate;     // many nodes are created: layout once at the end
+  try
+    ClearScene;
+    if AIndex <= High(DEMO_SCENES) then
+      DEMO_SCENES[AIndex].Build(FShape.Body, FSheet)
+    else
+      BuildControlsScene;
+    AddDarkVariants(FShape.Body);       // dark: classes for scenes without own dark: classes
+    FShape.Body.InlineStyle := 'overflow-y: auto';    // page is scrolled by renderer
+    SetupScene(FShape.Body.FirstChild);
+    FShape.Body.ApplyStyles;
+  finally
+    CSSEndUpdate;
+  end;
   FShape.Changed;
+  UpdateControlColors;
 end;
 
 (*
   LCL controls aligned inside nodes
 *)
+(*
+  LCL controls aligned inside nodes and components of csscomponents.pas (TCSSShape descendants)
+*)
 procedure TDemoForm.BuildControlsScene;
+const
+  CARD_CLS = 'p-6 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 flex flex-col gap-4';
+  LABEL_CLS = 'text-sm font-medium text-slate-700 dark:text-slate-300';
 var
-  Form, Row: THtmlNode;
+  Card, Row: THtmlNode;
   Edit: TEdit;
   Check: TCheckBox;
   Btn: TButton;
-  CBtn: TCSSButton;
+  Toggle: TCSSToggle;
+  Tabs: TCSSTabs;
+  I: Integer;
+  procedure Place(AControl: TControl; const AClass: String);
+  begin
+    HTMLNode(AClass).SetAlignControl(AddControl(AControl)).AppendTo(Row);
+  end;
+  procedure AddButton(const ACaption: String; AKind: TCSSButtonKind);
+  var
+    B: TCSSButton;
+  begin
+    B := TCSSButton.Create(Self);
+    B.Caption := ACaption;
+    B.Kind := AKind;
+    B.OnClick := @ButtonClick;
+    Place(B, 'w-24 h-10');
+  end;
+  procedure AddBadge(const ACaption: String; AColor: TCSSColorName);
+  var
+    B: TCSSBadge;
+  begin
+    B := TCSSBadge.Create(Self);
+    B.Caption := ACaption;
+    B.ColorName := AColor;
+    Place(B, 'w-20 h-6');
+  end;
+  procedure AddAvatar(const AInitials: String; AColor: TCSSColorName; ASize: Integer);
+  var
+    A: TCSSAvatar;
+  begin
+    A := TCSSAvatar.Create(Self);
+    A.Initials := AInitials;
+    A.ColorName := AColor;
+    Place(A, Format('w-[%dpx] h-[%dpx]', [ASize, ASize]));
+  end;
 begin
-  FShape.Body.SetClass('p-8 bg-slate-100');
-  Form := HTMLNode('max-w-md mx-auto p-6 bg-white rounded-xl border border-slate-200 flex flex-col gap-4').AppendTo(FShape.Body);
-  HTMLNode('text-xl font-semibold text-slate-900', 'Sign in').AppendTo(Form);
+  FShape.Body.SetClass('p-8 bg-slate-100 dark:bg-slate-950 flex flex-col gap-6');
 
-  HTMLNode('text-sm font-medium text-slate-700', 'E-mail').AppendTo(Form);
+  // LCL controls in nodes
+  Card := HTMLNode('max-w-md w-full mx-auto ' + CARD_CLS).AppendTo(FShape.Body);
+  HTMLNode('text-xl font-semibold text-slate-900 dark:text-white', 'Sign in (LCL controls in nodes)').AppendTo(Card);
+  HTMLNode(LABEL_CLS, 'E-mail').AppendTo(Card);
   Edit := TEdit(AddControl(TEdit.Create(Self)));
   Edit.TextHint := 'name@example.com';
-  HTMLNode('h-8').SetAlignControl(Edit).AppendTo(Form);
-
-  HTMLNode('text-sm font-medium text-slate-700', 'Password').AppendTo(Form);
+  HTMLNode('h-8').SetAlignControl(Edit).AppendTo(Card);
+  HTMLNode(LABEL_CLS, 'Password').AppendTo(Card);
   Edit := TEdit(AddControl(TEdit.Create(Self)));
   Edit.PasswordChar := '*';
-  HTMLNode('h-8').SetAlignControl(Edit).AppendTo(Form);
-
-  Row := HTMLNode('flex items-center justify-between').AppendTo(Form);
-  Check := TCheckBox(AddControl(TCheckBox.Create(Self)));
+  HTMLNode('h-8').SetAlignControl(Edit).AppendTo(Card);
+  Row := HTMLNode('flex items-center justify-between').AppendTo(Card);
+  Check := TCheckBox.Create(Self);
   Check.Caption := 'Remember me';
-  HTMLNode('').SetAlignControl(Check).AppendTo(Row);
+  Place(Check, '');
   HTMLNode('text-sm text-indigo-600 hover:underline cursor-pointer', 'Forgot password?').AppendTo(Row);
-
   Btn := TButton(AddControl(TButton.Create(Self)));
   Btn.Caption := 'Sign in';
-  HTMLNode('h-9').SetAlignControl(Btn).AppendTo(Form);
+  HTMLNode('h-9').SetAlignControl(Btn).AppendTo(Card);
 
-  // own component (demo/cssbutton.pas): TCSSShape descendant with Caption and Kind properties
-  HTMLNode('pt-2 text-sm font-medium text-slate-700', 'TCSSButton (own component built on TCSSShape)').AppendTo(Form);
-  Row := HTMLNode('flex gap-3').AppendTo(Form);
-  CBtn := TCSSButton(AddControl(TCSSButton.Create(Self)));
-  CBtn.Caption := 'Save';
-  CBtn.OnClick := @ButtonClick;
-  HTMLNode('w-24 h-10').SetAlignControl(CBtn).AppendTo(Row);
-  CBtn := TCSSButton(AddControl(TCSSButton.Create(Self)));
-  CBtn.Caption := 'Cancel';
-  CBtn.Kind := cbkSecondary;
-  CBtn.OnClick := @ButtonClick;
-  HTMLNode('w-24 h-10').SetAlignControl(CBtn).AppendTo(Row);
-  CBtn := TCSSButton(AddControl(TCSSButton.Create(Self)));
-  CBtn.Caption := 'Delete';
-  CBtn.Kind := cbkDanger;
-  CBtn.OnClick := @ButtonClick;
-  HTMLNode('w-24 h-10').SetAlignControl(CBtn).AppendTo(Row);
+  // components (csscomponents.pas): normal Lazarus components with properties and events
+  Card := HTMLNode('max-w-md w-full mx-auto ' + CARD_CLS).AppendTo(FShape.Body);
+  HTMLNode('text-xl font-semibold text-slate-900 dark:text-white', 'Components (csscomponents.pas)').AppendTo(Card);
+  HTMLNode(LABEL_CLS, 'TCSSButton').AppendTo(Card);
+  Row := HTMLNode('flex flex-wrap gap-2').AppendTo(Card);
+  AddButton('Save', cbkPrimary);
+  AddButton('Cancel', cbkSecondary);
+  AddButton('Delete', cbkDanger);
+  AddButton('More', cbkGhost);
+  HTMLNode(LABEL_CLS, 'TCSSToggle').AppendTo(Card);
+  Row := HTMLNode('flex flex-col gap-2').AppendTo(Card);
+  for I := 0 to 1 do begin
+    Toggle := TCSSToggle.Create(Self);
+    if I = 0 then Toggle.Caption := 'Notifications' else Toggle.Caption := 'Weekly summary';
+    Toggle.Checked := I = 0;
+    Toggle.OnChange := @ComponentChange;
+    Place(Toggle, 'w-56 h-7');
+  end;
+  HTMLNode(LABEL_CLS, 'TCSSBadge, TCSSAvatar').AppendTo(Card);
+  Row := HTMLNode('flex flex-wrap items-center gap-2').AppendTo(Card);
+  AddBadge('Draft', ccSlate);
+  AddBadge('Active', ccGreen);
+  AddBadge('Pending', ccAmber);
+  AddBadge('Failed', ccRed);
+  Row := HTMLNode('flex items-center gap-3').AppendTo(Card);
+  AddAvatar('JD', ccIndigo, 48);
+  AddAvatar('AK', ccPink, 40);
+  AddAvatar('MN', ccGreen, 32);
+  AddAvatar('LS', ccAmber, 24);
+  HTMLNode(LABEL_CLS, 'TCSSTabs').AppendTo(Card);
+  Row := HTMLNode('flex').AppendTo(Card);
+  Tabs := TCSSTabs.Create(Self);
+  Tabs.OnChange := @ComponentChange;
+  Place(Tabs, 'w-64 h-9');
 end;
 
 end.

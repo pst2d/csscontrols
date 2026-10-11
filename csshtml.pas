@@ -307,7 +307,12 @@ end;
 function TCSSHtmlNodeHelper.AppendHTML(const AHtml: String): THtmlNode;
 begin
   Result := Self;
-  CSSParseHTML(AHtml, Self);
+  CSSBeginUpdate;          // no layout of shape after every parsed node
+  try
+    CSSParseHTML(AHtml, Self);
+  finally
+    CSSEndUpdate;
+  end;
   Changed;
 end;
 

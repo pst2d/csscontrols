@@ -291,6 +291,9 @@ type
     TransitionDuration,         // ms
     TransitionDelay: Integer;
     Animation: String;          // built-in animations: spin, ping, pulse, bounce (animation: spin 1s linear infinite)
+    LineClamp: Integer;         // line-clamp: text is cut to N lines with ellipsis (0 = none)
+    ScrollbarNone: Boolean;     // scrollbar-width: none (content can still be scrolled)
+    AspectRatio: Single;        // aspect-ratio: width / height (0 = auto)
     Color: TCSSColor;
     Cursor: TCursor;
     Changed: Boolean;
@@ -351,6 +354,7 @@ type
     procedure AddParsedProperty(AName: String; AValue: String);
     procedure Assign(Source: TPersistent); override;
     procedure Merge(AValue: TCSSItem);
+    function LayoutKey: String;     // values which change layout (sizes, spacing, fonts, display ...)
   end;
 
   { TCSSStyleSheet }
@@ -463,6 +467,8 @@ type
     FAnim: PCSSAnim;              // running transition or animation (nil = none)
     FStyled: Boolean;             // node was painted (transitions start only for painted nodes, as in browser)
     FTransformSig: String;        // resolved transform properties (change starts transition)
+    FClampKey, FClampResult: String;   // line-clamp: text with ellipsis for width, lines, font and text (cache)
+    FStickyDY: Integer;           // position: sticky - vertical offset of painted node (scroll of container)
     FBgCache: array[0..5] of record   // cached background bitmaps: 0..3 corners, 4 whole, 5 gradient strip
       Key: String;
       Bmp: TBitmap;
@@ -480,6 +486,11 @@ type
     procedure LayoutDoFlexAlign(AParentNode: THtmlNode; AList: TList; AWidth,
       AHeight: Integer; out NewWidth, NewHeight: Integer);
     function IsWhiteSpaceText: Boolean;     // whitespace between elements in markup (no flex or grid item)
+    function HasPrevElementSibling: Boolean;
+    function StickyOffset: Integer;
+    procedure UpdateStickyOffsets;
+    function ClampLinesHeight(ALines: Integer): Integer;
+    function ClampedText(AMaxWidth: Integer): String;
     procedure LayoutDoGrid(AParentNode: THtmlNode; AList: TList; AWidth, AHeight: Integer; out NewWidth, NewHeight: Integer);
     function LayoutDoVerticalAlign(AList: TList; ClearList: Boolean = True): Integer;
     procedure LayoutGetNodeSize(ANode: THtmlNode; ParentWidth,
@@ -513,6 +524,7 @@ type
     function GradientStrip(const AGradient: TCSSGradient; AWidth, AHeight: Integer; const AKey: String): TBitmap;
     function ParseShadows(const AValue: String): TCSSShadowArray;
     procedure PaintBoxShadow(ACanvas: TCanvas);
+    procedure PaintInsetShadow(ACanvas: TCanvas);
     procedure ComputeTransform;
     procedure UpdateTransformKind;
     procedure UpdateTransitions(const AOldColors: TCSSColorChannels; AOldOpacity: Single; const AOldMatrix: TCSSMatrix2D);
@@ -533,6 +545,7 @@ type
     procedure Assign(Source: TPersistent); override;
     function ApplyStyle: THtmlNode;
     function ApplyStyles: THtmlNode;
+    function RestyleState(ADeep: Boolean; var ADirty: TRect): Boolean;   // after hover/active/focus change, True = layout needed
     procedure ApplySubtree(ANode: THtmlNode);
     procedure ApplyStyleForNode(ANode: THtmlNode);
     procedure ApplyElementDefaults(ANode: THtmlNode);
@@ -646,6 +659,7 @@ var
   CSSRootFontSize: Single = CSS_DEFAULT_FONT_SIZE;   // px, base for "rem" units
   CSSDefaultBoxSizing: TCSSBoxSizing = cbxContentBox; // initial box-sizing value (Tailwind like styles use border-box)
   CSSAntialiasing: Boolean = True;                   // antialiasing of rounded corners and border joins
+  CSSDarkMode: Boolean = False;                      // dark: variant of utility classes is active (apply styles after change)
 
   CSSUtilityResolver: TCSSUtilityResolver = nil;  // resolve unknown classes to CSS declarations
 
@@ -656,6 +670,8 @@ var
   function CSSResolveUtility(const AClassName: String; out ADeclarations: String; out AOrder: Integer): Boolean;
   procedure CSSClearUtilityCache;
   procedure CSSClearPaintCache;
+  procedure CSSBeginUpdate;     // many nodes are changed: shapes are not updated after every change
+  procedure CSSEndUpdate;       // (call Changed of the shape after CSSEndUpdate)
   function CSSAlphaBitmap(R, G, B, A: Byte): TBitmap;
   procedure CSSRegisterImage(const AName: String; AGraphic: TGraphic);
   function StrBefore(const AValue: String; const ASubstr: String): String;
@@ -1228,6 +1244,24 @@ begin
   else
     Result := CSSStrToFloatDef(AValue, 1);
   Result := EnsureRange(Result, 0, 1);
+end;
+
+(*
+  aspect-ratio: 16 / 9, 1.5, auto (0)
+*)
+function CSSToAspectRatio(AValue: String): Single;
+var
+  A, B: Single;
+begin
+  AValue := Trim(AValue);
+  Result := 0;
+  if (AValue = '') or SameText(AValue, 'auto') then Exit;
+  if Pos('/', AValue) > 0 then begin
+    A := CSSStrToFloatDef(Trim(StrBefore(AValue, '/')), 0);
+    B := CSSStrToFloatDef(Trim(StrAfter(AValue, '/')), 0);
+    if (A > 0) and (B > 0) then Result := A / B;
+  end else
+    Result := Max(0, CSSStrToFloatDef(AValue, 0));
 end;
 
 (*
@@ -2291,6 +2325,9 @@ begin
   TransitionDuration := 0;
   TransitionDelay := 0;
   Animation := '';
+  LineClamp := 0;
+  AspectRatio := 0;
+  ScrollbarNone := False;
   Specified := [];
   TextAlign := ctaUndefined;
   WhiteSpace := cwsNormal;
@@ -2550,6 +2587,9 @@ begin
       if AName = 'animation' then
         Animation := LowerCase(Trim(AValue))
       else
+      if AName = 'aspect-ratio' then
+        AspectRatio := CSSToAspectRatio(AValue)
+      else
       if AName = 'align-items' then
         AlignItems := CSSToAlignItems(AValue)
       else
@@ -2664,7 +2704,10 @@ begin
         JustifyContent := CSSToJustifyContent(AValue);
     'l':
       if AName = 'left' then
-        Left := CSSToLength(AValue);
+        Left := CSSToLength(AValue)
+      else
+      if AName = 'line-clamp' then
+        LineClamp := Max(0, StrToIntDef(Trim(AValue), 0));
     'm':
       if AName = 'margin-left' then
         Margin[csLeft] := CSSToLength(AValue)
@@ -2726,6 +2769,9 @@ begin
       if AName = 'position' then
         Position := CSSToPosition(AValue);
     's':
+      if AName = 'scrollbar-width' then
+        ScrollbarNone := SameText(Trim(AValue), 'none')
+      else
       if AName = 'scale' then
         Scale := AValue;
     'r':
@@ -2781,6 +2827,28 @@ begin
         if (AValue = 'nowrap') or (AValue = 'pre') then WhiteSpace := cwsNoWrap else WhiteSpace := cwsNormal;
       end;
   end;
+end;
+
+(*
+  Key of properties which affect layout: when only other properties are changed (colors, shadows,
+  transforms, opacity), node is only repainted
+*)
+function TCSSItem.LayoutKey: String;
+var
+  S: TCSSSide;
+  function L(const ALength: TCSSLength): String; inline;
+  begin
+    Result := FloatToStr(ALength.Value) + Chr(Ord('a') + Ord(ALength.LengthType)) + ',';
+  end;
+begin
+  Result := Format('%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%s,%s,%s,%s,%s,%f,%d,%d,', [Ord(Display), Ord(Position), Ord(Float),
+    Ord(BoxSizing), Ord(Overflow), Ord(OverflowY), Ord(FlexDirection), Ord(FlexWrap), Ord(JustifyContent), Ord(AlignItems),
+    Ord(AlignSelf), Order, Ord(WhiteSpace), LineClamp, GridColumnSpan, GridRowSpan, GridTemplateColumns, GridTemplateRows,
+    FloatToStr(FlexGrow), FloatToStr(FlexShrink), Font.Family, AspectRatio, Ord(Font.Style), Ord(Font.Weight.FontType)]) +
+    L(FlexBasis) + L(RowGap) + L(ColumnGap) + L(Width) + L(Height) + L(MinWidth) + L(MinHeight) + L(MaxWidth) + L(MaxHeight) +
+    L(Top) + L(Left) + L(Right) + L(Bottom) + L(Font.Size) + IntToStr(Integer(Font.Weight.Value));
+  for S := Low(TCSSSide) to High(TCSSSide) do
+    Result := Result + L(Margin[S]) + L(Padding[S]) + L(Border[S].Width) + IntToStr(Ord(Border[S].Style));
 end;
 
 procedure TCSSItem.Assign(Source: TPersistent);
@@ -2842,6 +2910,9 @@ begin
     TransitionDuration := Src.TransitionDuration;
     TransitionDelay := Src.TransitionDelay;
     Animation := Src.Animation;
+    LineClamp := Src.LineClamp;
+    ScrollbarNone := Src.ScrollbarNone;
+    AspectRatio := Src.AspectRatio;
     Specified := Src.Specified;
     TextAlign :=  Src.TextAlign;
     WhiteSpace := Src.WhiteSpace;
@@ -4264,6 +4335,183 @@ begin
         Result.Parts[Y * 3 + X] := Part(XS[X], YS[Y], XS[X + 1], YS[Y + 1]);
 end;
 
+(*
+  Inset shadow (box-shadow: inset ...): inside of padding box, template is cut to 9 parts (center is empty)
+  AWidth, AHeight - padding box size, ARadius - inner radii (canvas px)
+*)
+function InsetMargin(const AShadow: TCSSShadow): Integer;
+begin
+  Result := 2 * AShadow.Blur + Max(0, AShadow.Spread) + Max(Abs(AShadow.X), Abs(AShadow.Y)) + 1;
+end;
+
+function BuildInsetShadowSlices(AWidth, AHeight: Integer; const ARadius: array of TPoint; const AShadow: TCSSShadow;
+  const AColor: TCSSRGBA; AScale: Single): TCSSShadowSlices;
+var
+  RL, RR, RT, RB, M, Ext, SW, SH, DW, DH, X, Y, SX, SY, N, I: Integer;
+  Mask, BoxCov: array of Single;
+  RX, RY, HX, HY: array[0..3] of Single;
+  CH, CB, Step, PX, PY: Single;
+  XS, YS: array[0..3] of Integer;
+  function Part(AX0, AY0, AX1, AY1: Integer): TBitmap;
+  var
+    Img: TLazIntfImage;
+    Wr: TCSSPixelWriter;
+    QX, QY: Integer;
+  begin
+    Img := NewAlphaImage(Max(1, AX1 - AX0), Max(1, AY1 - AY0));
+    try
+      Wr := PixelWriter(Img);
+      for QY := AY0 to AY0 + Img.Height - 1 do begin
+        WriterLine(Wr, QY - AY0);
+        for QX := AX0 to AX0 + Img.Width - 1 do
+          WritePixel(Wr, QX - AX0, ToByte(AColor.R), ToByte(AColor.G), ToByte(AColor.B),
+            ToByte(Mask[EnsureRange(QY, 0, DH - 1) * DW + EnsureRange(QX, 0, DW - 1)] * AColor.A));
+      end;
+      Result := IntfImageToBitmap(Img);
+    finally
+      Img.Free;
+    end;
+  end;
+begin
+  Result := TCSSShadowSlices.Create;
+  RL := Max(ARadius[0].x, ARadius[3].x);
+  RR := Max(ARadius[1].x, ARadius[2].x);
+  RT := Max(ARadius[0].y, ARadius[1].y);
+  RB := Max(ARadius[3].y, ARadius[2].y);
+  M := InsetMargin(AShadow);
+  SW := RL + RR + 2 * M + 1;
+  SH := RT + RB + 2 * M + 1;
+  Result.Whole := (AWidth < SW) or (AHeight < SH);
+  if Result.Whole then begin
+    SW := AWidth;
+    SH := AHeight;
+  end;
+  Ext := 2 * AShadow.Blur + 1;        // outside of padding box (blurred into it)
+  DW := Max(1, Round((SW + 2 * Ext) * AScale));
+  DH := Max(1, Round((SH + 2 * Ext) * AScale));
+  SetLength(Mask, DW * DH);
+  SetLength(BoxCov, DW * DH);
+  for I := 0 to 3 do begin
+    RX[I] := ARadius[I].x * AScale;
+    RY[I] := ARadius[I].y * AScale;
+    HX[I] := Max(0, ARadius[I].x - AShadow.Spread) * AScale;
+    HY[I] := Max(0, ARadius[I].y - AShadow.Spread) * AScale;
+    if (HX[I] = 0) or (HY[I] = 0) then begin HX[I] := 0; HY[I] := 0; end;
+  end;
+  N := SamplesPerAxis;
+  Step := 1 / N;
+  for Y := 0 to DH - 1 do
+    for X := 0 to DW - 1 do begin
+      CH := 0;
+      CB := 0;
+      for SY := 0 to N - 1 do
+        for SX := 0 to N - 1 do begin
+          PX := X + (SX + 0.5) * Step;
+          PY := Y + (SY + 0.5) * Step;
+          // hole: padding box moved by offset and reduced by spread
+          if InRoundRect((Ext + AShadow.Spread + AShadow.X) * AScale, (Ext + AShadow.Spread + AShadow.Y) * AScale,
+            (Ext + SW - AShadow.Spread + AShadow.X) * AScale, (Ext + SH - AShadow.Spread + AShadow.Y) * AScale, HX, HY, PX, PY) then CH := CH + 1;
+          if InRoundRect(Ext * AScale, Ext * AScale, (Ext + SW) * AScale, (Ext + SH) * AScale, RX, RY, PX, PY) then CB := CB + 1;
+        end;
+      Mask[Y * DW + X] := 1 - CH / (N * N);
+      BoxCov[Y * DW + X] := CB / (N * N);
+    end;
+  BlurMask(Mask, DW, DH, AShadow.Blur * AScale / 2);
+  for I := 0 to DW * DH - 1 do Mask[I] := Mask[I] * BoxCov[I];
+  XS[0] := Round(Ext * AScale);
+  XS[3] := Round((Ext + SW) * AScale);
+  YS[0] := XS[0];
+  YS[3] := Round((Ext + SH) * AScale);
+  if Result.Whole then begin
+    Result.Parts[0] := Part(XS[0], YS[0], XS[3], YS[3]);
+    Exit;
+  end;
+  Result.LW := M + RL;
+  Result.RW := RR + M;
+  Result.TH := M + RT;
+  Result.BH := RB + M;
+  XS[1] := XS[0] + Round(Result.LW * AScale); XS[2] := XS[3] - Round(Result.RW * AScale);
+  YS[1] := YS[0] + Round(Result.TH * AScale); YS[2] := YS[3] - Round(Result.BH * AScale);
+  for Y := 0 to 2 do
+    for X := 0 to 2 do
+      if (X = 1) and (Y = 1) then
+        Result.Parts[4] := nil      // center is empty
+      else if (X = 1) or (Y = 1) then
+        Result.Parts[Y * 3 + X] := Part(IfThen(X = 1, XS[1], XS[X]), IfThen(Y = 1, YS[1], YS[Y]),
+          IfThen(X = 1, XS[1] + 1, XS[X + 1]), IfThen(Y = 1, YS[1] + 1, YS[Y + 1]))
+      else
+        Result.Parts[Y * 3 + X] := Part(XS[X], YS[Y], XS[X + 1], YS[Y + 1]);
+end;
+
+procedure THtmlNode.PaintInsetShadow(ACanvas: TCanvas);
+var
+  Shadows: TCSSShadowArray;
+  I, J, X, Idx, M: Integer;
+  PB: TRect;
+  P, R: array[0..3] of TPoint;
+  BX, BY: array[0..3] of Integer;
+  Sc: Single;
+  Key: String;
+  Slices: TCSSShadowSlices;
+  C: TCSSRGBA;
+  XS, YS: array[0..3] of Integer;
+  procedure DrawPart(ABitmap: TBitmap; const ARect: TRect);
+  begin
+    if (ABitmap = nil) or (ARect.Right <= ARect.Left) or (ARect.Bottom <= ARect.Top) then Exit;
+    if (ABitmap.Width = ARect.Width) and (ABitmap.Height = ARect.Height) then ACanvas.Draw(ARect.Left, ARect.Top, ABitmap)
+      else ACanvas.StretchDraw(ARect, ABitmap);
+  end;
+begin
+  {$ifndef fmx}
+  if Pos('inset', FCompStyle.BoxShadow) = 0 then Exit;
+  Shadows := ParseShadows(Trim(ResolveVars(FCompStyle.BoxShadow)));
+  PB := PaddingBox;
+  if (PB.Width <= 0) or (PB.Height <= 0) then Exit;
+  with FCompSize.ContentRect do CalcRadius(Right - Left, Bottom - Top, P[0], P[1], P[2], P[3]);
+  with FCompSize.Border do begin
+    BX[0] := Left; BX[1] := Right; BX[2] := Right; BX[3] := Left;
+    BY[0] := Top; BY[1] := Top; BY[2] := Bottom; BY[3] := Bottom;
+  end;
+  for J := 0 to 3 do begin          // inner radii of padding box
+    R[J] := Point(Max(0, P[J].x - BX[J]), Max(0, P[J].y - BY[J]));
+    if (R[J].x = 0) or (R[J].y = 0) then R[J] := Point(0, 0);
+  end;
+  Sc := RootNode.FPaintScale;
+  if Sc <= 0 then Sc := 1;
+  if CSSShadowCache = nil then begin
+    CSSShadowCache := TStringList.Create;
+    CSSShadowCache.Sorted := True;
+    CSSShadowCache.OwnsObjects := True;
+  end;
+  for I := 0 to High(Shadows) do begin
+    if not Shadows[I].Inset then Continue;
+    C := CSSColorToRGBA(Shadows[I].Color);
+    M := InsetMargin(Shadows[I]);
+    Key := Format('I,%d,%d,%d,%d,%f,%s', [Shadows[I].Blur, Shadows[I].Spread, Shadows[I].X, Shadows[I].Y, Sc, RGBAKey(C)]);
+    for J := 0 to 3 do Key := Key + Format(',%d,%d', [R[J].x, R[J].y]);
+    if (PB.Width < Max(R[0].x, R[3].x) + Max(R[1].x, R[2].x) + 2 * M + 1) or
+       (PB.Height < Max(R[0].y, R[1].y) + Max(R[3].y, R[2].y) + 2 * M + 1) then
+      Key := Key + Format(',%d,%d', [PB.Width, PB.Height]);       // small node: whole shadow
+    if CSSShadowCache.Find(Key, Idx) then
+      Slices := TCSSShadowSlices(CSSShadowCache.Objects[Idx])
+    else begin
+      Slices := BuildInsetShadowSlices(PB.Width, PB.Height, R, Shadows[I], C, Sc);
+      if CSSShadowCache.Count > CSS_CORNER_CACHE_LIMIT then CSSShadowCache.Clear;
+      CSSShadowCache.AddObject(Key, Slices);
+    end;
+    if Slices.Whole then
+      DrawPart(Slices.Parts[0], PB)
+    else begin
+      XS[0] := PB.Left; XS[1] := PB.Left + Slices.LW; XS[2] := PB.Right - Slices.RW; XS[3] := PB.Right;
+      YS[0] := PB.Top; YS[1] := PB.Top + Slices.TH; YS[2] := PB.Bottom - Slices.BH; YS[3] := PB.Bottom;
+      for J := 0 to 2 do
+        for X := 0 to 2 do
+          DrawPart(Slices.Parts[J * 3 + X], Rect(XS[X], YS[J], XS[X + 1], YS[J + 1]));
+    end;
+  end;
+  {$endif}
+end;
+
 procedure THtmlNode.PaintBoxShadow(ACanvas: TCanvas);
 var
   Shadows: TCSSShadowArray;
@@ -4323,7 +4571,7 @@ begin
     CSSShadowCache.OwnsObjects := True;
   end;
   for I := High(Shadows) downto 0 do begin   // first shadow is on top
-    if Shadows[I].Inset then Continue;        // inset shadows are not supported yet
+    if Shadows[I].Inset then Continue;        // inset shadows are painted by PaintInsetShadow
     SR := Box;
     OffsetRect(SR, Shadows[I].X, Shadows[I].Y);
     InflateRect(SR, Shadows[I].Spread, Shadows[I].Spread);
@@ -4815,29 +5063,39 @@ end;
 *)
 procedure THtmlNode.UpdateScrollRange;
 var
-  VP, CB: TRect;
+  VP, CB, AB: TRect;
   N: THtmlNode;
-  Any: Boolean;
+  Any, AnyAbs: Boolean;
 begin
   FScrollMin := Point(0, 0);
   FScrollMax := Point(0, 0);
   if ClipsContent and (FChildCount > 0) then begin
     VP := PaddingBox;
     Any := False;
+    AnyAbs := False;
     CB := VP;
+    AB := VP;
     N := FFirstChild;
     while Assigned(N) do begin
-      if N.FCompStyle.Display <> cdtNone then begin
-        if not Any then CB := N.FCompSize.MarginRect else CB.Union(N.FCompSize.MarginRect);
-        Any := True;
-      end;
+      if (N.FCompStyle.Display <> cdtNone) and not N.IsWhiteSpaceText then
+        if N.FCompStyle.Position in [cpAbsolute, cpFixed] then begin    // positioned in padding box
+          if not AnyAbs then AB := N.FCompSize.MarginRect else AB.Union(N.FCompSize.MarginRect);
+          AnyAbs := True;
+        end else begin
+          if not Any then CB := N.FCompSize.MarginRect else CB.Union(N.FCompSize.MarginRect);
+          Any := True;
+        end;
       N := N.FNextSibling;
     end;
-    if Any then begin
-      Dec(CB.Top, FCompSize.Padding.Top);
-      Dec(CB.Left, FCompSize.Padding.Left);
-      Inc(CB.Bottom, FCompSize.Padding.Bottom);
-      Inc(CB.Right, FCompSize.Padding.Right);
+    if Any or AnyAbs then begin
+      if Any then begin           // padding around content
+        Dec(CB.Top, FCompSize.Padding.Top);
+        Dec(CB.Left, FCompSize.Padding.Left);
+        Inc(CB.Bottom, FCompSize.Padding.Bottom);
+        Inc(CB.Right, FCompSize.Padding.Right);
+        if AnyAbs then CB.Union(AB);
+      end else
+        CB := AB;
       if FCompStyle.OverflowY <> cotVisible then begin
         FScrollMin.Y := Min(0, CB.Top - VP.Top);
         FScrollMax.Y := Max(0, CB.Bottom - VP.Bottom);
@@ -4881,6 +5139,51 @@ begin
   FScrollX := EnsureRange(AX, FScrollMin.X, FScrollMax.X);
   FScrollY := EnsureRange(AY, FScrollMin.Y, FScrollMax.Y);
   Result := (OX <> FScrollX) or (OY <> FScrollY);
+  if Result and Assigned(RootNode) then RootNode.UpdateStickyOffsets;
+end;
+
+(*
+  position: sticky; top: N - node stays N px below top of its scroll container while it is scrolled,
+  but it doesn't leave its parent (KISS: vertical only)
+*)
+function THtmlNode.StickyOffset: Integer;
+var
+  S, P: THtmlNode;
+  Sum, Need, Limit: Integer;
+begin
+  Result := 0;
+  Sum := 0;
+  S := ParentNode;
+  while Assigned(S) and not S.ClipsContent do begin
+    Inc(Sum, S.FScrollY);
+    S := S.ParentNode;
+  end;
+  if S = nil then Exit;
+  Inc(Sum, S.FScrollY);
+  Need := S.PaddingBox.Top + FCompSize.Position.Top - (FCompSize.ContentRect.Top - Sum);
+  if Need <= 0 then Exit;
+  P := ParentNode;
+  if P = S then Limit := MaxInt div 2      // scroll container itself: whole scrolled content
+  else Limit := P.FCompSize.ContentRect.Bottom - P.FCompSize.Border.Bottom - P.FCompSize.Padding.Bottom - FCompSize.MarginRect.Bottom;
+  Result := Max(0, Min(Need, Limit));
+end;
+
+procedure THtmlNode.UpdateStickyOffsets;
+  procedure Walk(N: THtmlNode);
+  var
+    C: THtmlNode;
+  begin
+    N.FStickyDY := 0;
+    if (N.FCompStyle.Position = cpSticky) and N.FVisible and not (N.FCompStyle.Top.LengthType in [cltUndefined, cltAuto]) then
+      N.FStickyDY := N.StickyOffset;
+    C := N.FFirstChild;
+    while Assigned(C) do begin
+      Walk(C);
+      C := C.FNextSibling;
+    end;
+  end;
+begin
+  Walk(Self);
 end;
 
 (*
@@ -4891,6 +5194,12 @@ var
   N, T: THtmlNode;
   I, J: Integer;
   Sorted: Boolean;
+  // sticky node is painted above its siblings (as positioned node)
+  function PaintZ(ANode: THtmlNode): Integer;
+  begin
+    Result := ANode.FCompStyle.ZIndex;
+    if (Result = 0) and (ANode.FCompStyle.Position = cpSticky) then Result := 1;
+  end;
 begin
   SetLength(Result, FChildCount);
   I := 0;
@@ -4898,7 +5207,7 @@ begin
   N := FFirstChild;
   while Assigned(N) and (I < Length(Result)) do begin
     Result[I] := N;
-    if N.FCompStyle.ZIndex <> 0 then Sorted := False;
+    if (N.FCompStyle.ZIndex <> 0) or (N.FCompStyle.Position = cpSticky) then Sorted := False;
     Inc(I);
     N := N.FNextSibling;
   end;
@@ -4907,7 +5216,7 @@ begin
   for I := 1 to High(Result) do begin    // stable insertion sort
     T := Result[I];
     J := I - 1;
-    while (J >= 0) and (Result[J].FCompStyle.ZIndex > T.FCompStyle.ZIndex) do begin
+    while (J >= 0) and (PaintZ(Result[J]) > PaintZ(T)) do begin
       Result[J + 1] := Result[J];
       Dec(J);
     end;
@@ -5730,6 +6039,7 @@ begin
   AVisible := True;
   for I := High(Chain) downto 0 do begin    // from root to node
     N := Chain[I];
+    Result.y := Result.y - N.FStickyDY;
     Result := N.UntransformPoint(Result);
     if I > 0 then begin                     // parent: clipping and scrolling of its children
       if N.ClipsContent then begin
@@ -5753,6 +6063,7 @@ begin
   N := Self;
   while Assigned(N) do begin
     Result := N.TransformPoint(Result);
+    Result.y := Result.y + N.FStickyDY;
     if Assigned(N.ParentNode) then begin
       Result.x := Result.x - N.ParentNode.FScrollX;
       Result.y := Result.y - N.ParentNode.FScrollY;
@@ -5840,6 +6151,18 @@ begin
   if not FVisible then Exit;
   FStyled := True;
   if (FCompStyle.Opacity <= 0.004) and not FLayoutRoot then Exit;     // opacity: 0
+  if FStickyDY <> 0 then begin         // sticky node: painted moved (as translate)
+    DX := FStickyDY;
+    FStickyDY := 0;
+    OffsetSubtree(0, DX);
+    try
+      PaintNodeTree(ACanvas, AClipRect);
+    finally
+      OffsetSubtree(0, -DX);
+      FStickyDY := DX;
+    end;
+    Exit;
+  end;
   case FTransformKind of
     tkTranslate: begin       // translated node is painted directly (exact, no bitmap)
       DX := Round(FTransform.E);
@@ -5890,7 +6213,7 @@ begin
     finally
       CSSPaintClip := SavedClip;
     end;
-    if (FScrollMax.X > FScrollMin.X) or (FScrollMax.Y > FScrollMin.Y) then begin
+    if ((FScrollMax.X > FScrollMin.X) or (FScrollMax.Y > FScrollMin.Y)) and not FCompStyle.ScrollbarNone then begin
       ACanvas.ClipRect := AClipRect;
       PaintScrollbars(ACanvas);
     end;
@@ -6222,6 +6545,7 @@ var
   Flags: Cardinal;
   R,               // temp rect
   CRect: TRect;    // border box
+  S: String;
 begin
   CRect := CompSize.ContentRect;
   // nothing is visible (empty clip rect means "no clipping" for canvas, so it must not be set)
@@ -6235,6 +6559,7 @@ begin
   {$endif}
   PaintBoxShadow(ACanvas);
   PaintBackgroundAndBorder(ACanvas);
+  PaintInsetShadow(ACanvas);
 
   {$ifdef fmx}
   {$else}
@@ -6257,7 +6582,11 @@ begin
       ctaRight: Flags := Flags or DT_RIGHT;
     end;
     ACanvas.ClipRect := TRect.Intersect(FCompSize.RealContentRect, AClipRect);  // R can't be intersected here, text is moved when R.Top changes
-    DrawText(ACanvas.Handle, PChar(Text), Length(Text),  R, Flags);
+    if (FCompStyle.LineClamp > 0) and (FCompStyle.WhiteSpace = cwsNormal) then begin
+      S := ClampedText(R.Right - R.Left);
+      DrawText(ACanvas.Handle, PChar(S), Length(S), R, Flags);
+    end else
+      DrawText(ACanvas.Handle, PChar(Text), Length(Text),  R, Flags);
     ACanvas.ClipRect := AClipRect;
   end;
   
@@ -6653,6 +6982,56 @@ begin
 end;
 
 (*
+  Styles of node (and of its subtree if ADeep, eg. group-hover) are applied again after change of state
+  (hover, active, focus). Returns True when layout must be computed again. Otherwise only painted values
+  are updated (inherited values, transforms) and ADirty is area to repaint, so hover over a big tree
+  doesn't need styles and layout of the whole tree.
+*)
+function THtmlNode.RestyleState(ADeep: Boolean; var ADirty: TRect): Boolean;
+var
+  NeedLayout: Boolean;
+  procedure Walk(N: THtmlNode; Deep: Boolean);
+  var
+    Old: String;
+    C: THtmlNode;
+    R: TRect;
+  begin
+    Old := N.FCompStyle.LayoutKey;
+    N.ApplyStyleForNode(N);
+    N.ResolveInheritedStyle;
+    if N.FCompStyle.LayoutKey <> Old then NeedLayout := True;
+    R := N.FCompSize.ContentRect;
+    if N.FCompStyle.BoxShadow <> '' then InflateRect(R, 60, 60) else InflateRect(R, 2, 2);
+    R := N.TransformedBounds(R);
+    if ADirty.IsEmpty then ADirty := R else if not R.IsEmpty then ADirty := TRect.Union(ADirty, R);
+    if Deep then begin
+      C := N.FFirstChild;
+      while Assigned(C) do begin
+        Walk(C, True);
+        C := C.FNextSibling;
+      end;
+    end;
+  end;
+  procedure Refresh(N: THtmlNode; AResolve: Boolean);
+  var
+    C: THtmlNode;
+  begin
+    if AResolve then N.ResolveInheritedStyle;      // eg. color inherited from hovered parent
+    N.ComputeTransform;
+    C := N.FFirstChild;
+    while Assigned(C) do begin
+      Refresh(C, True);
+      C := C.FNextSibling;
+    end;
+  end;
+begin
+  NeedLayout := False;
+  Walk(Self, ADeep);
+  if not NeedLayout then Refresh(Self, False);
+  Result := NeedLayout;
+end;
+
+(*
   Apply styles to this node and all descendants
 *)
 function THtmlNode.ApplyStyles: THtmlNode;
@@ -6696,10 +7075,24 @@ begin
     // utility classes (rules are created temporary)
     if Assigned(CSSUtilityResolver) then
       for I := 0 to ANode.ClassList.Count - 1 do
-        if ANode.UtilityClass(ANode.ClassList.Item[I], Decl, Spec, Order) then begin
+        if ANode.UtilityClass(ANode.ClassList.Item[I], Decl, Spec, Order) and (Copy(Decl, 1, 1) <> '>') then begin
           Item := TCSSItem.Create;
           Item.Attributes := Decl;
           Item.Specificity := Spec;
+          Item.Weight := CSS_UTILITY_ORDER_BASE + Order;
+          SetLength(TempRules, Length(TempRules) + 1);
+          TempRules[High(TempRules)] := Item;
+          Rules.Add(Item);
+        end;
+    // utilities of parent for its children ("> * + *" in Tailwind): space-x-*, space-y-*, divide-*
+    // declarations start with ">" and are applied to every child except the first one
+    if Assigned(CSSUtilityResolver) and Assigned(ANode.ParentNode) and ANode.HasPrevElementSibling and
+      ((Pos('space-', ANode.ParentNode.ClassList.Name) > 0) or (Pos('divide-', ANode.ParentNode.ClassList.Name) > 0)) then
+      for I := 0 to ANode.ParentNode.ClassList.Count - 1 do
+        if ANode.ParentNode.UtilityClass(ANode.ParentNode.ClassList.Item[I], Decl, Spec, Order) and (Copy(Decl, 1, 1) = '>') then begin
+          Item := TCSSItem.Create;
+          Item.Attributes := Copy(Decl, 2, MaxInt);
+          Item.Specificity := Spec + 10;
           Item.Weight := CSS_UTILITY_ORDER_BASE + Order;
           SetLength(TempRules, Length(TempRules) + 1);
           TempRules[High(TempRules)] := Item;
@@ -6830,6 +7223,9 @@ begin
     end else
     if Variant = 'group-hover' then begin
       if not HasHoveredAncestorWithClass('group') then Exit;
+    end else
+    if Variant = 'dark' then begin
+      if not CSSDarkMode then Exit;
     end else begin
       // responsive variants (mobile first, compared with width of root node)
       I := High(BREAKPOINTS);
@@ -6945,12 +7341,14 @@ end;
 
 procedure THtmlNode.PaintTo(ACanvas: TCanvas);
 begin
+  UpdateStickyOffsets;
   // clip rect must not overflow when canvas adds offset of control (LPtoDP), so MaxInt can't be used
   PaintNodeTree(ACanvas, Rect(0, 0, $100000, $100000));
 end;
 
 procedure THtmlNode.PaintTo(ACanvas: TCanvas; const AClipRect: TRect);
 begin
+  UpdateStickyOffsets;
   PaintNodeTree(ACanvas, AClipRect);
 end;
 
@@ -7096,7 +7494,7 @@ var
   childHeight,
   cW, cH, cB: Integer;
   HorzSpace, VertSpace: Integer;   // padding + border
-  TextW, TextH, AvailW, PW, PH: Integer;
+  TextW, TextH, AvailW, PW, PH, LineH: Integer;
   R: TRect;
   cs: TCSSItem;
   function AutoToZero(AValue: Integer): Integer; inline;
@@ -7167,6 +7565,7 @@ begin
   ANode.CalculateSize(cW, cH, cB);      // return -1, -1, 0 if node doesn't have own sizes. TextNode have own size (text size)
   TextW := cW;
   TextH := cH;
+  LineH := cH;                          // height of one line of text
   // if width/height is set in this node owerrite
   if ANode.FLayoutRoot then begin    // size of root node is set by LayoutTo
     if ANode.FLayoutWidth >= 0 then cW := ANode.FLayoutWidth;
@@ -7194,6 +7593,10 @@ begin
   end;
   if AForceWidth >= 0 then cW := Max(0, AForceWidth - HorzSpace);
   if AForceHeight >= 0 then cH := Max(0, AForceHeight - VertSpace);
+  // aspect-ratio: height from width
+  if (cs.AspectRatio > 0) and (cW >= 0) and (AForceHeight < 0) and (SpecifiedSize(cs.Height, ParentHeight, VertSpace) < 0) then
+    if cs.BoxSizing = cbxBorderBox then cH := Max(0, Round((cW + HorzSpace) / cs.AspectRatio) - VertSpace)
+      else cH := Round(cW / cs.AspectRatio);
 
   // image keeps aspect ratio if only one size is set
   if (ANode.FElementName = 'img') and (TextW > 0) and (TextH > 0) then begin
@@ -7209,6 +7612,10 @@ begin
       else AvailW := -1;
     if (AvailW > 0) and (TextW > AvailW) then begin
       ANode.MeasureText(AvailW, TextW, TextH, cB);
+      // line-clamp: text is cut with ellipsis
+      // line-clamp: height of N lines (text with ellipsis is computed when painted)
+      if (cs.LineClamp > 0) and (LineH > 0) then
+        TextH := Min(TextH, ANode.ClampLinesHeight(cs.LineClamp));
       if cW < 0 then cW := TextW;
       if SpecifiedSize(cs.Height, ParentHeight, VertSpace) < 0 then
         cH := Constrain(TextH, cs.MinHeight, cs.MaxHeight, ParentHeight, VertSpace);
@@ -7657,6 +8064,98 @@ end;
 function THtmlNode.IsWhiteSpaceText: Boolean;
 begin
   Result := (FElementName = '#text') and (FChildCount = 0) and (Trim(FText) = '');
+end;
+
+function THtmlNode.HasPrevElementSibling: Boolean;
+var
+  N: THtmlNode;
+begin
+  N := FPrevSibling;
+  while Assigned(N) and N.IsWhiteSpaceText do N := N.FPrevSibling;
+  Result := Assigned(N);
+end;
+
+(*
+  line-clamp: height of ALines lines of wrapped text
+*)
+function MeasureCanvas: TCanvas;
+begin
+  if CSSMeasureBitmap = nil then begin
+    CSSMeasureBitmap := TBitmap.Create;
+    CSSMeasureBitmap.SetSize(1, 1);
+  end;
+  Result := CSSMeasureBitmap.Canvas;
+end;
+
+function WrappedTextHeight(ACanvas: TCanvas; const AText: String; AMaxWidth: Integer): Integer;
+var
+  R: TRect;
+begin
+  R := Rect(0, 0, Max(1, AMaxWidth), 0);
+  DrawText(ACanvas.Handle, PChar(AText), Length(AText), R, DT_CALCRECT or DT_WORDBREAK or DT_NOPREFIX or DT_LEFT);
+  Result := R.Height;
+end;
+
+function THtmlNode.ClampLinesHeight(ALines: Integer): Integer;
+var
+  Canvas: TCanvas;
+begin
+  Canvas := MeasureCanvas;
+  AssignFontTo(Canvas.Font);
+  Result := WrappedTextHeight(Canvas, 'W'#10'W', 1000) * ALines div 2;   // line height with leading
+end;
+
+(*
+  line-clamp: longest beginning of text with ellipsis which fits to N lines (whole text when it fits).
+  Computed when painted, cached for width, lines, font and text.
+*)
+function THtmlNode.ClampedText(AMaxWidth: Integer): String;
+const
+  ELLIPSIS = #$E2#$80#$A6;
+var
+  L, N, MaxH, FullH: Integer;
+  Canvas: TCanvas;
+  Key: String;
+  function Fits(ALen: Integer): Boolean;
+  begin
+    Result := WrappedTextHeight(Canvas, TrimRight(Copy(FText, 1, ALen)) + ELLIPSIS, AMaxWidth) <= MaxH;
+  end;
+  // length of text up to the last space before position (whole words)
+  function WordStart(APos: Integer): Integer;
+  begin
+    Result := Min(APos, Length(FText));
+    while (Result > 0) and (FText[Result] <> ' ') do Dec(Result);
+  end;
+  // length of text with next word
+  function WordEnd(APos: Integer): Integer;
+  begin
+    Result := APos + 1;
+    while (Result < Length(FText)) and (FText[Result + 1] <> ' ') do Inc(Result);
+  end;
+begin
+  Canvas := MeasureCanvas;
+  AssignFontTo(Canvas.Font);
+  Key := Format('%d|%d|%s|%d|%d|%s', [AMaxWidth, FCompStyle.LineClamp, Canvas.Font.Name, Canvas.Font.Height, Integer(Canvas.Font.Style), FText]);
+  if Key = FClampKey then Exit(FClampResult);
+  FClampKey := Key;
+  MaxH := WrappedTextHeight(Canvas, 'W'#10'W', 1000) * FCompStyle.LineClamp div 2;
+  Result := FText;
+  FullH := WrappedTextHeight(Canvas, FText, AMaxWidth);
+  if FullH > MaxH then begin
+    // estimate from heights, then whole words are added or removed (usually 2 or 3 measurements)
+    L := WordStart(Round(Length(FText) * MaxH / FullH * 1.05));
+    if Fits(L) then begin
+      repeat
+        N := WordEnd(L);
+        if (N > L) and (N < Length(FText)) and Fits(N) then L := N else Break;
+      until False;
+    end else
+      repeat
+        L := WordStart(L - 1);
+      until (L <= 0) or Fits(L);
+    Result := TrimRight(Copy(FText, 1, L)) + ELLIPSIS;
+  end;
+  FClampResult := Result;
 end;
 
 (*
@@ -8461,11 +8960,25 @@ begin
   Changed;
 end;
 
+var
+  CSSUpdateCount: Integer = 0;
+
+procedure CSSBeginUpdate;
+begin
+  Inc(CSSUpdateCount);
+end;
+
+procedure CSSEndUpdate;
+begin
+  if CSSUpdateCount > 0 then Dec(CSSUpdateCount);
+end;
+
 procedure THtmlNode.Changed;
 var
   I: ICSSControl;
 begin
   Inc(CSSPaintGeneration);
+  if CSSUpdateCount > 0 then Exit;      // CSSBeginUpdate: layout once at the end
   if Assigned(RootNode) and Assigned(RootNode.ParentControl) then begin
     if RootNode.ParentControl.GetInterface(StringToGUID(HTMLInterface), I) then
       I.Changed;

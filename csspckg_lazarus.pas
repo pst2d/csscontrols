@@ -8,13 +8,14 @@ unit csspckg_lazarus;
 interface
 
 uses
-  CSSCtrls, cssbase, csstailwind, csshtml, LazarusPackageIntf;
+  CSSCtrls, cssbase, csstailwind, csshtml, csscomponents, LazarusPackageIntf;
 
 implementation
 
 procedure Register;
 begin
   RegisterUnit('CSSCtrls', @CSSCtrls.Register);
+  RegisterUnit('csscomponents', @csscomponents.Register);
 end;
 
 initialization

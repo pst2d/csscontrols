@@ -13,6 +13,8 @@
                 flex-none grow(-0) shrink(-0) basis-* order-* justify-* items-* self-* gap(-x,-y)-*
     effects:    opacity-* transition(-all,-colors,-opacity,-transform,-none) duration-* delay-* ease-*
                 animate-spin animate-ping animate-pulse animate-bounce pointer-events-none
+    children:   space-x-* space-y-* divide-x divide-y (-0,-2,-4,-8) divide-{color}
+    other:      scrollbar-none line-clamp-* aspect-square aspect-video aspect-[4/3] sticky shadow-inner dark: variant
     grid:       grid inline-grid grid-cols-* grid-rows-* (number, none, [arbitrary]) col-span-* row-span-* (-full)
     spacing:    p-* px-* py-* pt-* pr-* pb-* pl-* m-* mx-* my-* mt-* mr-* mb-* ml-* (negative values, auto)
     sizing:     w-* h-* size-* min-w-* min-h-* max-w-* max-h-* (spacing scale, fractions, full, screen, auto, px)
@@ -35,7 +37,7 @@
     images:     bg-[url(file.png)] bg-none bg-cover bg-contain bg-auto bg-center bg-top ... bg-no-repeat bg-repeat
     opacity:    color modifiers eg. bg-black/50 text-white/70 border-slate-900/10
 
-  Not supported: inset shadows (shadow-inner), transitions, grid, space-x/y, dark mode.
+  Not supported: @keyframes, backdrop filters, divide-style, negative space.
 *)
 unit csstailwind;
 
@@ -316,6 +318,7 @@ const
   O_BORDER_COLOR = 314; O_ROUNDED = 320; O_ROUNDED_SIDE = 321; O_ROUNDED_CORNER = 322; O_SHADOW = 350;
   O_SHADOW_COLOR = 351; O_TRANSFORM = 360; O_ORIGIN = 361; O_CURSOR = 400;
   O_OVERFLOW_AXIS = 46; O_ZINDEX = 25; O_GRID = 67; O_GRID_SPAN = 68; O_BORDER_COLOR_SIDE = 315;
+  O_SPACE = 103; O_DIVIDE = 316; O_DIVIDE_COLOR = 317; O_LINE_CLAMP = 208; O_ASPECT = 125;
   O_TRANSITION = 370; O_DURATION = 371; O_EASE = 372; O_ANIMATE = 373; O_OPACITY = 380; O_POINTER = 401;
   TW_EASE = 'transition-timing-function:cubic-bezier(0.4, 0, 0.2, 1);';
 
@@ -731,7 +734,27 @@ begin
     if TryStrToInt(V, I) and (I >= 0) and (I <= 100) then Exit(Done('opacity:' + FloatToCSS(I / 100), O_OPACITY));
   end;
   if Name = 'pointer-events-none' then Exit(Done('pointer-events:none', O_POINTER));
+  if Name = 'scrollbar-none' then Exit(Done('scrollbar-width:none', O_POINTER));      // as tailwind-scrollbar-hide plugin
   if Name = 'pointer-events-auto' then Exit(Done('pointer-events:auto', O_POINTER));
+
+  // utilities for children (">": applied to all children except the first one, as "> * + *" in Tailwind)
+  if HasPrefix(Name, 'space-x-', V) and Spacing(V, False, False, False, R) then Exit(Done('>margin-left:' + R, O_SPACE));
+  if HasPrefix(Name, 'space-y-', V) and Spacing(V, False, False, False, R) then Exit(Done('>margin-top:' + R, O_SPACE));
+  if (Name = 'divide-x') or (Name = 'divide-y') then W := '' else
+  if not (HasPrefix(Name, 'divide-x-', W) or HasPrefix(Name, 'divide-y-', W)) then W := '?';
+  if (W <> '?') and BorderWidthValue(W, R) then
+    if Name[8] = 'x' then
+      Exit(Done('>border-left-width:' + R + ';border-left-style:solid;border-left-color:' + TW_DEFAULT_BORDER_COLOR, O_DIVIDE))
+    else
+      Exit(Done('>border-top-width:' + R + ';border-top-style:solid;border-top-color:' + TW_DEFAULT_BORDER_COLOR, O_DIVIDE));
+  if HasPrefix(Name, 'divide-', V) and TailwindColor(V, C) then Exit(Done('>border-color:' + C, O_DIVIDE_COLOR));
+  // line clamp, aspect ratio
+  if Name = 'line-clamp-none' then Exit(Done('line-clamp:0;overflow:visible', O_LINE_CLAMP));
+  if HasPrefix(Name, 'line-clamp-', V) and TryStrToInt(V, I) and (I > 0) then Exit(Done('line-clamp:' + V + ';overflow:hidden', O_LINE_CLAMP));
+  if Name = 'aspect-auto' then Exit(Done('aspect-ratio:auto', O_ASPECT));
+  if Name = 'aspect-square' then Exit(Done('aspect-ratio:1 / 1', O_ASPECT));
+  if Name = 'aspect-video' then Exit(Done('aspect-ratio:16 / 9', O_ASPECT));
+  if HasPrefix(Name, 'aspect-', V) and IsArbitrary(V, R) then Exit(Done('aspect-ratio:' + R, O_ASPECT));
 
   // grid
   if (Name = 'grid') or (Name = 'inline-grid') then Exit(Done('display:' + Name, O_DISPLAY));
