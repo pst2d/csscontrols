@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="700" viewBox="0 0 960 700" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+<!-- csscontrols architecture. Icons: Lucide (https://lucide.dev), ISC License, Copyright (c) Lucide Icons and Contributors -->
+<defs><linearGradient id="eng" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1e1b4b"/><stop offset="1" stop-color="#2e1065"/></linearGradient><marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1 9 5 1 9" fill="none" stroke="#6366f1" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+<rect width="960" height="700" rx="24" fill="#0b1120"/>
+<text x="40" y="44" font-size="12" font-weight="700" fill="#94a3b8" text-anchor="start">YOU WRITE</text>
+<rect x="24" y="60" width="288" height="84" rx="16" fill="#111827" stroke="#1f2937" stroke-width="1.5"/>
+<rect x="42" y="78" width="48" height="48" rx="12" fill="#312e81"/>
+<g transform="translate(54 90) scale(1.0)" fill="none" stroke="#c7d2fe" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4" /> <path d="m6 8-4 4 4 4" /> <path d="m14.5 4-5 16" /></g>
+<text x="106" y="97" font-size="15" font-weight="650" fill="#e2e8f0" text-anchor="start">HTML markup</text>
+<text x="106" y="120" font-size="12.5" font-weight="400" fill="#94a3b8" text-anchor="start">TCSSShape.HTML, AppendHTML</text>
+<path d="M168 144 V192" fill="none" stroke="#6366f1" stroke-width="2" marker-end="url(#ah)"/>
+<rect x="336" y="60" width="288" height="84" rx="16" fill="#111827" stroke="#1f2937" stroke-width="1.5"/>
+<rect x="354" y="78" width="48" height="48" rx="12" fill="#312e81"/>
+<g transform="translate(366 90) scale(1.0)" fill="none" stroke="#c7d2fe" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22a1 1 0 0 1 0-20 10 9 0 0 1 10 9 5 5 0 0 1-5 5h-2.25a1.75 1.75 0 0 0-1.4 2.8l.3.4a1.75 1.75 0 0 1-1.4 2.8z" /> <circle cx="13.5" cy="6.5" r=".5" fill="currentColor" /> <circle cx="17.5" cy="10.5" r=".5" fill="currentColor" /> <circle cx="6.5" cy="12.5" r=".5" fill="currentColor" /> <circle cx="8.5" cy="7.5" r=".5" fill="currentColor" /></g>
+<text x="418" y="97" font-size="15" font-weight="650" fill="#e2e8f0" text-anchor="start">CSS and Tailwind classes</text>
+<text x="418" y="120" font-size="12.5" font-weight="400" fill="#94a3b8" text-anchor="start">stylesheet, utilities, hover:, dark:</text>
+<path d="M480 144 V192" fill="none" stroke="#6366f1" stroke-width="2" marker-end="url(#ah)"/>
+<rect x="648" y="60" width="288" height="84" rx="16" fill="#111827" stroke="#1f2937" stroke-width="1.5"/>
+<rect x="666" y="78" width="48" height="48" rx="12" fill="#312e81"/>
+<g transform="translate(678 90) scale(1.0)" fill="none" stroke="#c7d2fe" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H7a2 2 0 0 0-2 2v5a2 2 0 0 1-2 2 2 2 0 0 1 2 2v5c0 1.1.9 2 2 2h1" /> <path d="M16 21h1a2 2 0 0 0 2-2v-5c0-1.1.9-2 2-2a2 2 0 0 1-2-2V5a2 2 0 0 0-2-2h-1" /></g>
+<text x="730" y="97" font-size="15" font-weight="650" fill="#e2e8f0" text-anchor="start">Pascal code</text>
+<text x="730" y="120" font-size="12.5" font-weight="400" fill="#94a3b8" text-anchor="start">THtmlNode tree, events, data</text>
+<path d="M792 144 V192" fill="none" stroke="#6366f1" stroke-width="2" marker-end="url(#ah)"/>
+<rect x="24" y="196" width="912" height="236" rx="20" fill="url(#eng)" stroke="#3730a3" stroke-width="1.5"/>
+<g transform="translate(48 220) scale(1.0833333333333333)" fill="none" stroke="#a5b4fc" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z" /> <path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12" /> <path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17" /></g>
+<text x="84" y="241" font-size="22" font-weight="750" fill="#e2e8f0" text-anchor="start">csscontrols</text>
+<text x="212" y="241" font-size="13.5" font-weight="450" fill="#94a3b8" text-anchor="start">pure Pascal engine, no external libraries</text>
+<rect x="48" y="266" width="202" height="142" rx="14" fill="#111827" stroke="#3730a3" stroke-width="1.5"/>
+<text x="66" y="296" font-size="14.5" font-weight="650" fill="#a5b4fc" text-anchor="start">Parse and cascade</text>
+<text x="66" y="324" font-size="12.5" font-weight="400" fill="#94a3b8" text-anchor="start">selectors, variables</text>
+<text x="66" y="348" font-size="12.5" font-weight="400" fill="#94a3b8" text-anchor="start">utility classes</text>
+<text x="66" y="372" font-size="12.5" font-weight="400" fill="#94a3b8" text-anchor="start">dark: hover: focus:</text>
+<rect x="266" y="266" width="202" height="142" rx="14" fill="#111827" stroke="#3730a3" stroke-width="1.5"/>
+<text x="284" y="296" font-size="14.5" font-weight="650" fill="#a5b4fc" text-anchor="start">Layout</text>
+<text x="284" y="324" font-size="12.5" font-weight="400" fill="#94a3b8" text-anchor="start">box model, flex, grid</text>
+<text x="284" y="348" font-size="12.5" font-weight="400" fill="#94a3b8" text-anchor="start">absolute, sticky</text>
+<text x="284" y="372" font-size="12.5" font-weight="400" fill="#94a3b8" text-anchor="start">scrolling, line-clamp</text>
+<rect x="484" y="266" width="202" height="142" rx="14" fill="#111827" stroke="#3730a3" stroke-width="1.5"/>
+<text x="502" y="296" font-size="14.5" font-weight="650" fill="#a5b4fc" text-anchor="start">Painting</text>
+<text x="502" y="324" font-size="12.5" font-weight="400" fill="#94a3b8" text-anchor="start">borders, radius, shadows</text>
+<text x="502" y="348" font-size="12.5" font-weight="400" fill="#94a3b8" text-anchor="start">gradients, images</text>
+<text x="502" y="372" font-size="12.5" font-weight="400" fill="#94a3b8" text-anchor="start">svg icons, opacity</text>
+<rect x="702" y="266" width="202" height="142" rx="14" fill="#111827" stroke="#3730a3" stroke-width="1.5"/>
+<text x="720" y="296" font-size="14.5" font-weight="650" fill="#a5b4fc" text-anchor="start">Interaction</text>
+<text x="720" y="324" font-size="12.5" font-weight="400" fill="#94a3b8" text-anchor="start">hover, active, focus</text>
+<text x="720" y="348" font-size="12.5" font-weight="400" fill="#94a3b8" text-anchor="start">transitions, animations</text>
+<text x="720" y="372" font-size="12.5" font-weight="400" fill="#94a3b8" text-anchor="start">hit testing, events</text>
+<text x="40" y="484" font-size="12" font-weight="700" fill="#94a3b8" text-anchor="start">RENDERED BY LCL</text>
+<path d="M246 432 V496" fill="none" stroke="#6366f1" stroke-width="2" marker-end="url(#ah)"/>
+<rect x="24" y="500" width="444" height="80" rx="16" fill="#111827" stroke="#1f2937" stroke-width="1.5"/>
+<rect x="42" y="516" width="48" height="48" rx="12" fill="#312e81"/>
+<g transform="translate(54 528) scale(1.0)" fill="none" stroke="#c7d2fe" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m11 10 3 3" /> <path d="M6.5 21A3.5 3.5 0 1 0 3 17.5a2.62 2.62 0 0 1-.708 1.792A1 1 0 0 0 3 21z" /> <path d="M9.969 17.031 21.378 5.624a1 1 0 0 0-3.002-3.002L6.967 14.031" /></g>
+<text x="106" y="535" font-size="15" font-weight="650" fill="#e2e8f0" text-anchor="start">LCL Canvas</text>
+<text x="106" y="558" font-size="12.5" font-weight="400" fill="#94a3b8" text-anchor="start">everything is drawn by the engine</text>
+<path d="M714 432 V496" fill="none" stroke="#6366f1" stroke-width="2" marker-end="url(#ah)"/>
+<rect x="492" y="500" width="444" height="80" rx="16" fill="#111827" stroke="#1f2937" stroke-width="1.5"/>
+<rect x="510" y="516" width="48" height="48" rx="12" fill="#312e81"/>
+<g transform="translate(522 528) scale(1.0)" fill="none" stroke="#c7d2fe" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h-1a2 2 0 0 1-2-2 2 2 0 0 1-2 2H6" /> <path d="M13 8h7a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-7" /> <path d="M5 16H4a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h1" /> <path d="M6 4h1a2 2 0 0 1 2 2 2 2 0 0 1 2-2h1" /> <path d="M9 6v12" /></g>
+<text x="574" y="535" font-size="15" font-weight="650" fill="#e2e8f0" text-anchor="start">Native LCL controls</text>
+<text x="574" y="558" font-size="12.5" font-weight="400" fill="#94a3b8" text-anchor="start">TEdit, TMemo, TComboBox in nodes</text>
+<path d="M246 580 V586.0 Q246 598.0 258 598.0 H408 Q420 598.0 420 610.0 V616" fill="none" stroke="#6366f1" stroke-width="2" marker-end="url(#ah)"/>
+<path d="M714 580 V586.0 Q714 598.0 702 598.0 H552 Q540 598.0 540 610.0 V616" fill="none" stroke="#6366f1" stroke-width="2" marker-end="url(#ah)"/>
+<rect x="180" y="620" width="600" height="64" rx="16" fill="#052e2b" stroke="#065f46" stroke-width="1.5"/>
+<g transform="translate(212 640) scale(1.0)" fill="none" stroke="#34d399" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2" /> <path d="M10 4v4" /> <path d="M2 8h20" /> <path d="M6 4v4" /></g>
+<text x="250" y="650" font-size="15" font-weight="650" fill="#e2e8f0" text-anchor="start">Native desktop application</text>
+<text x="250" y="670" font-size="12.5" font-weight="400" fill="#94a3b8" text-anchor="start">Windows, macOS, Linux: one executable, no browser, no WebView</text>
+</svg>

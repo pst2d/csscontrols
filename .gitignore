@@ -20,3 +20,5 @@ tests/out/
 packagefiles.xml
 demo/renderdemo
 demo/out/
+demo/kanban/kanban
+demo/kanban/kanban.exe

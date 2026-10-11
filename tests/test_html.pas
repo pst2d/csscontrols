@@ -31,6 +31,7 @@ type
     procedure TestElementDefaults;
     procedure TestImage;
     procedure TestTailwindExample;
+    procedure TestSvgIcon;
   end;
 
 implementation
@@ -230,6 +231,41 @@ begin
     AssertEquals('Class Warfare', Title.Text);
     AssertEquals(24, Title.CompSize.FontSize, 0.01);
   finally
+    CSSTailwindDisable;
+  end;
+end;
+
+procedure TTestHtml.TestSvgIcon;
+var
+  Icon: THtmlNode;
+  Bmp: TBitmap;
+  C: TColor;
+begin
+  CSSTailwindEnable;
+  Bmp := TBitmap.Create;
+  try
+    // svg copied from lucide.dev: stroked shapes, color is text color, size from classes
+    FRoot.AppendHTML('<div class="flex"><svg class="size-12 text-red-600" viewBox="0 0 24 24" stroke-width="2">' +
+      '<path d="M2 6h20" /><circle cx="12" cy="16" r="4"/></svg></div>');
+    FRoot.ApplyStyles;
+    FRoot.LayoutTo(0, 0, 100, 100);
+    Icon := FRoot.FirstChild.FirstChild;
+    AssertEquals('svg element', 'svg', Icon.Element);
+    AssertTrue('shapes are kept as markup', Pos('<circle', Icon.Attributes['data-svg']) > 0);
+    AssertTrue('no child nodes', Icon.FirstChild = nil);
+    AssertEquals('size from class', 48, Icon.CompSize.ContentRect.Width);
+    Bmp.SetSize(48, 48);
+    Bmp.Canvas.Brush.Color := clWhite;
+    Bmp.Canvas.FillRect(0, 0, 48, 48);
+    FRoot.PaintTo(Bmp.Canvas);
+    C := Bmp.Canvas.Pixels[24, 12];              // line y=6 -> 12 px (scale 2)
+    AssertTrue('line is painted with text color', (Red(C) > 180) and (Green(C) < 80));
+    C := Bmp.Canvas.Pixels[24, 32];              // center of circle
+    AssertEquals('inside circle is empty', clWhite, C);
+    C := Bmp.Canvas.Pixels[24, 40];              // bottom of circle: y = 16 + 4 = 20 -> 40 px
+    AssertTrue('circle is painted', (Red(C) > 180) and (Green(C) < 80));
+  finally
+    Bmp.Free;
     CSSTailwindDisable;
   end;
 end;

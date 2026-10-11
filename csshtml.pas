@@ -280,6 +280,18 @@ begin
       end;
       if AttrName <> '' then SetNodeAttribute(Node, AttrName, CSSDecodeEntities(AttrValue));
     until False;
+    // <svg> icon: shapes are kept as markup in data-svg attribute (painted by engine), node has no children
+    if (Name = 'svg') and not SelfClosing then begin
+      P := Pos('</svg', LowerCase(Copy(AHtml, I, MaxInt)));
+      if P = 0 then P := Len - I + 2;
+      Node.SetAttribute('data-svg', Copy(AHtml, I, P - 1));
+      I := I + P - 1;
+      while (I <= Len) and (AHtml[I] <> '>') do Inc(I);
+      Inc(I);
+      Current.AddNode(Node);
+      Node.ApplyStyle;
+      Continue;
+    end;
     // <style> is appended to stylesheet, <script> is ignored
     if (Name = 'style') or (Name = 'script') then begin
       P := Pos('</' + Name, LowerCase(Copy(AHtml, I, MaxInt)));

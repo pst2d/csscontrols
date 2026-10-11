@@ -9,7 +9,7 @@ unit test_shape;
 interface
 
 uses
-  Classes, SysUtils, Graphics, Forms, fpcunit, testregistry, cssbase, CSSCtrls, csstailwind, csscomponents;
+  Classes, SysUtils, Graphics, Forms, Controls, fpcunit, testregistry, cssbase, CSSCtrls, csstailwind, csscomponents;
 
 type
 
@@ -24,6 +24,16 @@ type
     procedure TestStreaming;
     procedure TestTabsIndicator;
     procedure TestTabsResize;
+    procedure TestCoveredNodeIsNotHovered;
+  end;
+
+  TShapeAccess = class(TCSSShape);
+
+  { TClickLog }
+
+  TClickLog = class
+    Log: String;
+    procedure Click(Sender: TObject);
   end;
 
 implementation
@@ -129,6 +139,51 @@ begin
   finally
     F.Free;
     CSSAnimationsEnabled := True;
+  end;
+end;
+
+procedure TClickLog.Click(Sender: TObject);
+begin
+  Log := Log + THtmlNode(Sender).Id;
+end;
+
+procedure TTestShape.TestCoveredNodeIsNotHovered;
+var
+  F: TForm;
+  S: TShapeAccess;
+  Card, Text, Dialog: THtmlNode;
+  Clicks: TClickLog;
+begin
+  F := TForm.CreateNew(nil);
+  Clicks := TClickLog.Create;
+  try
+    F.SetBounds(0, 0, 300, 200);
+    S := TShapeAccess.Create(F);
+    S.Parent := F;
+    S.SetBounds(0, 0, 300, 200);
+    S.Body.SetClass('relative h-full p-4');
+    Card := HTMLNode('h-20 hover:bg-sky-100').SetId('card').SetOnClick(@Clicks.Click).AppendTo(S.Body);
+    Text := HTMLNode('', 'Text').SetId('text').AppendTo(Card);
+    S.Changed;
+    S.MouseMove([], 40, 30);
+    AssertTrue('card is hovered', Card.Hovered);
+    AssertTrue('top node is hovered', Text.Hovered);
+    AssertTrue('parent of top node is hovered', S.Body.Hovered);
+    S.MouseDown(mbLeft, [ssLeft], 40, 30);
+    S.MouseUp(mbLeft, [], 40, 30);
+    AssertEquals('click of child goes to card (bubbling)', 'card', Clicks.Log);
+    // dialog without OnClick covers the card
+    Dialog := HTMLNode('absolute inset-0').SetId('dialog').AppendTo(S.Body);
+    S.Changed;
+    S.MouseMove([], 41, 31);
+    AssertFalse('covered card is not hovered', Card.Hovered);
+    AssertTrue('dialog is hovered', Dialog.Hovered);
+    S.MouseDown(mbLeft, [ssLeft], 40, 30);
+    S.MouseUp(mbLeft, [], 40, 30);
+    AssertEquals('covered card is not clicked', 'card', Clicks.Log);
+  finally
+    Clicks.Free;
+    F.Free;
   end;
 end;
 

@@ -384,7 +384,7 @@ procedure TCSSShape.Paint;
 var
   R: TRect;
 begin
-  if (csDesigning in ComponentState) and (Body.FirstChild = nil) and (Body.Text = '') then begin
+  if (csDesigning in ComponentState) and (Body.FirstChild = nil) and (Body.Text = '') and (FCSS.Count = 0) and (FBodyClass = '') then begin
     Canvas.Pen.Style := psDash;      // empty shape in form designer
     Canvas.Pen.Color := clGray;
     Canvas.Brush.Style := bsClear;
@@ -668,17 +668,31 @@ end;
 (*
   Set :active state for visible nodes at position (AActive = False clears all)
 *)
+(*
+  Node is the top node at mouse position or its parent (only these get :hover and :active, as in browser)
+*)
+function InMouseChain(ANode, ATop: THtmlNode): Boolean;
+begin
+  while Assigned(ATop) do begin
+    if ATop = ANode then Exit(True);
+    ATop := ATop.ParentNode;
+  end;
+  Result := False;
+end;
+
 procedure TCSSShape.SetActiveNodes(X, Y: Integer; AActive: Boolean);
 var
-  Node: THtmlNode;
+  Node, Top: THtmlNode;
   NewActive: Boolean;
   ChangedNodes: TList;
 begin
   ChangedNodes := TList.Create;
   try
+    Top := nil;
+    if AActive then Top := FBodyNode.NodeAtPosition(Point(X, Y), False);
     Node := FBodyNode;
     while Assigned(Node) do begin
-      NewActive := AActive and Node.Visible and Node.HitTest(Point(X, Y));
+      NewActive := AActive and InMouseChain(Node, Top);
       if Node.Active <> NewActive then begin
         Node.Active := NewActive;
         ChangedNodes.Add(Node);
@@ -941,7 +955,7 @@ end;
 
 procedure TCSSShape.MouseMove(Shift: TShiftState; X, Y: Integer);
 var
-  Node: THtmlNode;
+  Node, Top: THtmlNode;
   Modified: Boolean;
   NewCursor: TCursor;
   ChangedNodes: TList;
@@ -961,13 +975,19 @@ begin
     if Modified then ScrollChanged;
     Exit;
   end;
+  // only the top node under mouse and its parents are hovered (not nodes covered by a dialog or popup)
+  Top := FBodyNode.NodeAtPosition(Point(X, Y), False);
+  NewCursor := crNone;
+  Node := Top;
+  while Assigned(Node) and (NewCursor = crNone) do begin    // cursor of nearest node which sets it
+    if Node.CompStyle.Cursor <> crDefault then NewCursor := Node.CompStyle.Cursor;
+    Node := Node.ParentNode;
+  end;
   Node :=  GetBodyNode;
-  NewCursor :=  crNone;
   ChangedNodes := TList.Create;
   try
     while Assigned(Node) do begin
-      if Node.Visible and Node.HitTest(Point(X, Y)) then begin
-        if Node.CompStyle.Cursor <> crDefault then NewCursor := Node.CompStyle.Cursor;
+      if InMouseChain(Node, Top) then begin
         if not Node.Hovered then begin
           Node.Hovered := True;
           ChangedNodes.Add(Node);

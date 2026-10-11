@@ -21,7 +21,21 @@ CSSShape1.Changed;
 
 > Work in progress: the API can still change.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/architecture-dark.svg">
+  <img src="docs/images/architecture.svg" alt="HTML, CSS and Pascal code go to the csscontrols engine (parse and cascade, layout, painting, interaction), which draws on the LCL canvas and places native LCL controls, so the result is a native desktop application">
+</picture>
+
 ## Screenshots
+
+Kanban board (`demo/kanban/kanban.lpi`), a small Trello-like application: drag and drop of cards, task
+detail with native `TEdit`/`TMemo`, search, filters, dark mode and Lucide icons:
+
+<p>
+<img src="docs/images/kanban-drag.png" width="100%" alt="Kanban board while a card is dragged">
+<img src="docs/images/kanban-detail.png" width="49%" alt="Task detail">
+<img src="docs/images/kanban-dark.png" width="49%" alt="Kanban board in dark mode">
+</p>
 
 Scenes of the demo application (`demo/csscontrols_demo.lpi`), painted by the engine:
 
@@ -78,6 +92,10 @@ Scenes of the demo application (`demo/csscontrols_demo.lpi`), painted by the eng
   `opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none`
 - `pointer-events: none` (the node and its children are ignored by the mouse)
 - Basic HTML markup (`csshtml.pas`), see below
+- Icons: inline `<svg>` copied from [lucide.dev](https://lucide.dev) (or other stroke icon sets) is painted
+  by the engine with antialiasing, in the text color, see below
+- Own data in nodes: `Node.Tag` (number), `Node.TagStr` and `Node.Attributes['data-...']` (texts),
+  `Node.Data` (object, freed with the node when `Node.OwnsData` is set)
 - Ready made components (`csscomponents.pas`): `TCSSButton`, `TCSSToggle`, `TCSSBadge`, `TCSSAvatar`,
   `TCSSTabs`, and `HTML`, `CSS` and `BodyClass` properties of `TCSSShape` for the form designer, see below
 - Custom properties (`--name: value`) and `var()` in background images and shadows
@@ -151,6 +169,24 @@ CSSShape1.Body.GetElementById('title').OnClick := @TitleClick;
 - `<img src>` with intrinsic size and aspect ratio. It is painted as a background image, so
   `rounded-*`, `shadow-*` and `object-fit` work.
 - `<style>` is appended to the stylesheet of the root node.
+
+## Icons
+
+Copy an icon on [lucide.dev](https://lucide.dev) (*Copy SVG*) and paste it into the markup. Size comes from
+classes (or `width`/`height`), color is the text color (`currentColor`):
+
+```pascal
+CSSShape1.Body.AppendHTML(
+  '<div class="flex items-center gap-2 text-sky-600">' +
+  '  <svg class="size-5" viewBox="0 0 24 24" stroke-width="2"><path d="M20 6 9 17l-5-5"/></svg>' +
+  '  Saved' +
+  '</div>');
+```
+
+The engine paints stroked shapes (`path`, `line`, `polyline`, `polygon`, `rect`, `circle`, `ellipse`) with
+round caps and joins, antialiased and cached, the same way on every platform. No font file and no library
+are needed. Fills, `<g>` transforms and other SVG features are not supported. Lucide icons are under the
+ISC License, keep its notice when you copy them (see `demo/kanban/kanbanicons.pas`).
 
 ## Animations
 
@@ -264,6 +300,10 @@ Open `csspckg_lazarus.lpk` in Lazarus, compile it and install it (*Use > Install
   `csscomponents.pas`, the *Data table* scene 1000 rows. *Dark mode* switches the `dark:` variant: Settings,
   Dashboard, Utilities, Components and Data table have own `dark:` classes, other scenes get them from a
   small demo helper (`AddDarkVariants`) which adds dark variants of common light classes.
+- `demo/kanban/kanban.lpi`: Kanban board application (see screenshots). Cards are moved by drag and drop:
+  the dragged card is a small `TCSSShape` above the board, the placeholder is moved in the board by
+  `InsertBefore`. The detail dialog fades in and uses native controls, tasks are saved to `tasks.json` in
+  the application config folder.
 - `demo/renderdemo.lpi`: renders the demo scenes to PNG files, which is handy for checking changes visually
   (`renderdemo out 720 Borders 4` renders one scene zoomed 4x, `renderdemo bench` measures paint time)
 - `tests/csstests.lpi`: fpcunit tests (console runner)
@@ -282,7 +322,8 @@ lazbuild demo/renderdemo.lpi && demo/renderdemo demo/out 720
 - `overflow: hidden` clips by a rectangle. Only children touching the rounded corners are rounded, so
   scrolled content inside a rounded container is not clipped by the corners.
 - Scaled and rotated nodes and nodes with `opacity` below 1 are painted through a bitmap. Content
-  overflowing the node (except shadows) is clipped.
+  overflowing the node (except shadows) is clipped. For large panels prefer `translate` (painted directly)
+  to `opacity` or `scale` (a bitmap in device resolution, several MB for a big dialog on Retina).
 - `z-index` orders siblings only (no stacking contexts), so a popup should be the last child or have a
   higher `z-index` than siblings which overlap it.
 - Colors with alpha are blended with the nearest background color for text and borders. Backgrounds
@@ -299,6 +340,16 @@ Painting is done with the LCL canvas only, no extra libraries are used:
   change, a hover which changes colors only repaints the changed area. Nodes outside the visible area are
   skipped when painting. The *Data table* scene (1000 rows, more than 5000 nodes) needs about 1.5 ms per
   mouse move and 2 ms per paint.
+- Sizes of nodes are cached during one layout pass. Nested flex containers lay out their items several
+  times (hypothetical size, flexed size, stretched size), without the cache the work grows exponentially
+  with depth. The Kanban demo (about 400 nodes, 9 levels of flex) needs 5 ms per layout instead of 100 ms.
+- Something which moves with the mouse (a dragged card) can be a small `TCSSShape` above the main one:
+  moving it with `SetBounds` repaints only the area under it, the main shape is not laid out again.
+- Memory: the cache of corner and icon bitmaps is limited, bitmaps of colors in a transition are not
+  cached, bitmaps of scaled, rotated and transparent nodes are released when they are painted directly
+  again. The Kanban demo needs about 90 MB on macOS when idle (Activity Monitor), a third of it is the
+  window buffer of the system. While something animates, macOS keeps more window buffers (about 70 MB
+  more for a large Retina window), they are released when the window is idle.
 - When many nodes are created in code, call `CSSBeginUpdate` before and `CSSEndUpdate` and `Changed` of the
   shape after, so the layout is computed once (`AppendHTML` does it itself).
 
@@ -323,3 +374,7 @@ Apache License 2.0, see [LICENSE](LICENSE).
 
 The color palette in `csstailwind.pas` comes from Tailwind CSS, Copyright (c) Tailwind Labs, Inc.,
 MIT License. This project is not affiliated with Tailwind Labs.
+
+Icons in the Kanban demo and in the architecture picture come from [Lucide](https://lucide.dev),
+ISC License, Copyright (c) Lucide Icons and Contributors (some derived from Feather, MIT License,
+Copyright (c) 2013-present Cole Bemis). The license text is in `demo/kanban/kanbanicons.pas`.

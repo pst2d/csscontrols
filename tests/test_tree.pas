@@ -27,9 +27,23 @@ type
     procedure TestGetElementById;
     procedure TestClassList;
     procedure TestStyleValues;
+    procedure TestUserData;
+    procedure TestInsertBefore;
   end;
 
 implementation
+
+type
+  TFreeSpy = class
+    FFreed: PBoolean;
+    destructor Destroy; override;
+  end;
+
+destructor TFreeSpy.Destroy;
+begin
+  FFreed^ := True;
+  inherited Destroy;
+end;
 
 procedure TTestTree.SetUp;
 begin
@@ -164,6 +178,65 @@ begin
   AssertEquals(5, FRoot.CompStyle.Height.Value, 0.001);
   FRoot.Style['color'] := '';
   AssertEquals('', FRoot.Style['color']);
+end;
+
+procedure TTestTree.TestUserData;
+var
+  N: THtmlNode;
+  Owned, Shared: TFreeSpy;
+  OwnedFreed, SharedFreed: Boolean;
+begin
+  OwnedFreed := False;
+  SharedFreed := False;
+  Owned := TFreeSpy.Create;
+  Owned.FFreed := @OwnedFreed;
+  Shared := TFreeSpy.Create;
+  Shared.FFreed := @SharedFreed;
+  N := HTMLNode('').AppendTo(FRoot);
+  N.Tag := 42;
+  N.Attributes['data-name'] := 'Peter';
+  N.Data := Owned;
+  N.OwnsData := True;
+  HTMLNode('').AppendTo(FRoot).Data := Shared;     // reference only, not owned
+  AssertEquals('tag', 42, FRoot.FirstChild.Tag);
+  AssertEquals('text', 'Peter', FRoot.FirstChild.Attributes['data-name']);
+  AssertTrue('object', FRoot.FirstChild.Data = Owned);
+  FRoot.Clear;                                      // eg. new html replaces nodes
+  AssertTrue('owned data is freed with node', OwnedFreed);
+  AssertFalse('not owned data stays', SharedFreed);
+  Shared.Free;
+end;
+
+procedure TTestTree.TestInsertBefore;
+var
+  A, B, C, D: THtmlNode;
+  function Order: String;
+  var
+    N: THtmlNode;
+  begin
+    Result := '';
+    N := FRoot.FirstChild;
+    while Assigned(N) do begin
+      Result := Result + N.Id;
+      N := FRoot.GetNext(N);
+    end;
+  end;
+begin
+  A := HTMLNode('').SetId('a').AppendTo(FRoot);
+  B := HTMLNode('').SetId('b').AppendTo(FRoot);
+  C := HTMLNode('').SetId('c').AppendTo(FRoot);
+  FRoot.InsertBefore(C, A);
+  AssertEquals('to first', 'cab', Order);
+  FRoot.InsertBefore(C, B);
+  AssertEquals('to middle', 'acb', Order);
+  FRoot.InsertBefore(A, nil);
+  AssertEquals('append', 'cba', Order);
+  D := HTMLNode('').SetId('d');
+  FRoot.InsertBefore(D, B);
+  AssertEquals('new node', 'cdba', Order);
+  AssertEquals('count', 4, FRoot.ChildCount);
+  AssertTrue('last', FRoot.GetNext(B) = A);
+  AssertTrue('prev of first', FRoot.FirstChild = C);
 end;
 
 initialization

@@ -244,6 +244,15 @@ type
     FramesStart: QWord;
   end;
   THtmlNode = class;
+  TCSSLayoutKey = record         // input of LayoutGetNodeSize
+    PW, PH, FW, FH: Integer;
+    InFlex: Boolean;
+  end;
+  TCSSLayoutResult = record      // size of node for input (cached during one layout pass)
+    Key: TCSSLayoutKey;
+    Margin, Padding, Border, Position: TRect;
+    BaseLine, ContentWidth, ContentHeight: Integer;
+  end;
   TCSSLayoutState = record       // saved layout of node (transformed node is laid out again in higher resolution)
     Node: THtmlNode;
     ContentRect, MarginRect, Margin, Padding, Border, Position: TRect;
@@ -452,6 +461,8 @@ type
     FStyleSheet: TCSSStyleSheet;
     FClassList: TCSSClassList;
     FAttributes: TStringList;     // html attributes (src ...)
+    FData: TObject;               // user data (object), freed with node when FOwnsData
+    FOwnsData: Boolean;
     FScrollX, FScrollY: Integer;  // scroll position of content (overflow auto/scroll/hidden)
     FScrollMin, FScrollMax: TPoint;
     FVThumb, FHThumb: TRect;      // scrollbar thumbs (last paint)
@@ -478,6 +489,12 @@ type
     FPaintScale: Single;          // root node only: device pixels per canvas pixel (2 on macOS Retina)
     FRenderScale: Single;         // root node only: scale of offscreen rendering of transformed node (default font is scaled)
     FLayoutRoot: Boolean;         // LayoutTo was called for this node
+    // layout cache: nested flex containers lay out items several times with the same input
+    FLayPass: Cardinal;           // layout pass of cache
+    FLayResults: array[0..7] of TCSSLayoutResult;
+    FLayCount: Integer;
+    FLayState, FLayWanted: TCSSLayoutKey;   // input of current layout of children, input of last request
+    FLayWantedPW, FLayWantedPH: Integer;    // parent size of last request
     FLayoutWidth,                 // size for root node set by LayoutTo (-1 = auto)
     FLayoutHeight: Integer;
     function GetStyleValue(AName: String): String;
@@ -503,8 +520,8 @@ type
     procedure SetInlineStyle(AValue: String);
     procedure SetStyleValue(AName: String; AValue: String);
   public
-    Tag: LongInt;
-    TagStr: String;
+    Tag: LongInt;                 // user data (number)
+    TagStr: String;               // user data (text)
     RootNode,
     ParentNode: THtmlNode;
   protected
@@ -557,12 +574,13 @@ type
     function HasHoveredAncestorWithClass(const AClass: String): Boolean;
     function AddNode(ANode: THtmlNode): THtmlNode;
     function AppendTo(AParentNode: THtmlNode): THtmlNode;
+    function InsertBefore(ANode, ARefNode: THtmlNode): THtmlNode;   // like DOM, ARefNode = nil appends
     function GetNext(ANode: THtmlNode; GoAboveChildren: Boolean = False): THtmlNode;
     function GetElementsByClassName(AName: String): THtmlNodeArray;
     function GetElementById(const AId: String): THtmlNode;
     procedure LayoutTo(ALeft, ATop, AWidth, AHeight: Integer);
     procedure AlignControlsTo(ALeft, ATop: Integer);
-    function NodeAtPosition(APos: TPoint; AClickable: Boolean = True): THtmlNode;   // top node with OnClick (or any node)
+    function NodeAtPosition(APos: TPoint; AClickable: Boolean = True): THtmlNode;   // top node (clickable: its nearest node with OnClick)
     function HitTest(const APos: TPoint): Boolean; virtual;
     function Animating: Boolean;                        // root: some nodes are animated (transition or animation)
     function AnimationTick(ANow: QWord): Boolean;      // root: next frame of animations, True = repaint
@@ -594,7 +612,9 @@ type
     property Focused: Boolean read FFocused write FFocused;
     function GetAttribute(const AName: String): String;
     procedure SetAttribute(const AName, AValue: String);
-    property Attributes[const AName: String]: String read GetAttribute write SetAttribute;
+    property Attributes[const AName: String]: String read GetAttribute write SetAttribute;   // also user texts (data-*)
+    property Data: TObject read FData write FData;                   // user object
+    property OwnsData: Boolean read FOwnsData write FOwnsData;       // Data is freed with node
     procedure PaintTo(ACanvas: TCanvas); overload;
     procedure PaintTo(ACanvas: TCanvas; const AClipRect: TRect); overload;
     function CalcLength(const AValue: TCSSLength; AParentLength: Integer): Integer;
@@ -3473,6 +3493,28 @@ begin
   Result := CSSCornerCache;
 end;
 
+var
+  CSSPaintTransient: Boolean;    // colors of painted node are animated: its bitmaps are used once, not cached
+  CSSPaintTemp: TList;           // bitmaps used once (freed after the node is painted)
+
+procedure AddPaintCache(const AKey: String; ABitmap: TBitmap);
+begin
+  if CSSPaintTransient then begin
+    if CSSPaintTemp = nil then CSSPaintTemp := TList.Create;
+    CSSPaintTemp.Add(ABitmap);
+  end else
+    CSSCornerCache.AddObject(AKey, ABitmap);
+end;
+
+procedure FreePaintTemp;
+var
+  I: Integer;
+begin
+  if CSSPaintTemp = nil then Exit;
+  for I := 0 to CSSPaintTemp.Count - 1 do TObject(CSSPaintTemp[I]).Free;
+  CSSPaintTemp.Clear;
+end;
+
 (*
   Cached 1x1 bitmap with color and alpha, StretchDraw of it fills rectangle with semi-transparent color
 *)
@@ -3494,7 +3536,7 @@ begin
   finally
     Img.Free;
   end;
-  CSSCornerCache.AddObject(Key, Result);
+  AddPaintCache(Key, Result);
 end;
 
 function CornerBitmap(const AKey: String; const S: TCSSPaintShape; ACorner: Integer; const ARect: TRect;
@@ -3506,8 +3548,381 @@ begin
   if CSSCornerCache.Find(AKey, X) then Exit(TBitmap(CSSCornerCache.Objects[X]));
   if CSSCornerCache.Count > CSS_CORNER_CACHE_LIMIT then CSSCornerCache.Clear;
   Result := RasterizeShape(S, ACorner, ARect.Left, ARect.Top, ARect.Width, ARect.Height, AColors, APatterns);
-  CSSCornerCache.AddObject(AKey, Result);
+  AddPaintCache(AKey, Result);
 end;
+
+{ svg icons }
+
+(*
+  Inline <svg> icons with stroked shapes (like lucide.dev: path, line, polyline, polygon, rect, circle, ellipse).
+  Shapes are flattened to line segments, coverage of pixel is computed from distance to nearest segment, so
+  lines are antialiased with round caps and joins. Color is currentColor (text color of node). Fills, <g>
+  transforms and other svg features are not supported (icons only).
+*)
+type
+  TCSSSvgSeg = record
+    X1, Y1, X2, Y2: Single;
+  end;
+  TCSSSvgSegs = array of TCSSSvgSeg;
+
+procedure SvgParseShapes(const ASvg: String; var ASegs: TCSSSvgSegs);
+var
+  Count: Integer;
+  CX, CY, SX, SY, LX, LY: Single;   // current point, start of subpath, last control point
+  S: String;
+  P: Integer;
+
+  procedure AddSeg(X1, Y1, X2, Y2: Single);
+  begin
+    if Count >= Length(ASegs) then SetLength(ASegs, Count * 2 + 16);
+    ASegs[Count].X1 := X1; ASegs[Count].Y1 := Y1;
+    ASegs[Count].X2 := X2; ASegs[Count].Y2 := Y2;
+    Inc(Count);
+  end;
+  procedure LineTo(X, Y: Single);
+  begin
+    AddSeg(CX, CY, X, Y);
+    CX := X; CY := Y;
+  end;
+  procedure CubicTo(X1, Y1, X2, Y2, X, Y: Single);
+  var
+    I: Integer;
+    T, U: Single;
+  begin
+    for I := 1 to 12 do begin
+      T := I / 12; U := 1 - T;
+      LineTo(U*U*U*CX + 3*U*U*T*X1 + 3*U*T*T*X2 + T*T*T*X, U*U*U*CY + 3*U*U*T*Y1 + 3*U*T*T*Y2 + T*T*T*Y);
+    end;
+  end;
+  procedure QuadTo(X1, Y1, X, Y: Single);
+  begin
+    CubicTo(CX + 2/3*(X1 - CX), CY + 2/3*(Y1 - CY), X + 2/3*(X1 - X), Y + 2/3*(Y1 - Y), X, Y);
+  end;
+  // https://www.w3.org/TR/SVG11/implnote.html#ArcConversionEndpointToCenter
+  procedure ArcTo(RX, RY, Angle: Single; Large, Sweep: Boolean; X, Y: Single);
+  var
+    Phi, CP, SP, X1p, Y1p, L, Sq, Cxp, Cyp, MX, MY, T1, DT: Single;
+    I, N: Integer;
+  begin
+    if ((X = CX) and (Y = CY)) then Exit;
+    RX := Abs(RX); RY := Abs(RY);
+    if (RX = 0) or (RY = 0) then begin
+      LineTo(X, Y);
+      Exit;
+    end;
+    Phi := DegToRad(Angle);
+    CP := Cos(Phi); SP := Sin(Phi);
+    X1p := CP * (CX - X) / 2 + SP * (CY - Y) / 2;
+    Y1p := -SP * (CX - X) / 2 + CP * (CY - Y) / 2;
+    L := Sqr(X1p) / Sqr(RX) + Sqr(Y1p) / Sqr(RY);
+    if L > 1 then begin
+      RX := RX * Sqrt(L); RY := RY * Sqrt(L);
+    end;
+    Sq := (Sqr(RX) * Sqr(RY) - Sqr(RX) * Sqr(Y1p) - Sqr(RY) * Sqr(X1p)) / (Sqr(RX) * Sqr(Y1p) + Sqr(RY) * Sqr(X1p));
+    Sq := Sqrt(Max(0, Sq));
+    if Large = Sweep then Sq := -Sq;
+    Cxp := Sq * RX * Y1p / RY;
+    Cyp := -Sq * RY * X1p / RX;
+    MX := CP * Cxp - SP * Cyp + (CX + X) / 2;
+    MY := SP * Cxp + CP * Cyp + (CY + Y) / 2;
+    T1 := ArcTan2((Y1p - Cyp) / RY, (X1p - Cxp) / RX);
+    DT := ArcTan2((-Y1p - Cyp) / RY, (-X1p - Cxp) / RX) - T1;
+    if Sweep and (DT < 0) then DT := DT + 2 * Pi
+    else if not Sweep and (DT > 0) then DT := DT - 2 * Pi;
+    N := Max(2, Ceil(Abs(DT) / (Pi / 16)));
+    for I := 1 to N - 1 do
+      LineTo(MX + RX * Cos(T1 + DT * I / N) * CP - RY * Sin(T1 + DT * I / N) * SP,
+        MY + RX * Cos(T1 + DT * I / N) * SP + RY * Sin(T1 + DT * I / N) * CP);
+    LineTo(X, Y);
+  end;
+  procedure Ellipse(X, Y, RX, RY: Single);
+  begin
+    CX := X + RX; CY := Y;
+    ArcTo(RX, RY, 0, False, True, X - RX, Y);
+    ArcTo(RX, RY, 0, False, True, X + RX, Y);
+  end;
+
+  // tokens of path data and points: numbers (also "1.5.5", "-1-2", "1e-3") and single char flags
+  function More: Boolean;
+  begin
+    while (P <= Length(S)) and (S[P] in [' ', ',', #9, #10, #13]) do Inc(P);
+    Result := (P <= Length(S)) and (S[P] in ['0'..'9', '.', '-', '+']);
+  end;
+  function Num: Single;
+  var
+    St: Integer;
+    Dot: Boolean;
+  begin
+    Result := 0;
+    if not More then Exit;
+    St := P;
+    if S[P] in ['-', '+'] then Inc(P);
+    Dot := False;
+    while (P <= Length(S)) and ((S[P] in ['0'..'9']) or ((S[P] = '.') and not Dot)) do begin
+      if S[P] = '.' then Dot := True;
+      Inc(P);
+    end;
+    if (P <= Length(S)) and (S[P] in ['e', 'E']) then begin
+      Inc(P);
+      if (P <= Length(S)) and (S[P] in ['-', '+']) then Inc(P);
+      while (P <= Length(S)) and (S[P] in ['0'..'9']) do Inc(P);
+    end;
+    Result := CSSStrToFloatDef(Copy(S, St, P - St), 0);
+  end;
+  function Flag: Boolean;
+  begin
+    Result := False;
+    if not More then Exit;
+    Result := S[P] = '1';
+    Inc(P);
+  end;
+
+  procedure ParsePath(const AData: String);
+  var
+    Cmd: Char;
+    Rel: Boolean;
+    DX, DY, X1, Y1, X2, Y2, X, Y, RX, RY, A: Single;
+    Large, Sweep: Boolean;
+  begin
+    S := AData;
+    P := 1;
+    CX := 0; CY := 0; SX := 0; SY := 0; LX := 0; LY := 0;
+    Cmd := ' ';
+    while P <= Length(S) do begin
+      while (P <= Length(S)) and (S[P] in [' ', ',', #9, #10, #13]) do Inc(P);
+      if P > Length(S) then Break;
+      if S[P] in ['A'..'Z', 'a'..'z'] then begin
+        Cmd := S[P];
+        Inc(P);
+      end else if not More then begin
+        Inc(P);        // unknown char
+        Continue;
+      end;
+      Rel := Cmd in ['a'..'z'];
+      if Rel then begin DX := CX; DY := CY; end else begin DX := 0; DY := 0; end;
+      case UpCase(Cmd) of
+        'M': begin
+          CX := Num + DX; CY := Num + DY;
+          SX := CX; SY := CY;
+          if Rel then Cmd := 'l' else Cmd := 'L';   // next pairs are lines
+        end;
+        'L': begin
+          X := Num + DX; Y := Num + DY;      // arguments are read in order (evaluation order of parameters is not defined)
+          LineTo(X, Y);
+        end;
+        'H': LineTo(Num + DX, CY);
+        'V': LineTo(CX, Num + DY);
+        'C': begin
+          X1 := Num + DX; Y1 := Num + DY; X2 := Num + DX; Y2 := Num + DY; X := Num + DX; Y := Num + DY;
+          CubicTo(X1, Y1, X2, Y2, X, Y);
+          LX := X2; LY := Y2;
+          Continue;
+        end;
+        'S': begin
+          if UpCase(Cmd) = 'S' then begin X1 := 2 * CX - LX; Y1 := 2 * CY - LY; end;
+          X2 := Num + DX; Y2 := Num + DY; X := Num + DX; Y := Num + DY;
+          CubicTo(X1, Y1, X2, Y2, X, Y);
+          LX := X2; LY := Y2;
+          Continue;
+        end;
+        'Q': begin
+          X1 := Num + DX; Y1 := Num + DY; X := Num + DX; Y := Num + DY;
+          QuadTo(X1, Y1, X, Y);
+          LX := X1; LY := Y1;
+          Continue;
+        end;
+        'T': begin
+          X1 := 2 * CX - LX; Y1 := 2 * CY - LY; X := Num + DX; Y := Num + DY;
+          QuadTo(X1, Y1, X, Y);
+          LX := X1; LY := Y1;
+          Continue;
+        end;
+        'A': begin
+          RX := Num; RY := Num; A := Num;
+          Large := Flag; Sweep := Flag; X := Num + DX; Y := Num + DY;
+          ArcTo(RX, RY, A, Large, Sweep, X, Y);
+        end;
+        'Z': begin
+          LineTo(SX, SY);
+          Cmd := ' ';
+        end;
+        else Inc(P);
+      end;
+      LX := CX; LY := CY;     // reflected control point is current point after other commands
+    end;
+  end;
+
+  function Attr(const ATag, AName: String): String;
+  var
+    I, J: Integer;
+  begin
+    Result := '';
+    I := Pos(' ' + AName + '="', ATag);
+    if I = 0 then Exit;
+    I := I + Length(AName) + 3;
+    J := I;
+    while (J <= Length(ATag)) and (ATag[J] <> '"') do Inc(J);
+    Result := Copy(ATag, I, J - I);
+  end;
+  function AttrF(const ATag, AName: String): Single;
+  begin
+    Result := CSSStrToFloatDef(Attr(ATag, AName), 0);
+  end;
+  procedure Points(const AData: String; AClose: Boolean);
+  var
+    X, Y, X0, Y0: Single;
+    First: Boolean;
+  begin
+    S := AData;
+    P := 1;
+    First := True;
+    X0 := 0; Y0 := 0;
+    while More do begin
+      X := Num; Y := Num;
+      if First then begin
+        CX := X; CY := Y; X0 := X; Y0 := Y;
+        First := False;
+      end else
+        LineTo(X, Y);
+    end;
+    if AClose and not First then LineTo(X0, Y0);
+  end;
+  procedure RoundRect(X, Y, W, H, RX, RY: Single);
+  begin
+    if (RX <= 0) and (RY > 0) then RX := RY;
+    if (RY <= 0) and (RX > 0) then RY := RX;
+    RX := Min(RX, W / 2); RY := Min(RY, H / 2);
+    CX := X + RX; CY := Y;
+    LineTo(X + W - RX, Y);
+    ArcTo(RX, RY, 0, False, True, X + W, Y + RY);
+    LineTo(X + W, Y + H - RY);
+    ArcTo(RX, RY, 0, False, True, X + W - RX, Y + H);
+    LineTo(X + RX, Y + H);
+    ArcTo(RX, RY, 0, False, True, X, Y + H - RY);
+    LineTo(X, Y + RY);
+    ArcTo(RX, RY, 0, False, True, X + RX, Y);
+  end;
+
+var
+  Src, Tag, Name: String;
+  I, J: Integer;
+begin
+  Count := 0;
+  ASegs := nil;
+  Src := StringReplace(StringReplace(StringReplace(ASvg, #9, ' ', [rfReplaceAll]), #10, ' ', [rfReplaceAll]), #13, ' ', [rfReplaceAll]);
+  I := Pos('<', Src);
+  while I > 0 do begin
+    J := I;
+    while (J <= Length(Src)) and (Src[J] <> '>') do Inc(J);
+    Tag := Copy(Src, I, J - I + 1);
+    Name := LowerCase(Copy(Tag, 2, Max(0, Pos(' ', Tag) - 2)));
+    if Name = 'path' then ParsePath(Attr(Tag, 'd'))
+    else if Name = 'line' then begin
+      CX := AttrF(Tag, 'x1'); CY := AttrF(Tag, 'y1');
+      LineTo(AttrF(Tag, 'x2'), AttrF(Tag, 'y2'));
+    end
+    else if Name = 'polyline' then Points(Attr(Tag, 'points'), False)
+    else if Name = 'polygon' then Points(Attr(Tag, 'points'), True)
+    else if Name = 'rect' then
+      RoundRect(AttrF(Tag, 'x'), AttrF(Tag, 'y'), AttrF(Tag, 'width'), AttrF(Tag, 'height'), AttrF(Tag, 'rx'), AttrF(Tag, 'ry'))
+    else if Name = 'circle' then Ellipse(AttrF(Tag, 'cx'), AttrF(Tag, 'cy'), AttrF(Tag, 'r'), AttrF(Tag, 'r'))
+    else if Name = 'ellipse' then Ellipse(AttrF(Tag, 'cx'), AttrF(Tag, 'cy'), AttrF(Tag, 'rx'), AttrF(Tag, 'ry'));
+    I := Pos('<', Src, J);
+  end;
+  SetLength(ASegs, Count);
+end;
+
+(*
+  Bitmap of icon (cached): AW x AH pixels, viewBox is scaled to fit and centered, alpha = coverage of stroke
+*)
+function SvgIconBitmap(const ASvg, AViewBox: String; AStroke: Single; AW, AH: Integer; AColor: TColor; AAlpha: Byte): TBitmap;
+var
+  Key: String;
+  X, Y, I, Idx: Integer;
+  Segs: TCSSSvgSegs;
+  VB: TStringArray;
+  VX, VY, VW, VH, K, OX, OY, Half, PX, PY, DX, DY, LenSq, T, D, DMin, MinX, MaxX, MinY, MaxY, Cov: Single;
+  Img: TLazIntfImage;
+  Wr: TCSSPixelWriter;
+  RGB: LongInt;
+begin
+  RGB := ColorToRGB(AColor);
+  Key := Format('V%d,%d,%x,%d,%g,%s|', [AW, AH, RGB, AAlpha, AStroke, AViewBox]) + ASvg;
+  CornerCache;
+  if CSSCornerCache.Find(Key, Idx) then Exit(TBitmap(CSSCornerCache.Objects[Idx]));
+  if CSSCornerCache.Count > CSS_CORNER_CACHE_LIMIT then CSSCornerCache.Clear;
+  VX := 0; VY := 0; VW := 24; VH := 24;
+  VB := StringReplace(Trim(AViewBox), ',', ' ', [rfReplaceAll]).Split([' '], TStringSplitOptions.ExcludeEmpty);
+  if Length(VB) = 4 then begin
+    VX := CSSStrToFloatDef(VB[0], 0); VY := CSSStrToFloatDef(VB[1], 0);
+    VW := CSSStrToFloatDef(VB[2], 24); VH := CSSStrToFloatDef(VB[3], 24);
+  end;
+  if (VW <= 0) or (VH <= 0) then begin VW := 24; VH := 24; end;
+  K := Min(AW / VW, AH / VH);
+  OX := (AW - VW * K) / 2 - VX * K;
+  OY := (AH - VH * K) / 2 - VY * K;
+  SvgParseShapes(ASvg, Segs);
+  if Segs = nil then Exit(nil);     // fully transparent bitmap is painted black on Windows
+  for I := 0 to High(Segs) do
+    with Segs[I] do begin
+      X1 := X1 * K + OX; Y1 := Y1 * K + OY;
+      X2 := X2 * K + OX; Y2 := Y2 * K + OY;
+    end;
+  Half := Max(0.5, AStroke * K / 2);
+  Img := NewAlphaImage(Max(1, AW), Max(1, AH));
+  try
+    Wr := PixelWriter(Img);
+    for Y := 0 to AH - 1 do begin
+      WriterLine(Wr, Y);
+      PY := Y + 0.5;
+      for X := 0 to AW - 1 do begin
+        PX := X + 0.5;
+        DMin := MaxSingle;
+        for I := 0 to High(Segs) do
+          with Segs[I] do begin
+            if X1 < X2 then begin MinX := X1; MaxX := X2; end else begin MinX := X2; MaxX := X1; end;
+            if Y1 < Y2 then begin MinY := Y1; MaxY := Y2; end else begin MinY := Y2; MaxY := Y1; end;
+            if (PX < MinX - Half - 1) or (PX > MaxX + Half + 1) or (PY < MinY - Half - 1) or (PY > MaxY + Half + 1) then Continue;
+            DX := X2 - X1; DY := Y2 - Y1;
+            LenSq := DX * DX + DY * DY;
+            if LenSq > 0 then T := EnsureRange(((PX - X1) * DX + (PY - Y1) * DY) / LenSq, 0, 1) else T := 0;
+            D := Sqr(PX - X1 - T * DX) + Sqr(PY - Y1 - T * DY);
+            if D < DMin then DMin := D;
+          end;
+        if DMin < MaxSingle then Cov := EnsureRange(Half - Sqrt(DMin) + 0.5, 0, 1) else Cov := 0;
+        WritePixel(Wr, X, Red(RGB), Green(RGB), Blue(RGB), Round(Cov * AAlpha));
+      end;
+    end;
+    Result := IntfImageToBitmap(Img);
+  finally
+    Img.Free;
+  end;
+  AddPaintCache(Key, Result);
+end;
+
+(*
+  <svg> node: icon in content box, markup of shapes is in data-svg attribute (see CSSParseHTML)
+*)
+procedure PaintSvgIcon(ACanvas: TCanvas; ANode: THtmlNode);
+var
+  R: TRect;
+  Sc: Single;
+  Bmp: TBitmap;
+  Stroke: String;
+begin
+  R := ANode.FCompSize.ContentRect;
+  if (R.Width <= 0) or (R.Height <= 0) or (ANode.GetAttribute('data-svg') = '') then Exit;
+  Sc := ANode.RootNode.FPaintScale;
+  if Sc <= 0 then Sc := 1;
+  Stroke := ANode.GetAttribute('stroke-width');
+  if Stroke = '' then Stroke := '2';
+  Bmp := SvgIconBitmap(ANode.GetAttribute('data-svg'), ANode.GetAttribute('viewbox'), CSSStrToFloatDef(Stroke, 2),
+    Round(R.Width * Sc), Round(R.Height * Sc), ANode.FCompStyle.Color.Value, ANode.FCompStyle.Color.Alpha);
+  if Bmp = nil then Exit;
+  if (Bmp.Width = R.Width) and (Bmp.Height = R.Height) then ACanvas.Draw(R.Left, R.Top, Bmp)
+    else ACanvas.StretchDraw(R, Bmp);
+end;
+
 
 procedure CSSClearPaintCache;
 begin
@@ -4647,7 +5062,7 @@ begin
   finally
     Img.Free;
   end;
-  CSSCornerCache.AddObject(Key, Result);
+  AddPaintCache(Key, Result);
 end;
 
 (*
@@ -5562,6 +5977,13 @@ begin
   end else
     FTransformKind := tkGeneral;
   if (FCompStyle.Opacity < 0.999) and not FLayoutRoot then FTransformKind := tkGeneral;   // painted through bitmap with alpha
+  // bitmaps of scaled, rotated or transparent node are released when it is painted directly again (end of animation)
+  if (FTransformKind <> tkGeneral) and not FLayoutRoot and (Assigned(FTransformBmp) or (FTransformSrc <> nil)) then begin
+    FreeAndNil(FTransformBmp);
+    FTransformSrc := nil;
+    FTransformSrcKey := '';
+    FTransformKey := '';
+  end;
 end;
 
 { animations }
@@ -6190,7 +6612,15 @@ begin
       Exit;
     end;
   end;
-  DrawNode(ACanvas, AClipRect);
+  // colors in transition change every frame: bitmaps of corners and icons are not cached
+  CSSPaintTransient := Assigned(FAnim) and (FAnim^.ColorOn[0] or FAnim^.ColorOn[1] or FAnim^.ColorOn[2] or
+    FAnim^.ColorOn[3] or FAnim^.ColorOn[4] or FAnim^.ColorOn[5]);
+  try
+    DrawNode(ACanvas, AClipRect);
+  finally
+    CSSPaintTransient := False;
+    FreePaintTemp;
+  end;
   if FChildCount > 0 then begin
     SavedClip := CSSPaintClip;
     if ClipsContent then begin
@@ -6562,6 +6992,7 @@ begin
   PaintBoxShadow(ACanvas);
   PaintBackgroundAndBorder(ACanvas);
   PaintInsetShadow(ACanvas);
+  if FElementName = 'svg' then PaintSvgIcon(ACanvas, Self);
 
   {$ifdef fmx}
   {$else}
@@ -6621,6 +7052,12 @@ begin
   end;
  {$endif}
 
+  if FElementName = 'svg' then begin     // intrinsic size of icon: width and height attributes (24 by default)
+    AWidth := Round(CSSStrToFloatDef(GetAttribute('width'), 24) * RootNode.FPixelRatio);
+    AHeight := Round(CSSStrToFloatDef(GetAttribute('height'), 24) * RootNode.FPixelRatio);
+    ABaseLine := AHeight;
+    Exit;
+  end;
   if FElementName = 'img' then begin     // intrinsic size of image
     AWidth := -1;
     AHeight := -1;
@@ -6954,6 +7391,7 @@ begin
   StopAnimation;
   Clear;
   Detach;
+  if FOwnsData then FData.Free;
   for I := 0 to High(FBgCache) do FBgCache[I].Bmp.Free;
   FTransformBmp.Free;
   FAttributes.Free;
@@ -7130,8 +7568,8 @@ end;
 *)
 procedure THtmlNode.ApplyElementDefaults(ANode: THtmlNode);
 const
-  INLINE_ELEMENTS: array[0..23] of String = ('span', 'a', 'b', 'strong', 'i', 'em', 'u', 's', 'del', 'small', 'label',
-    'code', 'kbd', 'mark', 'sub', 'sup', 'abbr', 'time', 'img', 'button', 'input', 'cite', 'q', '#text');
+  INLINE_ELEMENTS: array[0..24] of String = ('span', 'a', 'b', 'strong', 'i', 'em', 'u', 's', 'del', 'small', 'label',
+    'code', 'kbd', 'mark', 'sub', 'sup', 'abbr', 'time', 'img', 'svg', 'button', 'input', 'cite', 'q', '#text');
   HEADING_SIZES: array[1..6] of String = ('2em', '1.5em', '1.17em', '1em', '0.83em', '0.67em');
 var
   E: String;
@@ -7490,8 +7928,29 @@ end;
   InFlex - node is flex item (size is calculated by flex layout)
   AForceWidth, AForceHeight - border box size set by flex layout (-1 = not set)
 *)
+var
+  CSSLayoutPass: Cardinal = 0;     // incremented by LayoutTo, cached sizes are valid only in one pass
+  CSSLayoutRecompute: THtmlNode;   // node laid out again without cache (children are arranged for last request)
+
+function HasPercentSide(const ASides: array of TCSSLength): Boolean;
+var
+  I: Integer;
+begin
+  for I := 0 to High(ASides) do
+    if ASides[I].LengthType = cltPercentage then Exit(True);
+  Result := False;
+end;
+
+function SameLayoutKey(const A, B: TCSSLayoutKey): Boolean; inline;
+begin
+  Result := (A.PW = B.PW) and (A.PH = B.PH) and (A.FW = B.FW) and (A.FH = B.FH) and (A.InFlex = B.InFlex);
+end;
+
 procedure THtmlNode.LayoutGetNodeSize(ANode: THtmlNode; ParentWidth, ParentHeight: Integer; InFlex: Boolean; AForceWidth: Integer; AForceHeight: Integer);
 var
+  Key: TCSSLayoutKey;
+  Cached: Boolean;
+  I: Integer;
   childWidth,
   childHeight,
   cW, cH, cB: Integer;
@@ -7528,6 +7987,40 @@ var
   end;
 begin
   cs := ANode.FCompStyle;
+  // cached size for the same input in this pass: children keep their layout, they are arranged again at the end
+  // of LayoutTo when the last request differs (FixLayout), so the result is the same as without cache
+  Key.PW := ParentWidth; Key.PH := ParentHeight; Key.FW := AForceWidth; Key.FH := AForceHeight; Key.InFlex := InFlex;
+  // parent size is used only by percentages, auto width of block and wrapped text (children get size of this
+  // node), so it is not part of key when node doesn't use it
+  if not ((cs.Height.LengthType = cltPercentage) or (cs.MinHeight.LengthType = cltPercentage) or
+    (cs.MaxHeight.LengthType = cltPercentage) or (cs.Top.LengthType = cltPercentage) or
+    (cs.Bottom.LengthType = cltPercentage)) then Key.PH := -2;
+  if InFlex and not ((cs.Width.LengthType = cltPercentage) or (cs.MinWidth.LengthType = cltPercentage) or
+    (cs.MaxWidth.LengthType = cltPercentage) or (cs.Left.LengthType = cltPercentage) or
+    (cs.Right.LengthType = cltPercentage) or HasPercentSide(cs.Margin) or HasPercentSide(cs.Padding) or
+    ((ANode.FText <> '') and (ANode.FChildCount = 0) and (AForceWidth < 0))) then Key.PW := -2;
+  Cached := not ANode.FLayoutRoot and not (cs.Position in [cpAbsolute, cpFixed]) and (ANode <> CSSLayoutRecompute);
+  if Cached then begin
+    if ANode.FLayPass <> CSSLayoutPass then begin
+      ANode.FLayPass := CSSLayoutPass;
+      ANode.FLayCount := 0;
+    end else
+      for I := 0 to ANode.FLayCount - 1 do
+        if SameLayoutKey(ANode.FLayResults[I].Key, Key) then
+          with ANode.FLayResults[I] do begin
+            ANode.FCompSize.Margin := Margin;
+            ANode.FCompSize.Padding := Padding;
+            ANode.FCompSize.Border := Border;
+            ANode.FCompSize.Position := Position;
+            ANode.FCompSize.BaseLine := BaseLine;
+            ANode.FCompSize.ContentWidth := ContentWidth;
+            ANode.FCompSize.ContentHeight := ContentHeight;
+            ANode.FLayWanted := Key;
+            ANode.FLayWantedPW := ParentWidth;
+            ANode.FLayWantedPH := ParentHeight;
+            Exit;
+          end;
+  end;
   ANode.ResolveInheritedStyle;
 
   // insets of absolute node are relative to padding box of parent
@@ -7655,6 +8148,24 @@ begin
   ANode.FCompSize.BaseLine := cB;
   ANode.FCompSize.ContentWidth := cW;
   ANode.FCompSize.ContentHeight := cH;
+  ANode.FLayState := Key;
+  ANode.FLayWanted := Key;
+  ANode.FLayWantedPW := ParentWidth;
+  ANode.FLayWantedPH := ParentHeight;
+  if Cached or (ANode = CSSLayoutRecompute) then begin
+    if ANode.FLayCount <= High(ANode.FLayResults) then Inc(ANode.FLayCount);
+    for I := ANode.FLayCount - 1 downto 1 do ANode.FLayResults[I] := ANode.FLayResults[I - 1];   // newest first
+    with ANode.FLayResults[0] do begin
+      Key := ANode.FLayState;
+      Margin := ANode.FCompSize.Margin;
+      Padding := ANode.FCompSize.Padding;
+      Border := ANode.FCompSize.Border;
+      Position := ANode.FCompSize.Position;
+      BaseLine := cB;
+      ContentWidth := cW;
+      ContentHeight := cH;
+    end;
+  end;
 end;
 
 procedure THtmlNode.IntSetAlignControl(AValue: TControl);
@@ -8680,6 +9191,7 @@ end;
 procedure THtmlNode.LayoutTo(ALeft, ATop, AWidth, AHeight: Integer);
 var
   TempWidth, TempHeight: Integer;
+  Pass: Cardinal;
   Next: THtmlNode;
   CtrlNode: THtmlNode; // for align controls
   CtrlOldBounds, CtrlNewBounds: TRect;
@@ -8696,6 +9208,25 @@ var
     while Assigned(N) do begin
       UpdateTransforms(N);
       N := N.FNextSibling;
+    end;
+  end;
+  // children of nodes with cached size are arranged for the last requested size
+  procedure FixLayout(ANode: THtmlNode; APass: Cardinal);
+  var
+    K: TCSSLayoutKey;
+  begin
+    while Assigned(ANode) do begin
+      if (ANode.FLayPass = APass) and not SameLayoutKey(ANode.FLayState, ANode.FLayWanted) then begin
+        K := ANode.FLayWanted;
+        CSSLayoutRecompute := ANode;
+        try
+          LayoutGetNodeSize(ANode, ANode.FLayWantedPW, ANode.FLayWantedPH, K.InFlex, K.FW, K.FH);
+        finally
+          CSSLayoutRecompute := nil;
+        end;
+      end;
+      if ANode.FChildCount > 0 then FixLayout(ANode.FFirstChild, APass);
+      ANode := ANode.FNextSibling;
     end;
   end;
   procedure AdjustPosition(ANode: THtmlNode; StartX, StartY: Integer; ParentVisible: Boolean);
@@ -8762,7 +9293,10 @@ begin
   Next := FNextSibling;
   FNextSibling := nil;
   try
+    Inc(CSSLayoutPass);
+    Pass := CSSLayoutPass;
     LayoutCalcPosition(Self, AWidth, AHeight, TempWidth, TempHeight);
+    FixLayout(Self, Pass);
     AdjustPosition(Self, ALeft, ATop, True);
   finally
     FNextSibling := Next;
@@ -8850,6 +9384,10 @@ end;
 (*
   Get Last node at position with OnClick
 *)
+(*
+  Top node at position (last painted). Clickable: nearest node with OnClick from top node up (like event
+  bubbling in DOM), so a node covered by another one (dialog, popup) doesn't get the click.
+*)
 function THtmlNode.NodeAtPosition(APos: TPoint; AClickable: Boolean): THtmlNode;
   procedure Search(AParent: THtmlNode);
   var
@@ -8859,15 +9397,18 @@ function THtmlNode.NodeAtPosition(APos: TPoint; AClickable: Boolean): THtmlNode;
     Children := AParent.PaintOrder;
     for I := 0 to High(Children) do
       if Children[I].FVisible then begin
-        if (Assigned(Children[I].FOnClick) or not AClickable) and Children[I].HitTest(APos) then Result := Children[I];   // last painted is on top
+        if Children[I].HitTest(APos) then Result := Children[I];   // last painted is on top
         Search(Children[I]);
       end;
   end;
 begin
   Result := Nil;
   if not FVisible then Exit;
-  if (Assigned(FOnClick) or not AClickable) and HitTest(APos) then Result := Self;
+  if HitTest(APos) then Result := Self;
   Search(Self);
+  if AClickable then
+    while Assigned(Result) and not Assigned(Result.FOnClick) do
+      if Result = Self then Result := nil else Result := Result.ParentNode;
 end;
 
 (*
@@ -8922,6 +9463,33 @@ function THtmlNode.SetOnClick(AValue: TNotifyEvent): THtmlNode;
 begin
   Result := Self;
   FOnClick := AValue;
+end;
+
+(*
+  Insert child node before ARefNode (child of this node), node is moved when it is in a tree
+*)
+function THtmlNode.InsertBefore(ANode, ARefNode: THtmlNode): THtmlNode;
+begin
+  Result := Self;
+  if (ANode = nil) or (ANode = ARefNode) then Exit;
+  AddNode(ANode);                        // appended (moved from old parent)
+  if (ARefNode = nil) or (ARefNode.ParentNode <> Self) then Exit;
+  // move from end before ARefNode
+  FLastNode := ANode.FPrevSibling;
+  FLastNode.FNextSibling := nil;
+  ANode.FPrevSibling := ARefNode.FPrevSibling;
+  ANode.FNextSibling := ARefNode;
+  if Assigned(ARefNode.FPrevSibling) then ARefNode.FPrevSibling.FNextSibling := ANode
+  else begin
+    FFirstChild := ANode;
+    FFirstNode := ANode;
+  end;
+  ARefNode.FPrevSibling := ANode;
+  if Assigned(RootNode.StyleSheet) or Assigned(CSSUtilityResolver) then begin   // :first-child, sibling utilities
+    ApplySubtree(ANode);
+    ApplyStyleForNode(ARefNode);
+    if Assigned(FLastNode) then ApplyStyleForNode(FLastNode);
+  end;
 end;
 
 function THtmlNode.AppendTo(AParentNode: THtmlNode): THtmlNode;
@@ -9211,6 +9779,7 @@ finalization
 begin
   CSSColorList.Free;
   CSSCornerCache.Free;
+  CSSPaintTemp.Free;
   CSSShadowCache.Free;
   CSSImageCache.Free;
   CSSAnimNodes.Free;
