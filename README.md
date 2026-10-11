@@ -201,9 +201,9 @@ Btn.OnClick := @DeleteClick;
 ```
 
 `TCSSShape` has `HTML`, `CSS` and `BodyClass` properties, so content can be written in the Object Inspector
-and is shown in the form designer (the package enables utility classes in the IDE). At runtime utility classes
-must be enabled too: call `CSSTailwindEnable` before forms are created (or use `csscomponents`, which does it).
-Nodes from the markup are found by id:
+and is shown in the form designer (the package enables utility classes in the IDE). At runtime the shape enables
+utility classes itself when it gets this markup (`CSSTailwindEnable`, unless the application set its own resolver),
+so it looks the same as in the designer. Nodes from the markup are found by id:
 
 ```pascal
 CSSShape1.Body.GetElementById('save').OnClick := @SaveClick;

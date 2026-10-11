@@ -486,6 +486,8 @@ end;
 *)
 procedure TCSSShape.RebuildMarkup;
 begin
+  // markup from Object Inspector uses utility classes as in form designer (unless application set own resolver)
+  if not Assigned(CSSUtilityResolver) then CSSTailwindEnable;
   if FCSS.Count > 0 then begin
     if FSheet = nil then FSheet := TCSSStyleSheet.Create(Self);
     FSheet.Style := FCSS.Text;

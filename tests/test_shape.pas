@@ -9,7 +9,7 @@ unit test_shape;
 interface
 
 uses
-  Classes, SysUtils, Graphics, fpcunit, testregistry, cssbase, CSSCtrls, csstailwind, csscomponents;
+  Classes, SysUtils, Graphics, Forms, fpcunit, testregistry, cssbase, CSSCtrls, csstailwind, csscomponents;
 
 type
 
@@ -23,6 +23,7 @@ type
     procedure TestHTMLProperty;
     procedure TestStreaming;
     procedure TestTabsIndicator;
+    procedure TestTabsResize;
   end;
 
 implementation
@@ -100,6 +101,34 @@ begin
   finally
     Bmp.Free;
     T.Free;
+  end;
+end;
+
+procedure TTestShape.TestTabsResize;
+var
+  F: TForm;
+  T: TCSSTabs;
+  Tab: THtmlNode;
+  W: Integer;
+  FS: TFormatSettings;
+begin
+  FS := DefaultFormatSettings;
+  FS.DecimalSeparator := '.';
+  CSSAnimationsEnabled := False;
+  F := TForm.CreateNew(nil);
+  try
+    F.SetBounds(0, 0, 700, 200);
+    T := TCSSTabs.Create(F);
+    T.Parent := F;                       // created 240 px wide, then stretched (align, anchors, form scaling)
+    T.SetBounds(0, 0, 660, 36);
+    Tab := T.Body.FirstChild.FirstChild.ParentNode.GetNext(T.Body.FirstChild.FirstChild);
+    W := Tab.CompSize.ContentRect.Width;
+    AssertTrue('tab is wider after resize', W > 150);
+    AssertTrue('indicator width follows tab: ' + T.Body.FirstChild.FirstChild.InlineStyle,
+      Pos(Format('width: %.2fpx', [W / T.Body.PixelRatio], FS), T.Body.FirstChild.FirstChild.InlineStyle) > 0);
+  finally
+    F.Free;
+    CSSAnimationsEnabled := True;
   end;
 end;
 

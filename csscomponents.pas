@@ -124,13 +124,16 @@ type
     FTabIndex: Integer;
     FOnChange: TNotifyEvent;
     FIndicator: THtmlNode;         // pill under active tab, moved with transition
+    FIndicatorWidth: Integer;      // control width used for indicator position
     procedure BuildTabs;
+    procedure PlaceIndicator;
     procedure SetTabs(AValue: TStrings);
     procedure SetTabIndex(AValue: Integer);
     procedure TabsChanged(Sender: TObject);
     procedure TabClick(Sender: TObject);
   protected
     procedure UpdateLook; override;
+    procedure Resize; override;
   public
     constructor Create(AOwner: TComponent); override;
     destructor Destroy; override;
@@ -427,33 +430,74 @@ procedure TCSSTabs.UpdateLook;
 const
   TAB = 'grow shrink-0 flex items-center justify-center px-3 rounded-md text-sm whitespace-nowrap cursor-pointer transition-colors ';
 var
-  N, Active: THtmlNode;
-  R, VP: TRect;
+  N: THtmlNode;
 begin
   if (FTabs = nil) or (FIndicator = nil) then Exit;
-  Active := nil;
   N := FIndicator.ParentNode.GetNext(FIndicator);
   while Assigned(N) do begin
-    if StrToIntDef(N.Attributes['data-index'], -1) = FTabIndex then begin
-      N.SetClass(TAB + 'font-medium text-slate-900 dark:text-white');
-      Active := N;
-    end else
+    if StrToIntDef(N.Attributes['data-index'], -1) = FTabIndex then
+      N.SetClass(TAB + 'font-medium text-slate-900 dark:text-white')
+    else
       N.SetClass(TAB + 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white');
     N := N.ParentNode.GetNext(N);
   end;
   Restyle;
+  PlaceIndicator;
+  Restyle;
+end;
+
+(*
+  Indicator is moved under active tab (translate is animated), width is set at once.
+  Layout is in device pixels, CSS px are scaled by PixelRatio (high dpi on Windows and Linux).
+*)
+procedure TCSSTabs.PlaceIndicator;
+var
+  N, Active: THtmlNode;
+  R, VP: TRect;
+  K: Single;
+  FS: TFormatSettings;
+begin
+  FIndicatorWidth := Width;
+  Active := nil;
+  N := FIndicator.ParentNode.GetNext(FIndicator);
+  while Assigned(N) and (Active = nil) do begin
+    if StrToIntDef(N.Attributes['data-index'], -1) = FTabIndex then Active := N;
+    N := N.ParentNode.GetNext(N);
+  end;
   if Active = nil then begin
     FIndicator.InlineStyle := 'display: none';
-  end else begin
-    // indicator is moved under active tab (translate is animated), width is set at once
-    R := Active.CompSize.ContentRect;
-    VP := FNode.PaddingBox;
-    FIndicator.InlineStyle := Format('left: 0; width: %dpx; translate: %dpx 0', [R.Width, R.Left - VP.Left]);
-    // active tab is scrolled into view
-    if R.Left - FNode.ScrollX < VP.Left then FNode.SetScroll(R.Left - VP.Left - 4, 0)
-    else if R.Right - FNode.ScrollX > VP.Right then FNode.SetScroll(R.Right - VP.Right + 4, 0);
+    Exit;
   end;
-  Restyle;
+  R := Active.CompSize.ContentRect;
+  VP := FNode.PaddingBox;
+  K := Body.PixelRatio;
+  if K <= 0 then K := 1;
+  FS := DefaultFormatSettings;
+  FS.DecimalSeparator := '.';
+  FIndicator.InlineStyle := Format('left: 0; width: %.2fpx; translate: %.2fpx 0', [R.Width / K, (R.Left - VP.Left) / K], FS);
+  // active tab is scrolled into view
+  if R.Left - FNode.ScrollX < VP.Left then FNode.SetScroll(R.Left - VP.Left - 4, 0)
+  else if R.Right - FNode.ScrollX > VP.Right then FNode.SetScroll(R.Right - VP.Right + 4, 0);
+end;
+
+(*
+  Tab widths depend on control width (align, anchors, form scaling), indicator follows them.
+  Changed is not called here (InvalidatePreferredSize during autosize raises a loop exception).
+*)
+procedure TCSSTabs.Resize;
+begin
+  inherited Resize;
+  if Assigned(FIndicator) and (Width <> FIndicatorWidth) then begin
+    CSSBeginUpdate;
+    try
+      Body.LayoutTo(0, 0, Width, Height);
+      PlaceIndicator;
+    finally
+      CSSEndUpdate;
+    end;
+    Body.LayoutTo(0, 0, Width, Height);
+    Invalidate;
+  end;
 end;
 
 initialization
