@@ -302,7 +302,7 @@ Open `csspckg_lazarus.lpk` in Lazarus, compile it and install it (*Use > Install
   small demo helper (`AddDarkVariants`) which adds dark variants of common light classes.
 - `demo/kanban/kanban.lpi`: Kanban board application (see screenshots). Cards are moved by drag and drop:
   the dragged card is a small `TCSSShape` above the board, the placeholder is moved in the board by
-  `InsertBefore`. The detail dialog fades in and uses native controls, tasks are saved to `tasks.json` in
+  `InsertBefore`. The detail dialog uses native controls, tasks are saved to `tasks.json` in
   the application config folder.
 - `demo/renderdemo.lpi`: renders the demo scenes to PNG files, which is handy for checking changes visually
   (`renderdemo out 720 Borders 4` renders one scene zoomed 4x, `renderdemo bench` measures paint time)

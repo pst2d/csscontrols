@@ -11,7 +11,7 @@ unit kanbanmain;
 interface
 
 uses
-  Classes, SysUtils, Math, Types, DateUtils, Contnrs, Controls, Forms, Graphics, StdCtrls, ExtCtrls, LCLType,
+  Classes, SysUtils, Math, Types, DateUtils, Contnrs, Controls, Forms, Graphics, StdCtrls, LCLType,
   fpjson, jsonparser, cssbase, CSSCtrls, csshtml, kanbanicons;
 
 type
@@ -55,8 +55,6 @@ type
     FModalTask: TTask;
     FTitleEdit: TEdit;
     FDescMemo: TMemo;
-    FShowTimer: TTimer;
-    FShowStage: Integer;
     function FileName: String;
     procedure LoadTasks;
     procedure SaveTasks;
@@ -87,7 +85,6 @@ type
     procedure OpenTask(T: TTask);
     procedure BuildProps;
     procedure CloseTask;
-    procedure ShowTimerTick(Sender: TObject);
     procedure TitleChange(Sender: TObject);
     procedure DescChange(Sender: TObject);
     procedure FormKeyDown(Sender: TObject; var Key: Word; Shift: TShiftState);
@@ -177,9 +174,6 @@ begin
   KeyPreview := True;
   OnKeyDown := @FormKeyDown;
   FTasks := TObjectList.Create(True);
-  FShowTimer := TTimer.Create(Self);
-  FShowTimer.Enabled := False;
-  FShowTimer.OnTimer := @ShowTimerTick;
   LoadTasks;
 
   FShape := TCSSShape.Create(Self);
@@ -898,9 +892,9 @@ begin
   FModalTask := T;
   FSearch.Visible := False;              // native control is not dimmed by backdrop
   FShape.Body.AppendHTML(
-    '<div id="modal" class="absolute inset-0 z-40 flex items-center justify-center bg-slate-950/0 transition-colors duration-200" data-action="close">' +
+    '<div id="modal" class="absolute inset-0 z-40 flex items-center justify-center bg-slate-950/50" data-action="close">' +
     '<div id="panel" class="w-[600px] flex flex-col gap-5 p-7 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 ' +
-    'dark:border-slate-800 shadow-2xl translate-y-6 transition-transform duration-200 ease-out">' +
+    'dark:border-slate-800 shadow-2xl">' +
     '<div class="flex items-center gap-2 text-xs text-slate-400">' + SvgIcon(icSquareKanban, 'size-4') +
     '<div class="flex-1">Product launch</div>' +
     '<div class="' + ICON_BUTTON + ' hover:text-rose-600 dark:hover:text-rose-400" data-action="delete">' + SvgIcon(icTrash2, 'size-[18px]') + '</div>' +
@@ -925,44 +919,19 @@ begin
   FTitleEdit.Font.Style := [fsBold];
   FTitleEdit.Text := T.Title;
   FTitleEdit.OnChange := @TitleChange;
-  FTitleEdit.Visible := False;           // shown when dialog stops moving (native controls are not animated)
   FTitleEdit.Parent := Self;
   FDescMemo := TMemo.Create(Self);
   FDescMemo.BorderStyle := bsNone;
   FDescMemo.WordWrap := True;
   FDescMemo.Text := T.Description;
   FDescMemo.OnChange := @DescChange;
-  FDescMemo.Visible := False;
   FDescMemo.Parent := Self;
   FShape.Body.GetElementById('title').SetAlignControl(FTitleEdit);
   FShape.Body.GetElementById('desc').SetAlignControl(FDescMemo);
   UpdateControlColors;
   BuildProps;
-  // classes are switched after first paint, so the change is animated (transition)
-  FShowStage := 0;
-  FShowTimer.Interval := 30;
-  FShowTimer.Enabled := True;
-end;
-
-procedure TKanbanForm.ShowTimerTick(Sender: TObject);
-begin
-  if FModal = nil then begin
-    FShowTimer.Enabled := False;
-    Exit;
-  end;
-  if FShowStage = 0 then begin
-    FModal.SetClass('absolute inset-0 z-40 flex items-center justify-center bg-slate-950/50 transition-colors duration-200');
-    FPanel.SetClass('w-[600px] flex flex-col gap-5 p-7 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 ' +
-      'dark:border-slate-800 shadow-2xl transition-transform duration-200 ease-out');
-    FShape.Changed;
-    FShowStage := 1;
-    FShowTimer.Interval := 210;
-  end else begin
-    FShowTimer.Enabled := False;
-    FTitleEdit.Visible := True;
-    FDescMemo.Visible := True;
-    if FTitleEdit.CanFocus then FTitleEdit.SetFocus;
-  end;
+  // dialog is shown at once (no animation: whole window would be painted again in every frame)
+  if FTitleEdit.CanFocus then FTitleEdit.SetFocus;
 end;
 
 procedure TKanbanForm.BuildProps;
@@ -1029,7 +998,6 @@ end;
 
 procedure TKanbanForm.CloseTask;
 begin
-  FShowTimer.Enabled := False;
   if Assigned(FModal) then begin
     FShape.Body.Delete(FModal);         // nodes first, then controls placed in them
     FModal := nil;

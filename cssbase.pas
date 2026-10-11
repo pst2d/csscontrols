@@ -701,12 +701,12 @@ var
   function HTMLDiv(AInlineStyle: String; AId: String = ''): THtmlNode;
   function HTMLSpan(AInlineStyle: String; AText: String = ''; AId: String = ''): THtmlNode;
   function HTMLNode(const AClass: String; const AText: String = ''; const AElement: String = 'div'): THtmlNode;
+  // PointF and RectF are not in unit Types of FPC 3.2.2 (only in newer versions), they can be used from here
+  function PointF(AX, AY: Single): TPointF; inline;
+  function RectF(ALeft, ATop, ARight, ABottom: Single): TRectF; inline;
 
 implementation
 
-(*
-  PointF and RectF functions are not in unit Types of FPC 3.2.2 (only in newer versions)
-*)
 function PointF(AX, AY: Single): TPointF; inline;
 begin
   Result.x := AX;
