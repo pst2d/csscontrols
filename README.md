@@ -188,6 +188,8 @@ Native LCL controls (`TEdit` ...) keep their own colors, set them in code when t
 `TCSSTabs` (segmented control, `Tabs`, `TabIndex`, `OnChange`; the indicator moves with a transition, many
 tabs scroll horizontally). They are normal Lazarus components, each one
 only sets utility classes of its nodes, so it is also an example for own components (about 50 lines each).
+The unit enables utility classes itself (`CSSTailwindEnable` in its initialization, unless the application
+set its own resolver), so the components look the same at runtime as in the form designer.
 
 ```pascal
 Btn := TCSSButton.Create(Self);
@@ -199,8 +201,9 @@ Btn.OnClick := @DeleteClick;
 ```
 
 `TCSSShape` has `HTML`, `CSS` and `BodyClass` properties, so content can be written in the Object Inspector
-and is shown in the form designer (the package enables utility classes in the IDE). The application calls
-`CSSTailwindEnable` before forms are created, nodes from the markup are found by id:
+and is shown in the form designer (the package enables utility classes in the IDE). At runtime utility classes
+must be enabled too: call `CSSTailwindEnable` before forms are created (or use `csscomponents`, which does it).
+Nodes from the markup are found by id:
 
 ```pascal
 CSSShape1.Body.GetElementById('save').OnClick := @SaveClick;

@@ -209,6 +209,7 @@ end;
 procedure Register;
 begin
   CSSTailwindEnable;     // utility classes are shown in form designer (application calls CSSTailwindEnable too)
+  CSSAnimationsEnabled := False;   // no animation timer in designer, changed style is shown at once
 	RegisterComponents('CSS',[ TCSSShape]);
 end;
 

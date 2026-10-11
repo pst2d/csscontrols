@@ -660,6 +660,7 @@ var
   CSSDefaultBoxSizing: TCSSBoxSizing = cbxContentBox; // initial box-sizing value (Tailwind like styles use border-box)
   CSSAntialiasing: Boolean = True;                   // antialiasing of rounded corners and border joins
   CSSDarkMode: Boolean = False;                      // dark: variant of utility classes is active (apply styles after change)
+  CSSAnimationsEnabled: Boolean = True;              // False: transitions and animations are off (form designer)
 
   CSSUtilityResolver: TCSSUtilityResolver = nil;  // resolve unknown classes to CSS declarations
 
@@ -5857,8 +5858,9 @@ begin
   cs := FCompStyle;
   Now := GetTickCount64;
   TSig := ResolveVars(cs.Transform) + '|' + ResolveVars(cs.Translate) + '|' + ResolveVars(cs.Rotate) + '|' + ResolveVars(cs.Scale);
-  Frames := BuiltinAnimation(cs.Animation, FramesDur);
-  Transition := FStyled and (cs.TransitionDuration > 0) and (cs.TransitionProperty <> 'none');
+  Frames := 0;
+  if CSSAnimationsEnabled then Frames := BuiltinAnimation(cs.Animation, FramesDur);
+  Transition := CSSAnimationsEnabled and FStyled and (cs.TransitionDuration > 0) and (cs.TransitionProperty <> 'none');
   if not Transition and (Frames = 0) then begin
     StopAnimation;
     FTransformSig := TSig;

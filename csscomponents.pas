@@ -3,7 +3,7 @@ unit csscomponents;
 (*
   Ready made components built on TCSSShape (palette page CSS). Each component only sets utility classes
   of its nodes, painting, hover, active state, transitions and dark mode are done by the engine.
-  Application must call CSSTailwindEnable at start (before forms are created).
+  Tailwind utility classes are enabled by this unit (initialization), unless application set its own resolver.
 
   TCSSButton  - Caption, Kind, OnClick
   TCSSToggle  - Checked, Caption, OnChange (animated switch)
@@ -143,6 +143,10 @@ type
 procedure Register;
 
 implementation
+{$R csscomponents.res}   // palette icons (PNG 24, 36 and 48 px)
+
+uses
+  csstailwind;
 
 const
   COLOR_NAMES: array[TCSSColorName] of String = ('slate', 'indigo', 'green', 'amber', 'red', 'sky', 'pink');
@@ -451,5 +455,9 @@ begin
   end;
   Restyle;
 end;
+
+initialization
+  // components are styled by utility classes, so they work at runtime without any setup
+  if CSSUtilityResolver = nil then CSSTailwindEnable;
 
 end.
