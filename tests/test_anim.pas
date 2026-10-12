@@ -24,6 +24,7 @@ type
     procedure TearDown; override;
   published
     procedure TestColorTransition;
+    procedure TestInheritedColorTransition;
     procedure TestNoTransitionWithoutDuration;
     procedure TestTransformTransition;
     procedure TestOpacityUsesBitmap;
@@ -81,6 +82,26 @@ begin
   AssertEquals('end color', $FF0000, ColorToRGB(A.CompStyle.Background.Color.Value));
   FRoot.AnimationTick(GetTickCount64 + 210);
   AssertFalse('finished', FRoot.Animating);
+end;
+
+// text of child (eg. anonymous text node) follows animated color of parent, also without layout
+procedure TTestAnim.TestInheritedColorTransition;
+var
+  A, T: THtmlNode;
+  C: TColor;
+begin
+  A := HTMLDiv('width: 50px; height: 50px; color: #ff0000; transition: color 100ms linear').AppendTo(FRoot);
+  T := HTMLDiv('').AppendTo(A);
+  T.Text := 'text';
+  Layout;
+  A.InlineStyle := 'width: 50px; height: 50px; color: #0000ff; transition: color 100ms linear';
+  Layout;
+  AssertEquals('child starts with old color', $0000FF, ColorToRGB(T.CompStyle.Color.Value));
+  FRoot.AnimationTick(GetTickCount64 + 50);
+  C := ColorToRGB(T.CompStyle.Color.Value);
+  AssertTrue('child in middle: red and blue', (Red(C) > 80) and (Red(C) < 180) and (Blue(C) > 80) and (Blue(C) < 180));
+  FRoot.AnimationTick(GetTickCount64 + 200);
+  AssertEquals('child end color', $FF0000, ColorToRGB(T.CompStyle.Color.Value));
 end;
 
 procedure TTestAnim.TestNoTransitionWithoutDuration;

@@ -158,7 +158,7 @@ var
   I, P, Len: Integer;
   S, Name, AttrName, AttrValue: String;
   Node, Current: THtmlNode;
-  Closing, SelfClosing: Boolean;
+  Closing, SelfClosing, Styled: Boolean;
   Q: Char;
   procedure Push(ANode: THtmlNode);
   begin
@@ -192,6 +192,7 @@ var
     else ANode.SetAttribute(AName, AValue);
   end;
 begin
+  Styled := Assigned(AParent.RootNode.StyleSheet) or Assigned(CSSUtilityResolver);    // AddNode applies styles
   Len := Length(AHtml);
   Stack := nil;
   Current := AParent;
@@ -289,7 +290,7 @@ begin
       while (I <= Len) and (AHtml[I] <> '>') do Inc(I);
       Inc(I);
       Current.AddNode(Node);
-      Node.ApplyStyle;
+      if not Styled then Node.ApplyStyle;
       Continue;
     end;
     // <style> is appended to stylesheet, <script> is ignored
@@ -305,7 +306,7 @@ begin
       Continue;
     end;
     Current.AddNode(Node);
-    Node.ApplyStyle;      // display of element is needed for whitespace handling
+    if not Styled then Node.ApplyStyle;      // display of element is needed for whitespace handling (AddNode applies styles with stylesheet or utilities)
     if not (SelfClosing or IsVoid(Name)) then begin
       Push(Node);
       Current := Node;
@@ -319,13 +320,13 @@ end;
 function TCSSHtmlNodeHelper.AppendHTML(const AHtml: String): THtmlNode;
 begin
   Result := Self;
-  CSSBeginUpdate;          // no layout of shape after every parsed node
+  CSSBeginUpdate;          // no layout of shape after every parsed node, one layout at the end (or of outer update)
   try
     CSSParseHTML(AHtml, Self);
+    Changed;
   finally
     CSSEndUpdate;
   end;
-  Changed;
 end;
 
 procedure TCSSHtmlNodeHelper.SetHTML(const AHtml: String);

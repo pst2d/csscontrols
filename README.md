@@ -303,7 +303,8 @@ Open `csspckg_lazarus.lpk` in Lazarus, compile it and install it (*Use > Install
 - `demo/kanban/kanban.lpi`: Kanban board application (see screenshots). Cards are moved by drag and drop:
   the dragged card is a small `TCSSShape` above the board, the placeholder is moved in the board by
   `InsertBefore`. The detail dialog uses native controls, tasks are saved to `tasks.json` in
-  the application config folder.
+  the application config folder. F12 shows paint statistics, F11 runs a benchmark (layout, repaint, hover,
+  dialog, drag) and copies the result to the clipboard.
 - `demo/renderdemo.lpi`: renders the demo scenes to PNG files, which is handy for checking changes visually
   (`renderdemo out 720 Borders 4` renders one scene zoomed 4x, `renderdemo bench` measures paint time)
 - `tests/csstests.lpi`: fpcunit tests (console runner)
@@ -326,6 +327,7 @@ lazbuild demo/renderdemo.lpi && demo/renderdemo demo/out 720
   to `opacity` or `scale` (a bitmap in device resolution, several MB for a big dialog on Retina).
 - `z-index` orders siblings only (no stacking contexts), so a popup should be the last child or have a
   higher `z-index` than siblings which overlap it.
+- Text inside a node is laid out as one block (no inline formatting across nodes).
 - Colors with alpha are blended with the nearest background color for text and borders. Backgrounds
   use a real alpha channel.
 - Under a node with a transparent or semi-transparent background the shadow can be seen through the
@@ -350,8 +352,20 @@ Painting is done with the LCL canvas only, no extra libraries are used:
   again. The Kanban demo needs about 90 MB on macOS when idle (Activity Monitor), a third of it is the
   window buffer of the system. While something animates, macOS keeps more window buffers (about 70 MB
   more for a large Retina window), they are released when the window is idle.
-- When many nodes are created in code, call `CSSBeginUpdate` before and `CSSEndUpdate` and `Changed` of the
-  shape after, so the layout is computed once (`AppendHTML` does it itself).
+- When many nodes are created or changed in code, call `CSSBeginUpdate` before and `CSSEndUpdate` after.
+  `Changed` of shapes and nodes is only remembered in between, every changed shape is laid out and painted
+  once in `CSSEndUpdate` (calls can be nested, `AppendHTML` does it itself).
+- Only the changed area is painted again: the area of nodes which were added, removed, moved or look
+  different (old and new position). A hover over one card repaints only that card.
+- `TCSSShape` paints into a buffer bitmap (`Buffered`, on by default for shapes with an opaque background),
+  so a repaint requested by the system is a copy of the buffer and changes paint only their area. While the
+  shape is being resized, it is painted directly (no bitmap is allocated in every step).
+- `HoverEnabled := False` turns off `:hover` for a while, for example while a card is dragged.
+- Windows: LCL premultiplies a 32-bit bitmap in every draw. Cached bitmaps (corners, shadows, icons) are
+  therefore kept premultiplied and drawn by `AlphaBlend` directly (`CSSFastBlend`, on by default).
+- `CSSStats` counts layouts, paints, bitmaps, texts and their time, the Kanban demo shows them (F12, F11).
+  The Kanban demo in a 2040x1290 window on Windows (150 %): a full repaint 25 ms, a hover 10-14 ms,
+  a click in the dialog 36 ms, a drag step 3 ms.
 
 - Straight parts of backgrounds and borders are drawn with `FillRect`.
 - Background images and horizontal or vertical gradients are drawn with `StretchDraw`.
@@ -366,7 +380,6 @@ Painting is done with the LCL canvas only, no extra libraries are used:
 - Bitmaps are rendered in device resolution (2x on macOS Retina).
 
 `demo/renderdemo resize` measures painting while a window is being resized.
-- Text inside a node is laid out as one block (no inline formatting across nodes).
 
 ## License
 

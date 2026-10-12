@@ -364,6 +364,7 @@ type
     procedure Assign(Source: TPersistent); override;
     procedure Merge(AValue: TCSSItem);
     function LayoutKey: String;     // values which change layout (sizes, spacing, fonts, display ...)
+    function PaintKey: String;      // values which change only painting (colors, borders, shadows, transforms ...)
   end;
 
   { TCSSStyleSheet }
@@ -438,6 +439,9 @@ type
     FActive: Boolean;             // mouse is pressed on node (:active)
     FViewportWidth: Integer;      // root node only: width for responsive variants (sm:, md: ...)
     FParentControl: TControl;
+    FChangedMark: Boolean;        // node was changed since last layout of shape (its area is painted again)
+    FDirtyOld: TRect;             // root only: old area of changed and removed nodes
+    FHasChanges, FChangedAll: Boolean;   // root only: some nodes were changed, whole tree is painted again
     FFreeMe: Boolean;
     FElementName,                 // div, span ...
     FId: String;                  // id for access
@@ -476,6 +480,7 @@ type
     FTransformSrcW, FTransformSrcH: Integer;
     FTransformSrcKey: String;
     FAnim: PCSSAnim;              // running transition or animation (nil = none)
+    FColorAnimated: Boolean;      // inherited color is animated by transition of ancestor
     FStyled: Boolean;             // node was painted (transitions start only for painted nodes, as in browser)
     FTransformSig: String;        // resolved transform properties (change starts transition)
     FClampKey, FClampResult: String;   // line-clamp: text with ellipsis for width, lines, font and text (cache)
@@ -634,6 +639,13 @@ type
     procedure Detach;
     function CountNodes(ANode: THtmlNode): Integer;
     procedure Changed;
+    procedure NoteChanged(ANode: THtmlNode);    // root: node (with subtree) is painted again, its old area is remembered
+    function TakeDirtyRect(const AOldRects: TCSSRectArray): TRect;   // root: area to paint after layout (changes are cleared)
+    function PaintedRect: TRect;                // area of node on screen (with shadow and transform), empty if not visible
+    function SubtreePaintedRect: TRect;         // painted area of node and its descendants
+    function PaintedRects: TCSSRectArray;       // painted areas of all nodes (preorder), compared after layout
+    property HasChanges: Boolean read FHasChanges;
+    property ChangedAll: Boolean read FChangedAll;
 
     property ClassList: TCSSClassList read FClassList;
     property CompStyle: TCSSItem read FCompStyle write FCompStyle;
@@ -682,6 +694,22 @@ var
   CSSDarkMode: Boolean = False;                      // dark: variant of utility classes is active (apply styles after change)
   CSSAnimationsEnabled: Boolean = True;              // False: transitions and animations are off (form designer)
 
+type
+  TCSSStats = record             // counters of layout and painting for performance tuning (application reads and resets them)
+    Layouts, Paints: Integer;
+    LayoutMs, PaintMs, MaxPaintMs: Double;   // times are added by TCSSShape
+    PaintPixels: Int64;          // area of painted rectangles (control pixels)
+    Bitmaps, Texts: Integer;     // drawn bitmaps (corners, shadows, icons ...) and texts
+    BitmapMs, TextMs: Double;    // time of drawing bitmaps and texts
+    StretchPixels: Int64;        // area of bitmaps drawn resized (eg. semi-transparent backgrounds, sides of shadows)
+    Clips: Integer;              // changes of clip rect of canvas
+    ClipMs: Double;
+  end;
+
+var
+  CSSStats: TCSSStats;
+  CSSFastBlend: Boolean = True;  // Windows: cached bitmaps are drawn by AlphaBlend directly (LCL premultiplies them in every draw)
+
   CSSUtilityResolver: TCSSUtilityResolver = nil;  // resolve unknown classes to CSS declarations
 
   procedure ParseCSS(ACSS: String; ATarget: TStringList);
@@ -691,8 +719,10 @@ var
   function CSSResolveUtility(const AClassName: String; out ADeclarations: String; out AOrder: Integer): Boolean;
   procedure CSSClearUtilityCache;
   procedure CSSClearPaintCache;
-  procedure CSSBeginUpdate;     // many nodes are changed: shapes are not updated after every change
-  procedure CSSEndUpdate;       // (call Changed of the shape after CSSEndUpdate)
+  procedure CSSBeginUpdate;     // many nodes are changed: shapes are not laid out after every change,
+  procedure CSSEndUpdate;       // changed shapes are laid out once at the end (calls can be nested)
+  procedure CSSUpdateForget(AControl: TControl);   // control is destroyed (removed from pending updates)
+  function CSSUpdatePending(AControl: TControl): Boolean;   // in CSSBeginUpdate: control is laid out in CSSEndUpdate
   function CSSAlphaBitmap(R, G, B, A: Byte): TBitmap;
   procedure CSSRegisterImage(const AName: String; AGraphic: TGraphic);
   function StrBefore(const AValue: String; const ASubstr: String): String;
@@ -701,11 +731,114 @@ var
   function HTMLDiv(AInlineStyle: String; AId: String = ''): THtmlNode;
   function HTMLSpan(AInlineStyle: String; AText: String = ''; AId: String = ''): THtmlNode;
   function HTMLNode(const AClass: String; const AText: String = ''; const AElement: String = 'div'): THtmlNode;
+  function CSSTimeMs: Double;    // high resolution time in ms (for measuring)
   // PointF and RectF are not in unit Types of FPC 3.2.2 (only in newer versions), they can be used from here
   function PointF(AX, AY: Single): TPointF; inline;
   function RectF(ALeft, ATop, ARight, ABottom: Single): TRectF; inline;
 
 implementation
+
+{$ifdef unix}
+uses
+  Unix;
+{$endif}
+
+{$ifdef windows}
+function QueryPerformanceCounter(var ACount: Int64): LongBool; stdcall; external 'kernel32' name 'QueryPerformanceCounter';
+function QueryPerformanceFrequency(var AFreq: Int64): LongBool; stdcall; external 'kernel32' name 'QueryPerformanceFrequency';
+{$endif}
+
+function CSSTimeMs: Double;
+{$ifdef windows}
+var
+  C, F: Int64;
+begin
+  C := 0;
+  F := 0;
+  QueryPerformanceCounter(C);
+  QueryPerformanceFrequency(F);
+  if F > 0 then Result := Double(C) * 1000 / Double(F) else Result := GetTickCount64;   // Double: Single loses ms
+end;
+{$else}{$ifdef unix}
+var
+  TV: TTimeVal;
+begin
+  fpgettimeofday(@TV, nil);
+  Result := Double(TV.tv_sec) * 1000 + Double(TV.tv_usec) / 1000;   // Double: Single loses ms
+end;
+{$else}
+begin
+  Result := GetTickCount64;
+end;
+{$endif}{$endif}
+
+{$ifdef windows}
+type
+  { TCSSWinBitmap - cached bitmap with premultiplied copy for AlphaBlend. LCL creates a premultiplied copy of a
+    32 bit bitmap in every draw, which is slow when hundreds of corners, shadows and icons are painted. }
+  TCSSWinBitmap = class(TBitmap)
+  private
+    FDC: HDC;
+    FDib, FOldBmp: HBITMAP;
+  public
+    procedure Prepare(AImage: TLazIntfImage);
+    destructor Destroy; override;
+  end;
+
+function WinAlphaBlend(ADest: HDC; X, Y, W, H: Integer; ASrc: HDC; SX, SY, SW, SH: Integer; ABlend: LongWord): LongBool;
+  stdcall; external 'msimg32.dll' name 'AlphaBlend';
+{$endif}
+
+type
+  { TCSSKeyList - sorted cache with exact keys, compared byte by byte (default comparison of TStringList uses
+    locale, which is slow: caches are searched for every corner, shadow and utility class) }
+  TCSSKeyList = class(TStringList)
+  protected
+    function DoCompareText(const S1, S2: String): PtrInt; override;
+  end;
+
+function TCSSKeyList.DoCompareText(const S1, S2: String): PtrInt;
+begin
+  Result := CompareStr(S1, S2);
+end;
+
+(*
+  Draw cached bitmap (resized when it has higher resolution, eg. Retina), counted in CSSStats
+*)
+procedure DrawCachedBitmap(ACanvas: TCanvas; const ARect: TRect; ABitmap: TBitmap);
+var
+  T: Double;
+begin
+  Inc(CSSStats.Bitmaps);
+  if (ABitmap.Width <> ARect.Width) or (ABitmap.Height <> ARect.Height) then
+    Inc(CSSStats.StretchPixels, Int64(ARect.Width) * ARect.Height);
+  T := CSSTimeMs;
+  {$ifdef windows}
+  if CSSFastBlend and (ABitmap is TCSSWinBitmap) and (TCSSWinBitmap(ABitmap).FDC <> 0) then begin
+    if (ARect.Width > 0) and (ARect.Height > 0) then
+      WinAlphaBlend(ACanvas.Handle, ARect.Left, ARect.Top, ARect.Width, ARect.Height, TCSSWinBitmap(ABitmap).FDC, 0, 0,
+        ABitmap.Width, ABitmap.Height, $01FF0000);    // AC_SRC_OVER, constant alpha 255, AC_SRC_ALPHA (premultiplied)
+  end else
+  {$endif}
+  if (ABitmap.Width = ARect.Width) and (ABitmap.Height = ARect.Height) then ACanvas.Draw(ARect.Left, ARect.Top, ABitmap)
+    else ACanvas.StretchDraw(ARect, ABitmap);
+  CSSStats.BitmapMs := CSSStats.BitmapMs + CSSTimeMs - T;
+end;
+
+(*
+  Clip rect of canvas (counted in CSSStats). It is set always, also when it is the same: Cocoa can lose clip of bitmap
+  canvas after drawing. AEnable: clipping is enabled too (getter of Clipping says clip of canvas, setter enables it).
+*)
+procedure SetCanvasClip(ACanvas: TCanvas; const ARect: TRect; AEnable: Boolean = False);
+var
+  T: Double;
+begin
+  T := CSSTimeMs;
+  if AEnable then ACanvas.Clipping := True;
+  ACanvas.ClipRect := ARect;
+  Inc(CSSStats.Clips);
+  CSSStats.ClipMs := CSSStats.ClipMs + CSSTimeMs - T;
+end;
 
 function PointF(AX, AY: Single): TPointF; inline;
 begin
@@ -1489,7 +1622,7 @@ begin
   Result := 'default';
   if Trim(AFamily) = '' then Exit;
   if CSSFontFamilyCache = nil then begin
-    CSSFontFamilyCache := TStringList.Create;
+    CSSFontFamilyCache := TCSSKeyList.Create;
     CSSFontFamilyCache.Sorted := True;
     CSSFontFamilyCache.CaseSensitive := True;
   end;
@@ -1915,7 +2048,7 @@ begin
   AOrder := 0;
   if not Assigned(CSSUtilityResolver) then Exit(False);
   if CSSUtilityCache = nil then begin
-    CSSUtilityCache := TStringList.Create;
+    CSSUtilityCache := TCSSKeyList.Create;
     CSSUtilityCache.Sorted := True;
     CSSUtilityCache.CaseSensitive := True;
     CSSUtilityCache.OwnsObjects := True;
@@ -2872,6 +3005,29 @@ begin
     Result := Result + L(Margin[S]) + L(Padding[S]) + L(Border[S].Width) + IntToStr(Ord(Border[S].Style));
 end;
 
+function TCSSItem.PaintKey: String;
+var
+  S: TCSSSide;
+  function C(const AColor: TCSSColor): String; inline;
+  begin
+    Result := IntToStr(AColor.Value) + ':' + IntToStr(AColor.Alpha) + ':' + IntToStr(Ord(AColor.ColorType)) + ',';
+  end;
+  function L(const ALength: TCSSLength): String; inline;
+  begin
+    Result := FloatToStr(ALength.Value) + Chr(Ord('a') + Ord(ALength.LengthType)) + ',';
+  end;
+begin
+  Result := C(Background.Color) + C(Color) + Background.Image + '|' + Background.Size + '|' + Background.Position + '|' +
+    Background.RepeatMode + '|' + BoxShadow + '|' + Transform + '|' + TransformOrigin + '|' + Translate + '|' + Rotate + '|' +
+    Scale + '|' + FloatToStr(Opacity) + '|' + ObjectFit + '|' + ObjectPosition + '|' +
+    Format('%d,%d,%d,%d,', [Ord(TextAlign), Ord(Font.TextDecoration), ZIndex, Ord(ScrollbarNone)]) +
+    L(RadiusTopLeft.Width) + L(RadiusTopLeft.Height) + L(RadiusTopRight.Width) + L(RadiusTopRight.Height) +
+    L(RadiusBottomLeft.Width) + L(RadiusBottomLeft.Height) + L(RadiusBottomRight.Width) + L(RadiusBottomRight.Height);
+  for S := Low(TCSSSide) to High(TCSSSide) do
+    Result := Result + C(Border[S].Color);
+  if Assigned(CustomProps) then Result := Result + CustomProps.Text;
+end;
+
 procedure TCSSItem.Assign(Source: TPersistent);
 var
   Src: TCSSItem;
@@ -3134,8 +3290,14 @@ end;
 
 function IntfImageToBitmap(AImage: TLazIntfImage): TBitmap;
 begin
+  {$ifdef windows}
+  Result := TCSSWinBitmap.Create;
+  Result.LoadFromIntfImage(AImage);
+  TCSSWinBitmap(Result).Prepare(AImage);
+  {$else}
   Result := TBitmap.Create;
   Result.LoadFromIntfImage(AImage);
+  {$endif}
 end;
 
 type
@@ -3192,6 +3354,73 @@ begin
   else
     W.Img.Colors[X, W.Y] := FPColor(R * 257, G * 257, B * 257, A * 257);
 end;
+
+{$ifdef windows}
+{ TCSSWinBitmap }
+
+procedure TCSSWinBitmap.Prepare(AImage: TLazIntfImage);
+var
+  BI: TBitmapInfo;
+  Bits: Pointer;
+  P: PLongWord;
+  Rd: TCSSPixelWriter;
+  X, Y: Integer;
+  V, A, R, G, B: LongWord;
+  C: TFPColor;
+begin
+  if (AImage.Width <= 0) or (AImage.Height <= 0) then Exit;
+  FillChar(BI, SizeOf(BI), 0);
+  BI.bmiHeader.biSize := SizeOf(TBitmapInfoHeader);
+  BI.bmiHeader.biWidth := AImage.Width;
+  BI.bmiHeader.biHeight := -AImage.Height;      // top-down
+  BI.bmiHeader.biPlanes := 1;
+  BI.bmiHeader.biBitCount := 32;
+  BI.bmiHeader.biCompression := BI_RGB;
+  Bits := nil;
+  FDib := CreateDIBSection(0, BI, DIB_RGB_COLORS, Bits, 0, 0);
+  if FDib = 0 then Exit;
+  if Bits = nil then begin
+    DeleteObject(FDib);
+    FDib := 0;
+    Exit;
+  end;
+  // premultiplied BGRA
+  Rd := PixelWriter(AImage);
+  P := Bits;
+  for Y := 0 to AImage.Height - 1 do begin
+    WriterLine(Rd, Y);
+    for X := 0 to AImage.Width - 1 do begin
+      if Rd.Fast then begin
+        V := Rd.Line[X];
+        A := (V shr Rd.ShiftA) and $FF;
+        R := (V shr Rd.ShiftR) and $FF;
+        G := (V shr Rd.ShiftG) and $FF;
+        B := (V shr Rd.ShiftB) and $FF;
+      end else begin
+        C := AImage.Colors[X, Y];
+        A := C.Alpha shr 8;
+        R := C.Red shr 8;
+        G := C.Green shr 8;
+        B := C.Blue shr 8;
+      end;
+      P^ := (A shl 24) or ((R * A div 255) shl 16) or ((G * A div 255) shl 8) or (B * A div 255);
+      Inc(P);
+    end;
+  end;
+  FDC := CreateCompatibleDC(0);
+  FOldBmp := SelectObject(FDC, FDib);
+end;
+
+destructor TCSSWinBitmap.Destroy;
+begin
+  if FDC <> 0 then begin
+    SelectObject(FDC, FOldBmp);
+    DeleteDC(FDC);
+  end;
+  if FDib <> 0 then DeleteObject(FDib);
+  inherited Destroy;
+end;
+{$endif}
 
 function ToByte(AValue: Single): Byte; inline;
 begin
@@ -3485,7 +3714,7 @@ end;
 function CornerCache: TStringList;
 begin
   if CSSCornerCache = nil then begin
-    CSSCornerCache := TStringList.Create;
+    CSSCornerCache := TCSSKeyList.Create;
     CSSCornerCache.Sorted := True;
     CSSCornerCache.CaseSensitive := True;
     CSSCornerCache.OwnsObjects := True;
@@ -3538,6 +3767,7 @@ begin
   end;
   AddPaintCache(Key, Result);
 end;
+
 
 function CornerBitmap(const AKey: String; const S: TCSSPaintShape; ACorner: Integer; const ARect: TRect;
   const AColors: array of TCSSRGBA; const APatterns: TCSSSidePatterns): TBitmap;
@@ -3919,8 +4149,7 @@ begin
   Bmp := SvgIconBitmap(ANode.GetAttribute('data-svg'), ANode.GetAttribute('viewbox'), CSSStrToFloatDef(Stroke, 2),
     Round(R.Width * Sc), Round(R.Height * Sc), ANode.FCompStyle.Color.Value, ANode.FCompStyle.Color.Alpha);
   if Bmp = nil then Exit;
-  if (Bmp.Width = R.Width) and (Bmp.Height = R.Height) then ACanvas.Draw(R.Left, R.Top, Bmp)
-    else ACanvas.StretchDraw(R, Bmp);
+  DrawCachedBitmap(ACanvas, R, Bmp);
 end;
 
 
@@ -4874,8 +5103,7 @@ var
   procedure DrawPart(ABitmap: TBitmap; const ARect: TRect);
   begin
     if (ABitmap = nil) or (ARect.Right <= ARect.Left) or (ARect.Bottom <= ARect.Top) then Exit;
-    if (ABitmap.Width = ARect.Width) and (ABitmap.Height = ARect.Height) then ACanvas.Draw(ARect.Left, ARect.Top, ABitmap)
-      else ACanvas.StretchDraw(ARect, ABitmap);
+    DrawCachedBitmap(ACanvas, ARect, ABitmap);
   end;
 begin
   {$ifndef fmx}
@@ -4895,7 +5123,7 @@ begin
   Sc := RootNode.FPaintScale;
   if Sc <= 0 then Sc := 1;
   if CSSShadowCache = nil then begin
-    CSSShadowCache := TStringList.Create;
+    CSSShadowCache := TCSSKeyList.Create;
     CSSShadowCache.Sorted := True;
     CSSShadowCache.OwnsObjects := True;
   end;
@@ -4944,8 +5172,7 @@ var
   procedure DrawPart(ABitmap: TBitmap; const ARect: TRect);
   begin
     if (ARect.Right <= ARect.Left) or (ARect.Bottom <= ARect.Top) then Exit;
-    if (ABitmap.Width = ARect.Width) and (ABitmap.Height = ARect.Height) then ACanvas.Draw(ARect.Left, ARect.Top, ABitmap)
-      else ACanvas.StretchDraw(ARect, ABitmap);
+    DrawCachedBitmap(ACanvas, ARect, ABitmap);
   end;
   // center of shadow under opaque node: only strips outside of node (offset, spread) are painted
   procedure DrawOutside(ABitmap: TBitmap; const ARect: TRect);
@@ -4981,7 +5208,7 @@ begin
   Sc := RootNode.FPaintScale;
   if Sc <= 0 then Sc := 1;
   if CSSShadowCache = nil then begin
-    CSSShadowCache := TStringList.Create;
+    CSSShadowCache := TCSSKeyList.Create;
     CSSShadowCache.Sorted := True;
     CSSShadowCache.CaseSensitive := True;
     CSSShadowCache.OwnsObjects := True;
@@ -5106,8 +5333,7 @@ var
   end;
   procedure DrawBitmap(const ARect: TRect; ABitmap: TBitmap);
   begin
-    if (ABitmap.Width = ARect.Width) and (ABitmap.Height = ARect.Height) then ACanvas.Draw(ARect.Left, ARect.Top, ABitmap)
-      else ACanvas.StretchDraw(ARect, ABitmap);   // high resolution bitmap (Retina)
+    DrawCachedBitmap(ACanvas, ARect, ABitmap);   // high resolution bitmap (Retina)
   end;
   procedure SortYs;
   var
@@ -5192,7 +5418,7 @@ var
   begin
     Saved := ACanvas.ClipRect;
     if TRect.Intersect(Box, Saved).IsEmpty then Exit;    // empty clip rect would mean "no clipping"
-    ACanvas.ClipRect := TRect.Intersect(Box, Saved);
+    SetCanvasClip(ACanvas, TRect.Intersect(Box, Saved));
     try
       for Side := Low(TCSSSide) to High(TCSSSide) do
         if SideVisible[Side] and (Pat[Side].Style = cbsDotted) then
@@ -5201,7 +5427,7 @@ var
             DrawDot(C.x, C.y, BW[Side], SideColor[Side]);
           end;
     finally
-      ACanvas.ClipRect := Saved;
+      SetCanvasClip(ACanvas, Saved);
     end;
   end;
   function CornerRect(AIndex: Integer): TRect;
@@ -5220,7 +5446,7 @@ var
   begin
     C := CSSColorToRGBA(cs.Background.Color);
     if ToByte(C.A) = 0 then Exit;     // fully transparent bitmap is painted black on Windows (no alpha)
-    ACanvas.StretchDraw(ARect, CSSAlphaBitmap(ToByte(C.R), ToByte(C.G), ToByte(C.B), ToByte(C.A)));
+    DrawCachedBitmap(ACanvas, ARect, CSSAlphaBitmap(ToByte(C.R), ToByte(C.G), ToByte(C.B), ToByte(C.A)));
   end;
 begin
   {$ifndef fmx}
@@ -5377,8 +5603,8 @@ begin
         for I := 0 to High(Slabs) do begin
           R := TRect.Intersect(Slabs[I], ClipSave);     // empty clip rect would mean "no clipping"
           if R.IsEmpty then Continue;
-          ACanvas.ClipRect := R;
-          ACanvas.StretchDraw(Box, GradientStrip(Grad, Round(W * Sc), Round(H * Sc), Key));
+          SetCanvasClip(ACanvas, R);
+          DrawCachedBitmap(ACanvas, Box, GradientStrip(Grad, Round(W * Sc), Round(H * Sc), Key));
         end;
       end else begin
         BackgroundImageRect(Src, W, H, Dst);
@@ -5392,14 +5618,17 @@ begin
         for I := 0 to High(Slabs) do begin
           R := TRect.Intersect(Slabs[I], ClipSave);
           if R.IsEmpty then Continue;
-          ACanvas.ClipRect := R;
+          SetCanvasClip(ACanvas, R);
           FY := Dst.Top;
           J := 0;
           repeat
             FX := Dst.Left;
             repeat
               R := Rect(Box.Left + Round(FX), Box.Top + Round(FY), Box.Left + Round(FX + TW), Box.Top + Round(FY + TH));
-              if R.IntersectsWith(Slabs[I]) then ACanvas.StretchDraw(R, ImageBitmap(Src));
+              if R.IntersectsWith(Slabs[I]) then begin
+                Inc(CSSStats.Bitmaps);
+                ACanvas.StretchDraw(R, ImageBitmap(Src));
+              end;
               FX := FX + TW;
               Inc(J);
             until not Repeating or (FX >= W) or (J > 4000);
@@ -5408,7 +5637,7 @@ begin
         end;
       end;
     finally
-      ACanvas.ClipRect := ClipSave;
+      SetCanvasClip(ACanvas, ClipSave);
       ACanvas.AntialiasingMode := OldAA;
     end;
   end;
@@ -5673,7 +5902,7 @@ var
     Colors[0] := RGBAFromColor(clBlack, 0.35);
     for I := 1 to 4 do Colors[I] := RGBAFromColor(0, 0);
     Pat := Default(TCSSSidePatterns);
-    ACanvas.StretchDraw(ARect, CornerBitmap(Format('SB%d,%d', [D.Right, D.Bottom]), S, -1, D, Colors, Pat));
+    DrawCachedBitmap(ACanvas, ARect, CornerBitmap(Format('SB%d,%d', [D.Right, D.Bottom]), S, -1, D, Colors, Pat));
   end;
 begin
   FVThumb := Rect(0, 0, 0, 0);
@@ -6221,9 +6450,7 @@ begin
   for I := 0 to CSSAnimNodes.Count - 1 do begin
     N := THtmlNode(CSSAnimNodes[I]);
     if (N.RootNode <> Self) or not N.FVisible then Continue;
-    R := N.FCompSize.ContentRect;
-    if N.FCompStyle.BoxShadow <> '' then InflateRect(R, 60, 60) else InflateRect(R, 2, 2);
-    R := TRect.Intersect(N.TransformedBounds(R), N.ScreenClipRect);    // scrolled out part is not repainted
+    R := N.PaintedRect;
     if not R.IsEmpty then begin
       SetLength(Result, Length(Result) + 1);
       Result[High(Result)] := R;
@@ -6357,6 +6584,20 @@ var
   P, E, Op, Q, CX, CY, Y: Single;
   M, X: TCSSMatrix2D;
   I: Integer;
+  procedure InheritColor(N: THtmlNode; AAnimated: Boolean);
+  var
+    C: THtmlNode;
+  begin
+    C := N.FFirstChild;
+    while Assigned(C) do begin
+      if not (cipColor in C.FCompStyle.Specified) then begin
+        C.FCompStyle.Color := N.FCompStyle.Color;
+        C.FColorAnimated := AAnimated;
+        InheritColor(C, AAnimated);
+      end;
+      C := C.FNextSibling;
+    end;
+  end;
 begin
   A := FAnim;
   ADone := True;
@@ -6367,6 +6608,7 @@ begin
     if A^.ColorOn[I] then
       if P >= 1 then SetColorChannel(FCompStyle, I, A^.ColorTo[I])
         else SetColorChannel(FCompStyle, I, LerpColor(A^.ColorFrom[I], A^.ColorTo[I], E));
+  if A^.ColorOn[1] then InheritColor(Self, P < 1);   // text of descendants (eg. anonymous text node) has the same color
   if A^.OpacityOn then Op := A^.OpacityFrom + (A^.OpacityTo - A^.OpacityFrom) * E else Op := A^.BaseOpacity;
   if A^.MatrixOn then M := MatLerp(A^.MatrixFrom, A^.MatrixTo, E)
   else if A^.MatrixPending then M := A^.MatrixFrom
@@ -6613,8 +6855,8 @@ begin
     end;
   end;
   // colors in transition change every frame: bitmaps of corners and icons are not cached
-  CSSPaintTransient := Assigned(FAnim) and (FAnim^.ColorOn[0] or FAnim^.ColorOn[1] or FAnim^.ColorOn[2] or
-    FAnim^.ColorOn[3] or FAnim^.ColorOn[4] or FAnim^.ColorOn[5]);
+  CSSPaintTransient := FColorAnimated or Assigned(FAnim) and (FAnim^.ColorOn[0] or FAnim^.ColorOn[1] or
+    FAnim^.ColorOn[2] or FAnim^.ColorOn[3] or FAnim^.ColorOn[4] or FAnim^.ColorOn[5]);
   try
     DrawNode(ACanvas, AClipRect);
   finally
@@ -6646,7 +6888,7 @@ begin
       CSSPaintClip := SavedClip;
     end;
     if ((FScrollMax.X > FScrollMin.X) or (FScrollMax.Y > FScrollMin.Y)) and not FCompStyle.ScrollbarNone then begin
-      ACanvas.ClipRect := AClipRect;
+      SetCanvasClip(ACanvas, AClipRect);
       PaintScrollbars(ACanvas);
     end;
   end;
@@ -6966,15 +7208,16 @@ begin
     end;
   end;
   if FTransformBmp.Width = 0 then Exit;
-  ACanvas.ClipRect := AClipRect;
-  if (FTransformBmp.Width = CB.Width) and (FTransformBmp.Height = CB.Height) then ACanvas.Draw(CB.Left, CB.Top, FTransformBmp)
-    else ACanvas.StretchDraw(CB, FTransformBmp);
+  SetCanvasClip(ACanvas, AClipRect);
+  DrawCachedBitmap(ACanvas, CB, FTransformBmp);
   {$endif}
 end;
 
 procedure THtmlNode.DrawNode(ACanvas: TCanvas; AClipRect: TRect);
 var
   Flags: Cardinal;
+  TextT: Double;
+  ClipText: Boolean;
   R,               // temp rect
   CRect: TRect;    // border box
   S: String;
@@ -6986,8 +7229,7 @@ begin
   if FCompStyle.BoxShadow <> '' then InflateRect(R, 100, 100);   // shadow can be outside of node
   if not R.IntersectsWith(AClipRect) then Exit;
   {$ifndef fmx}
-  ACanvas.Clipping := True;
-  ACanvas.ClipRect := AClipRect;
+  SetCanvasClip(ACanvas, AClipRect, True);
   {$endif}
   PaintBoxShadow(ACanvas);
   PaintBackgroundAndBorder(ACanvas);
@@ -7014,13 +7256,21 @@ begin
       ctaCenter: Flags := Flags or DT_CENTER;
       ctaRight: Flags := Flags or DT_RIGHT;
     end;
-    ACanvas.ClipRect := TRect.Intersect(FCompSize.RealContentRect, AClipRect);  // R can't be intersected here, text is moved when R.Top changes
+    // clip is changed only when text can be outside of its box or visible area (R can't be intersected, text is moved
+    // when R.Top changes)
+    with FCompSize.RealContentRect do
+      ClipText := (Left < AClipRect.Left) or (Top < AClipRect.Top) or (Right > AClipRect.Right) or (Bottom > AClipRect.Bottom) or
+        (FCachedFont.CachedWidth > R.Right - R.Left) or (FCachedFont.CachedHeight > R.Bottom - R.Top);
+    if ClipText then SetCanvasClip(ACanvas, TRect.Intersect(FCompSize.RealContentRect, AClipRect));
+    Inc(CSSStats.Texts);
+    TextT := CSSTimeMs;
     if (FCompStyle.LineClamp > 0) and (FCompStyle.WhiteSpace = cwsNormal) then begin
       S := ClampedText(R.Right - R.Left);
       DrawText(ACanvas.Handle, PChar(S), Length(S), R, Flags);
     end else
       DrawText(ACanvas.Handle, PChar(Text), Length(Text),  R, Flags);
-    ACanvas.ClipRect := AClipRect;
+    CSSStats.TextMs := CSSStats.TextMs + CSSTimeMs - TextT;
+    if ClipText then SetCanvasClip(ACanvas, AClipRect);
   end;
   
   if CSS_DEBUG_MODE then begin
@@ -7430,20 +7680,33 @@ end;
 function THtmlNode.RestyleState(ADeep: Boolean; var ADirty: TRect): Boolean;
 var
   NeedLayout: Boolean;
+  Restyled: array of THtmlNode;     // nodes which look different (new area is added after transforms are computed)
+  I: Integer;
+  procedure AddDirty(const R: TRect);
+  begin
+    if R.IsEmpty then Exit;
+    if ADirty.IsEmpty then ADirty := R else ADirty := TRect.Union(ADirty, R);
+  end;
   procedure Walk(N: THtmlNode; Deep: Boolean);
   var
-    Old: String;
+    Old, OldPaint: String;
     C: THtmlNode;
-    R: TRect;
+    OldArea: TRect;
+    Lay: Boolean;
   begin
     Old := N.FCompStyle.LayoutKey;
+    OldPaint := N.FCompStyle.PaintKey;
+    OldArea := N.PaintedRect;
     N.ApplyStyleForNode(N);
     N.ResolveInheritedStyle;
-    if N.FCompStyle.LayoutKey <> Old then NeedLayout := True;
-    R := N.FCompSize.ContentRect;
-    if N.FCompStyle.BoxShadow <> '' then InflateRect(R, 60, 60) else InflateRect(R, 2, 2);
-    R := N.TransformedBounds(R);
-    if ADirty.IsEmpty then ADirty := R else if not R.IsEmpty then ADirty := TRect.Union(ADirty, R);
+    Lay := N.FCompStyle.LayoutKey <> Old;
+    if Lay then NeedLayout := True;
+    // area is painted again only when node looks different (state of node can change without change of style)
+    if Lay or (N.FCompStyle.PaintKey <> OldPaint) then begin
+      AddDirty(OldArea);
+      SetLength(Restyled, Length(Restyled) + 1);
+      Restyled[High(Restyled)] := N;
+    end;
     if Deep then begin
       C := N.FFirstChild;
       while Assigned(C) do begin
@@ -7466,8 +7729,12 @@ var
   end;
 begin
   NeedLayout := False;
+  Restyled := nil;
   Walk(Self, ADeep);
-  if not NeedLayout then Refresh(Self, False);
+  if not NeedLayout then begin
+    Refresh(Self, False);
+    for I := 0 to High(Restyled) do AddDirty(Restyled[I].PaintedRect);    // new area (eg. translate on hover)
+  end;
   Result := NeedLayout;
 end;
 
@@ -7478,6 +7745,7 @@ function THtmlNode.ApplyStyles: THtmlNode;
 begin
   Result := Self;
   ApplySubtree(Self);
+  if Assigned(RootNode) then RootNode.NoteChanged(Self);
 end;
 
 (*
@@ -7881,6 +8149,7 @@ var
 begin
   cs := FCompStyle;
   if Assigned(ParentNode) then ps := ParentNode.FCompStyle else ps := Nil;
+  FColorAnimated := False;          // next frame of transition sets it again
   if not (cipColor in cs.Specified) or (cs.Color.ColorType in [cctUndefined, cctCurrentColor]) then begin
     if Assigned(ps) then cs.Color := ps.Color
     else begin
@@ -9514,6 +9783,7 @@ end;
 function THtmlNode.Clear: THtmlNode;
 begin
   Result := Self;
+  if Assigned(FFirstChild) and Assigned(RootNode) and (RootNode <> Self) then RootNode.NoteChanged(Self);
   while Assigned(FFirstChild) do
     FFirstChild.Free;   // children is detached (removed from list) in destructor
   Self.FChildCount := 0;
@@ -9538,9 +9808,152 @@ begin
   Inc(CSSUpdateCount);
 end;
 
+var
+  CSSPendingChanged: TList;      // controls changed during CSSBeginUpdate (laid out once in CSSEndUpdate)
+
 procedure CSSEndUpdate;
+var
+  L: TList;
+  I: Integer;
+  C: ICSSControl;
 begin
   if CSSUpdateCount > 0 then Dec(CSSUpdateCount);
+  if (CSSUpdateCount > 0) or (CSSPendingChanged = nil) then Exit;
+  L := CSSPendingChanged;
+  CSSPendingChanged := nil;
+  try
+    for I := 0 to L.Count - 1 do
+      if TControl(L[I]).GetInterface(StringToGUID(HTMLInterface), C) then C.Changed;
+  finally
+    L.Free;
+  end;
+end;
+
+function CSSUpdatePending(AControl: TControl): Boolean;
+begin
+  Result := CSSUpdateCount > 0;
+  if not Result then Exit;
+  if CSSPendingChanged = nil then CSSPendingChanged := TList.Create;
+  if CSSPendingChanged.IndexOf(AControl) < 0 then CSSPendingChanged.Add(AControl);
+end;
+
+procedure CSSUpdateForget(AControl: TControl);
+begin
+  if Assigned(CSSPendingChanged) then CSSPendingChanged.Remove(AControl);
+end;
+
+(*
+  Repaint of changed area: root remembers old area of changed and removed nodes (at the time of change), changed
+  nodes are marked, after layout TCSSShape paints old area, new area of marked nodes and areas of moved nodes
+*)
+procedure UnionDirty(var ADirty: TRect; const ARect: TRect);
+begin
+  if ARect.IsEmpty then Exit;
+  if ADirty.IsEmpty then ADirty := ARect else ADirty := TRect.Union(ADirty, ARect);
+end;
+
+procedure THtmlNode.NoteChanged(ANode: THtmlNode);
+begin
+  FHasChanges := True;
+  if FChangedAll then Exit;
+  if ANode = Self then begin       // whole tree (eg. styles applied again)
+    FChangedAll := True;
+    Exit;
+  end;
+  ANode.FChangedMark := True;
+  UnionDirty(FDirtyOld, ANode.SubtreePaintedRect);
+end;
+
+function THtmlNode.SubtreePaintedRect: TRect;
+var
+  N: THtmlNode;
+begin
+  Result := PaintedRect;
+  N := FFirstChild;
+  while Assigned(N) do begin
+    UnionDirty(Result, N.SubtreePaintedRect);
+    N := N.FNextSibling;
+  end;
+end;
+
+function THtmlNode.PaintedRects: TCSSRectArray;
+var
+  Count: Integer;
+  procedure Add(ANode: THtmlNode);
+  begin
+    while Assigned(ANode) do begin
+      if Count >= Length(Result) then SetLength(Result, Count * 2 + 64);
+      Result[Count] := ANode.PaintedRect;
+      Inc(Count);
+      Add(ANode.FFirstChild);
+      ANode := ANode.FNextSibling;
+    end;
+  end;
+begin
+  Result := nil;
+  Count := 0;
+  Result := nil;
+  SetLength(Result, 64);
+  Result[0] := PaintedRect;
+  Count := 1;
+  Add(FFirstChild);
+  SetLength(Result, Count);
+end;
+
+function THtmlNode.TakeDirtyRect(const AOldRects: TCSSRectArray): TRect;
+var
+  I: Integer;
+  procedure Visit(ANode: THtmlNode; AInChanged: Boolean);
+  var
+    R: TRect;
+    Changed: Boolean;
+  begin
+    while Assigned(ANode) do begin
+      R := ANode.PaintedRect;
+      Changed := AInChanged or ANode.FChangedMark;    // descendants of changed node can change too (inherited styles)
+      ANode.FChangedMark := False;
+      if Changed then UnionDirty(Result, R);
+      if I <= High(AOldRects) then begin           // moved or resized node (tree is the same as in AOldRects)
+        if AOldRects[I] <> R then begin
+          UnionDirty(Result, AOldRects[I]);
+          UnionDirty(Result, R);
+        end;
+      end else
+        UnionDirty(Result, R);
+      Inc(I);
+      Visit(ANode.FFirstChild, Changed);
+      ANode := ANode.FNextSibling;
+    end;
+  end;
+  procedure ClearMarks(ANode: THtmlNode);
+  begin
+    while Assigned(ANode) do begin
+      ANode.FChangedMark := False;
+      ClearMarks(ANode.FFirstChild);
+      ANode := ANode.FNextSibling;
+    end;
+  end;
+begin
+  Result := FDirtyOld;
+  I := 1;
+  if AOldRects = nil then begin      // only changes are cleared (whole shape is painted)
+    ClearMarks(FFirstChild);
+    Result := Rect(0, 0, 0, 0);
+  end else begin
+    if AOldRects[0] <> PaintedRect then Result := PaintedRect;
+    Visit(FFirstChild, False);
+  end;
+  FDirtyOld := Rect(0, 0, 0, 0);
+  FHasChanges := False;
+  FChangedAll := False;
+end;
+
+function THtmlNode.PaintedRect: TRect;
+begin
+  Result := FCompSize.ContentRect;
+  if not FVisible or Result.IsEmpty then Exit(Rect(0, 0, 0, 0));
+  if FCompStyle.BoxShadow <> '' then InflateRect(Result, 60, 60) else InflateRect(Result, 2, 2);
+  Result := TRect.Intersect(TransformedBounds(Result), ScreenClipRect);    // scrolled out part is not visible
 end;
 
 procedure THtmlNode.Changed;
@@ -9548,7 +9961,14 @@ var
   I: ICSSControl;
 begin
   Inc(CSSPaintGeneration);
-  if CSSUpdateCount > 0 then Exit;      // CSSBeginUpdate: layout once at the end
+  if Assigned(RootNode) and (RootNode <> Self) then RootNode.NoteChanged(Self);
+  if CSSUpdateCount > 0 then begin      // CSSBeginUpdate: layout once at the end
+    if Assigned(RootNode) and Assigned(RootNode.ParentControl) then begin
+      if CSSPendingChanged = nil then CSSPendingChanged := TList.Create;
+      if CSSPendingChanged.IndexOf(RootNode.ParentControl) < 0 then CSSPendingChanged.Add(RootNode.ParentControl);
+    end;
+    Exit;
+  end;
   if Assigned(RootNode) and Assigned(RootNode.ParentControl) then begin
     if RootNode.ParentControl.GetInterface(StringToGUID(HTMLInterface), I) then
       I.Changed;
@@ -9581,7 +10001,10 @@ procedure THtmlNode.Detach;
   end;
 begin
   if not Assigned(ParentNode) then Exit;
-  if Assigned(RootNode) and (RootNode <> Self) then Dec(RootNode.FTotalCount, 1 + CountNodes(FFirstChild));
+  if Assigned(RootNode) and (RootNode <> Self) then begin
+    RootNode.NoteChanged(Self);      // old area of removed node is painted again
+    Dec(RootNode.FTotalCount, 1 + CountNodes(FFirstChild));
+  end;
   if Assigned(FPrevSibling) then FPrevSibling.FNextSibling := FNextSibling;
   if Assigned(FNextSibling) then FNextSibling.FPrevSibling := FPrevSibling;
   if ParentNode.FFirstChild = Self then ParentNode.FFirstChild := FNextSibling;
@@ -9633,8 +10056,11 @@ begin
   // styles depends on position in tree (stylesheet of root node, :first-child, :last-child ...)
   if Assigned(RootNode.StyleSheet) or Assigned(CSSUtilityResolver) then begin
     ApplySubtree(ANode);
-    if Assigned(ANode.FPrevSibling) then ApplyStyleForNode(ANode.FPrevSibling);
+    // previous sibling is not last child now: only stylesheet rules (:last-child) and last: utilities depend on it
+    if Assigned(ANode.FPrevSibling) and (Assigned(RootNode.StyleSheet) or (Pos('last:', ANode.FPrevSibling.FClassList.Name) > 0)) then
+      ApplyStyleForNode(ANode.FPrevSibling);
   end;
+  RootNode.NoteChanged(ANode);
 end;
 
 (*

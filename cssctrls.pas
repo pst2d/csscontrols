@@ -43,14 +43,22 @@ type
     FBodyClass: String;
     FSheet: TCSSStyleSheet;
     FInspect: Boolean;              // debug overlay of node under mouse (like browser inspector)
+    FHoverEnabled: Boolean;
+    FBuffered: Boolean;
+    FBuffer: TBitmap;               // painted content (shape with opaque background on not scaled canvas)
+    FBufferDirty: TRect;            // area of buffer which is painted again
+    FBufferValid: Boolean;          // buffer contains whole shape (False after shape was painted directly)
     FInspectNode: THtmlNode;
     FOnInspect: TCSSNodeEvent;
+    function UseBuffer: Boolean;
+    procedure PaintToBuffer(const ARect: TRect);
     procedure SetInspect(AValue: Boolean);
     procedure SetHTML(AValue: TStrings);
     procedure SetCSS(AValue: TStrings);
     procedure SetBodyClass(const AValue: String);
     procedure MarkupChanged(Sender: TObject);
     procedure AnimTimer(Sender: TObject);
+    procedure StartAnimations;
     procedure InvalidateArea(const ARect: TRect);
     function FocusControlOf(ANode: THtmlNode): Boolean;
     function GetBodyNode: THtmlNode;
@@ -60,7 +68,7 @@ type
     function WheelScroll(const APos: TPoint; WheelDelta: Integer; AHorz: Boolean): Boolean;
     procedure ControlMouseWheel(Sender: TObject; Shift: TShiftState; WheelDelta: Integer; MousePos: TPoint; var Handled: Boolean);
     procedure HookControlWheels;
-    procedure ScrollChanged;
+    procedure ScrollChanged(ANode: THtmlNode);
     procedure ActiveControlChanged(Sender: TObject; LastControl: TControl);
     function GetStyle: String;
     procedure SetScaleByDPI(AValue: Boolean);
@@ -97,6 +105,11 @@ type
     function NodeMarginToScreen(ANode: THtmlNode): TRect;
     function NodeMarginToClient(ANode: THtmlNode): TRect;
     property InspectNode: THtmlNode read FInspectNode;
+    property HoverEnabled: Boolean read FHoverEnabled write FHoverEnabled;   // False: no :hover (eg. while something is dragged)
+    // painted content is kept in a bitmap, repaint requested by system (control moved above it, window uncovered)
+    // only copies it; used for shape with opaque body background on not scaled canvas (Windows, Linux)
+    property Buffered: Boolean read FBuffered write FBuffered;
+    procedure Invalidate; override;
 
   published
     property Align;
@@ -366,11 +379,16 @@ begin
 end;
 
 procedure TCSSShape.Relayout(AWidth, AHeight: Integer);
+var
+  T: Double;
 begin
   if (FCachedWidth <> AWidth) or (FCachedHeight <> AHeight) or FIsChanged or not FLayoutValid then begin
     UpdatePixelRatio;
     UpdateViewport(AWidth);
+    T := CSSTimeMs;
     Body.LayoutTo(0, 0, AWidth, AHeight);
+    Inc(CSSStats.Layouts);
+    CSSStats.LayoutMs := CSSStats.LayoutMs + CSSTimeMs - T;
     Body.AlignControlsTo(Left, Top);
     HookControlWheels;
     FLayoutValid := True;
@@ -383,6 +401,7 @@ end;
 procedure TCSSShape.Paint;
 var
   R: TRect;
+  T: Double;
 begin
   if (csDesigning in ComponentState) and (Body.FirstChild = nil) and (Body.Text = '') and (FCSS.Count = 0) and (FBodyClass = '') then begin
     Canvas.Pen.Style := psDash;      // empty shape in form designer
@@ -395,15 +414,65 @@ begin
   end;
   if Assigned(Parent) then Body.PaintScale := Parent.GetCanvasScaleFactor;   // 2 on macOS Retina
   if not FLayoutValid then begin     // layout was changed by CalculatePreferredSize
+    T := CSSTimeMs;
     Body.LayoutTo(0, 0, Width, Height);
+    Inc(CSSStats.Layouts);
+    CSSStats.LayoutMs := CSSStats.LayoutMs + CSSTimeMs - T;
     FLayoutValid := True;
   end;
   // only invalidated area is painted (nodes outside of it are skipped)
   R := TRect.Intersect(Canvas.ClipRect, ClientRect);
   if R.IsEmpty then R := ClientRect;
-  Body.PaintTo(Self.Canvas, R);
+  // whole shape is painted directly when buffer doesn't exist or has other size (resize: no bitmap is allocated
+  // in every step), otherwise into buffer (it stays valid for next changes and repaints requested by system)
+  if UseBuffer and (not ((FBufferDirty.Width >= Width) and (FBufferDirty.Height >= Height)) or
+    (Assigned(FBuffer) and (FBuffer.Width = Width) and (FBuffer.Height = Height))) then begin
+    // buffer: changed area is painted into bitmap, requested area is copied from it
+    if (FBuffer = nil) or not FBufferValid or (FBuffer.Width <> Width) or (FBuffer.Height <> Height) then begin
+      if FBuffer = nil then begin
+        FBuffer := TBitmap.Create;
+        FBuffer.PixelFormat := pf24bit;       // opaque: copied by BitBlt
+      end;
+      if (FBuffer.Width <> Width) or (FBuffer.Height <> Height) then FBuffer.SetSize(Width, Height);
+      FBufferDirty := ClientRect;
+      FBufferValid := True;
+    end;
+    FBufferDirty := TRect.Intersect(FBufferDirty, ClientRect);
+    if not FBufferDirty.IsEmpty then begin
+      T := CSSTimeMs;
+      PaintToBuffer(FBufferDirty);
+      T := CSSTimeMs - T;
+      Inc(CSSStats.Paints);
+      CSSStats.PaintMs := CSSStats.PaintMs + T;
+      if T > CSSStats.MaxPaintMs then CSSStats.MaxPaintMs := T;
+      Inc(CSSStats.PaintPixels, Int64(FBufferDirty.Width) * FBufferDirty.Height);
+      FBufferDirty := Rect(0, 0, 0, 0);
+    end;
+    Canvas.CopyRect(R, FBuffer.Canvas, R);
+  end else begin
+    FBufferValid := False;
+    FBufferDirty := Rect(0, 0, 0, 0);
+    if Assigned(FBuffer) and ((FBuffer.Width <> Width) or (FBuffer.Height <> Height) or not UseBuffer) then
+      FreeAndNil(FBuffer);                  // size changed: memory is released (buffer is created again when needed)
+    T := CSSTimeMs;
+    Body.PaintTo(Self.Canvas, R);
+    T := CSSTimeMs - T;
+    Inc(CSSStats.Paints);
+    CSSStats.PaintMs := CSSStats.PaintMs + T;
+    if T > CSSStats.MaxPaintMs then CSSStats.MaxPaintMs := T;
+    Inc(CSSStats.PaintPixels, Int64(R.Width) * R.Height);
+  end;
   if FInspect and Assigned(FInspectNode) then PaintInspector(Canvas, FInspectNode);
   if Assigned(FOnPaint) then FOnPaint(Self);
+  StartAnimations;
+end;
+
+(*
+  Timer runs while some nodes are animated. Transition starts with shown values, so its first frame can look
+  the same and nothing is painted: timer must be started also after styles are changed, not only in Paint.
+*)
+procedure TCSSShape.StartAnimations;
+begin
   if not (csDesigning in ComponentState) and not FAnimTimer.Enabled and Body.Animating then begin
     FAnimTimer.Interval := 15;
     FAnimTimer.Enabled := True;
@@ -449,6 +518,7 @@ begin
   end;
   R := TRect.Intersect(ARect, ClientRect);
   if R.IsEmpty then Exit;
+  if FBufferDirty.IsEmpty then FBufferDirty := R else FBufferDirty := TRect.Union(FBufferDirty, R);
   OffsetRect(R, Left, Top);
   LCLIntf.InvalidateRect(Parent.Handle, @R, False);
 end;
@@ -767,7 +837,7 @@ begin
   end;
   if N = FSmoothNode then FSmoothNode := nil;
   Result := N.ScrollBy(DX, DY);
-  if Result then ScrollChanged;
+  if Result then ScrollChanged(N);
 end;
 
 (*
@@ -791,7 +861,7 @@ begin
   T := Min(1, (GetTickCount64 - FSmoothStart) / DURATION);
   T := 1 - (1 - T) * (1 - T) * (1 - T);        // ease-out
   N.SetScroll(FSmoothFrom.X + Round((FSmoothTo.X - FSmoothFrom.X) * T), FSmoothFrom.Y + Round((FSmoothTo.Y - FSmoothFrom.Y) * T));
-  ScrollChanged;
+  ScrollChanged(N);
   if T >= 1 then FSmoothNode := nil else Result := True;
 end;
 
@@ -819,14 +889,14 @@ end;
 (*
   Scroll position was changed: only repaint and move aligned controls (layout is not changed)
 *)
-procedure TCSSShape.ScrollChanged;
+procedure TCSSShape.ScrollChanged(ANode: THtmlNode);
 var
   P: TPoint;
 begin
   Body.AlignControlsTo(Left, Top);
   P := ScreenToControl(Mouse.CursorPos);
   if PtInRect(ClientRect, P) and (FDragNode = nil) then MouseMove([], P.X, P.Y);   // hover of content under mouse
-  Invalidate;
+  if (ANode = nil) or (ANode = Body) then Invalidate else InvalidateArea(ANode.PaintedRect);   // only scrolled node
 end;
 
 function TCSSShape.DoMouseWheel(Shift: TShiftState; WheelDelta: Integer; MousePos: TPoint): Boolean;
@@ -883,26 +953,32 @@ end;
 *)
 procedure TCSSShape.ActiveControlChanged(Sender: TObject; LastControl: TControl);
 var
-  Node: THtmlNode;
+  Node, P: THtmlNode;
   Active: TControl;
-  F, Modified: Boolean;
+  F: Boolean;
+  ChangedNodes: TList;
 begin
   if csDestroying in ComponentState then Exit;
   Active := Screen.ActiveControl;
-  Modified := False;
-  Node := FBodyNode;
-  while Assigned(Node) do begin
-    F := Assigned(Node.AlignControl) and Assigned(Active) and ((Node.AlignControl = Active) or
-      ((Node.AlignControl is TWinControl) and TWinControl(Node.AlignControl).ContainsControl(Active)));
-    if Node.Focused <> F then begin
-      Node.Focused := F;
-      Modified := True;
+  ChangedNodes := TList.Create;
+  try
+    Node := FBodyNode;
+    while Assigned(Node) do begin
+      F := Assigned(Node.AlignControl) and Assigned(Active) and ((Node.AlignControl = Active) or
+        ((Node.AlignControl is TWinControl) and TWinControl(Node.AlignControl).ContainsControl(Active)));
+      if Node.Focused <> F then begin
+        Node.Focused := F;
+        P := Node;                          // node and its parents (focus-within) are styled again
+        while Assigned(P) do begin
+          if ChangedNodes.IndexOf(P) < 0 then ChangedNodes.Add(P);
+          P := P.ParentNode;
+        end;
+      end;
+      Node := Node.GetNext(Node, True);
     end;
-    Node := Node.GetNext(Node, True);
-  end;
-  if Modified then begin
-    Body.ApplyStyles;
-    Changed;
+    RestyleNodes(ChangedNodes);             // only area of nodes which look different is painted again
+  finally
+    ChangedNodes.Free;
   end;
 end;
 
@@ -972,11 +1048,11 @@ begin
   if Assigned(FDragNode) then begin
     if FDragAxis = 1 then Modified := FDragNode.ScrollByThumb(1, FDragScroll, Y - FDragStart)
       else Modified := FDragNode.ScrollByThumb(2, FDragScroll, X - FDragStart);
-    if Modified then ScrollChanged;
+    if Modified then ScrollChanged(FDragNode);
     Exit;
   end;
   // only the top node under mouse and its parents are hovered (not nodes covered by a dialog or popup)
-  Top := FBodyNode.NodeAtPosition(Point(X, Y), False);
+  if FHoverEnabled then Top := FBodyNode.NodeAtPosition(Point(X, Y), False) else Top := nil;
   NewCursor := crNone;
   Node := Top;
   while Assigned(Node) and (NewCursor = crNone) do begin    // cursor of nearest node which sets it
@@ -1026,10 +1102,17 @@ begin
   Dirty := Rect(0, 0, 0, 0);
   for I := 0 to ANodes.Count - 1 do begin
     N := THtmlNode(ANodes[I]);
-    if N.RestyleState(StateRules or N.ClassList.Contains('group'), Dirty) then NeedLayout := True;
+    if N.RestyleState(StateRules or N.ClassList.Contains('group'), Dirty) then begin
+      NeedLayout := True;
+      if N <> Body then Body.NoteChanged(N);    // its area is painted again after layout
+    end;
   end;
-  if NeedLayout or FInspect then Changed
-    else InvalidateArea(Dirty);
+  if NeedLayout or FInspect then begin
+    InvalidateArea(Dirty);
+    Changed;
+  end else
+    InvalidateArea(Dirty);
+  StartAnimations;
 end;
 
 procedure TCSSShape.MouseLeave;
@@ -1056,7 +1139,8 @@ procedure TCSSShape.CalculatePreferredSize(var PreferredWidth,
 var
   AWidth, AHeight: Integer;
 begin
-  if (Parent = nil) or (not Parent.HandleAllocated) then Exit;
+  // preferred size is used by LCL only for AutoSize: no layout for other shapes (it would replace current layout)
+  if (Parent = nil) or (not Parent.HandleAllocated) or not AutoSize then Exit;
   if WidthIsAnchored then AWidth := Width else AWidth := -1;
   if (HeightIsAnchored and AutoSize) then AHeight := Height else AHeight := -1;
   UpdatePixelRatio;
@@ -1074,6 +1158,8 @@ begin
   FBodyNode.ParentControl := Self;
   FIsChanged := True;
   FScaleByDPI := True;
+  FHoverEnabled := True;
+  FBuffered := True;
   if CSSShapes = nil then CSSShapes := TList.Create;
   CSSShapes.Add(Self);
   FHTML := TStringList.Create;
@@ -1094,11 +1180,13 @@ var
   I: Integer;
 begin
   if Assigned(CSSShapes) then CSSShapes.Remove(Self);
+  CSSUpdateForget(Self);
   for I := 0 to FWheelControls.Count - 1 do begin
     TControl(FWheelControls[I]).RemoveHandlerOnMouseWheel(ControlMouseWheel);
     TControl(FWheelControls[I]).RemoveFreeNotification(Self);
   end;
   FreeAndNil(FWheelControls);
+  FreeAndNil(FBuffer);
   FreeAndNil(FHTML);
   FreeAndNil(FCSS);
   Screen.RemoveHandlerActiveControlChanged(ActiveControlChanged);
@@ -1106,19 +1194,77 @@ begin
   inherited Destroy;
 end;
 
+(*
+  Layout and repaint after changes of nodes. Only area of changed, removed and moved nodes is painted again when
+  changes are known (nodes reported them), otherwise whole shape (eg. application changed stylesheet).
+*)
 procedure TCSSShape.Changed;
+var
+  OldRects: TCSSRectArray;
+  Precise: Boolean;
 begin
+  if CSSUpdatePending(Self) then Exit;      // CSSBeginUpdate: laid out once in CSSEndUpdate
+  Precise := FLayoutValid and Body.HasChanges and not Body.ChangedAll and Assigned(Parent) and Parent.HandleAllocated;
+  OldRects := nil;
+  if Precise then OldRects := Body.PaintedRects;
   FIsChanged := True;
   Relayout(Width, Height);
-
   InvalidatePreferredSize;
   AdjustSize;
-  Invalidate;
+  if Precise then
+    InvalidateArea(Body.TakeDirtyRect(OldRects))
+  else begin
+    Body.TakeDirtyRect(nil);
+    Invalidate;
+  end;
+  StartAnimations;
+end;
+
+procedure TCSSShape.Invalidate;
+begin
+  FBufferDirty := ClientRect;
+  inherited Invalidate;
+end;
+
+(*
+  Changed area is painted into a bitmap of its size and copied into buffer, so nothing is painted outside of it
+  (Cocoa doesn't clip text in bitmaps). Whole buffer is painted directly.
+*)
+procedure TCSSShape.PaintToBuffer(const ARect: TRect);
+var
+  Part: TBitmap;
+begin
+  if (ARect.Width = Width) and (ARect.Height = Height) then begin
+    Body.PaintTo(FBuffer.Canvas, ARect);
+    FBuffer.Canvas.Clipping := False;      // painting leaves clip rect of last node
+    Exit;
+  end;
+  Part := TBitmap.Create;
+  try
+    Part.PixelFormat := pf24bit;
+    Part.SetSize(ARect.Width, ARect.Height);
+    SetWindowOrgEx(Part.Canvas.Handle, ARect.Left, ARect.Top, nil);
+    Body.PaintTo(Part.Canvas, ARect);
+    SetWindowOrgEx(Part.Canvas.Handle, 0, 0, nil);
+    Part.Canvas.Clipping := False;
+    FBuffer.Canvas.Clipping := False;
+    FBuffer.Canvas.CopyRect(ARect, Part.Canvas, Rect(0, 0, ARect.Width, ARect.Height));
+  finally
+    Part.Free;
+  end;
+end;
+
+function TCSSShape.UseBuffer: Boolean;
+begin
+  Result := FBuffered and not (csDesigning in ComponentState) and (Body.PaintScale <= 1) and
+    (Body.CompStyle.Background.Color.ColorType = cctNormal) and (Body.CompStyle.Background.Color.Alpha = 255) and
+    (Body.CompStyle.Background.Image = '');
 end;
 
 procedure TCSSShape.ChangeBounds(ALeft, ATop, AWidth, AHeight: integer;
   KeepBase: boolean);
 begin
+  if (AWidth <> Width) or (AHeight <> Height) then FBufferDirty := Rect(0, 0, Max(AWidth, 0), Max(AHeight, 0));   // painted directly while resized
   inherited ChangeBounds(ALeft, ATop, AWidth, AHeight, KeepBase);
 //  if AutoSize then AWidth :=  -1;
   Relayout(AWidth, AHeight);

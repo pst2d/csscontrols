@@ -11,8 +11,8 @@ unit kanbanmain;
 interface
 
 uses
-  Classes, SysUtils, Math, Types, DateUtils, Contnrs, Controls, Forms, Graphics, StdCtrls, LCLType,
-  fpjson, jsonparser, cssbase, CSSCtrls, csshtml, kanbanicons;
+  Classes, SysUtils, Math, Types, DateUtils, Contnrs, Controls, Forms, Graphics, StdCtrls, ExtCtrls, LCLType,
+  Clipbrd, Dialogs, InterfaceBase, LCLPlatformDef, fpjson, jsonparser, cssbase, CSSCtrls, csshtml, kanbanicons;
 
 type
   TCheckItem = record
@@ -53,8 +53,13 @@ type
     // detail dialog
     FModal, FPanel, FProps: THtmlNode;
     FModalTask: TTask;
+    FModalColumn: Integer;     // column of task when dialog was opened
     FTitleEdit: TEdit;
     FDescMemo: TMemo;
+    FStatsTimer: TTimer;
+    FStatsLast: TCSSStats;
+    FStatsTime: Double;
+    FControlsMs: Double;       // benchmark: time of creating native controls of dialog
     function FileName: String;
     procedure LoadTasks;
     procedure SaveTasks;
@@ -69,6 +74,8 @@ type
     procedure BuildToolbar;
     procedure BuildTheme;
     procedure BuildBoard;
+    procedure BuildColumn(ACol: Integer);
+    procedure HideFiltered(ANode: THtmlNode);
     procedure UpdateCounts;
     procedure UpdateControlColors;
     procedure ActionClick(Sender: TObject);
@@ -88,6 +95,10 @@ type
     procedure TitleChange(Sender: TObject);
     procedure DescChange(Sender: TObject);
     procedure FormKeyDown(Sender: TObject; var Key: Word; Shift: TShiftState);
+    // performance: F12 shows statistics in caption, F11 runs benchmark (result is copied to clipboard)
+    procedure ToggleStats;
+    procedure StatsTick(Sender: TObject);
+    procedure RunBenchmark;
   public
     constructor CreateNew(AOwner: TComponent; Num: Integer = 0); override;
     destructor Destroy; override;
@@ -193,9 +204,8 @@ begin
     BuildToolbar;
     BuildBoard;
   finally
-    CSSEndUpdate;
+    CSSEndUpdate;          // shape is laid out once here
   end;
-  FShape.Changed;
   UpdateControlColors;
 end;
 
@@ -570,36 +580,82 @@ procedure TKanbanForm.BuildToolbar;
 var
   I, Done: Integer;
 begin
-  Done := 0;
-  for I := 0 to FTasks.Count - 1 do
-    if TTask(FTasks[I]).Column = High(COLUMNS) then Inc(Done);
-  FToolbar.Clear;
-  FToolbar.AppendHTML(Chip(0, icSquareKanban, 'All tasks') + Chip(1, icUserRound, 'Assigned to me') +
-    Chip(2, icFlag, 'High priority') + '<div class="flex-1"></div>' +
-    Format('<div class="flex items-center gap-3 text-xs text-slate-500 dark:text-slate-400"><div>%d tasks, %d done</div>' +
-    '<div class="w-32 h-1.5 rounded-full bg-slate-200 dark:bg-slate-800"><div class="h-1.5 rounded-full bg-gradient-to-r ' +
-    'from-indigo-500 to-violet-500" style="width: %d%%"></div></div></div>',
-    [FTasks.Count, Done, Round(Done / Max(1, FTasks.Count) * 100)]));
-  Bind(FToolbar);
+  CSSBeginUpdate;     // one layout for all changes
+  try
+    Done := 0;
+    for I := 0 to FTasks.Count - 1 do
+      if TTask(FTasks[I]).Column = High(COLUMNS) then Inc(Done);
+    FToolbar.Clear;
+    FToolbar.AppendHTML(Chip(0, icSquareKanban, 'All tasks') + Chip(1, icUserRound, 'Assigned to me') +
+      Chip(2, icFlag, 'High priority') + '<div class="flex-1"></div>' +
+      Format('<div class="flex items-center gap-3 text-xs text-slate-500 dark:text-slate-400"><div>%d tasks, %d done</div>' +
+      '<div class="w-32 h-1.5 rounded-full bg-slate-200 dark:bg-slate-800"><div class="h-1.5 rounded-full bg-gradient-to-r ' +
+      'from-indigo-500 to-violet-500" style="width: %d%%"></div></div></div>',
+      [FTasks.Count, Done, Round(Done / Max(1, FTasks.Count) * 100)]));
+    Bind(FToolbar);
+  finally
+    CSSEndUpdate;
+  end;
+end;
+
+(*
+  Filtered cards are hidden
+*)
+procedure TKanbanForm.HideFiltered(ANode: THtmlNode);
+var
+  C: THtmlNode;
+begin
+  if (ANode.Data is TTask) and not Matches(TTask(ANode.Data)) then ANode.SetClass(CARD_CLASS + ' hidden');
+  C := ANode.FirstChild;
+  while Assigned(C) do begin
+    HideFiltered(C);
+    C := ANode.GetNext(C);
+  end;
+end;
+
+(*
+  One column is built again (new column node replaces old one)
+*)
+procedure TKanbanForm.BuildColumn(ACol: Integer);
+var
+  Old, New: THtmlNode;
+  I: Integer;
+begin
+  Old := FBoard.FirstChild;
+  for I := 1 to ACol do
+    if Assigned(Old) then Old := FBoard.GetNext(Old);
+  if Old = nil then Exit;
+  CSSBeginUpdate;
+  try
+    FBoard.AppendHTML(ColumnHTML(ACol));
+    New := Old;
+    while Assigned(FBoard.GetNext(New)) do New := FBoard.GetNext(New);    // appended column is the last one
+    FBoard.InsertBefore(New, Old);
+    FBoard.Delete(Old);
+    Bind(New);
+    HideFiltered(New);
+    UpdateCounts;
+  finally
+    CSSEndUpdate;
+  end;
 end;
 
 procedure TKanbanForm.BuildBoard;
 var
   I: Integer;
-  N: THtmlNode;
 begin
-  FBoard.Clear;
-  for I := 0 to High(COLUMNS) do
-    FBoard.AppendHTML(ColumnHTML(I));
-  Bind(FBoard);
-  // filtered cards are hidden
-  N := FBoard;
-  while Assigned(N) do begin
-    if (N.Data is TTask) and not Matches(TTask(N.Data)) then N.SetClass(CARD_CLASS + ' hidden');
-    N := N.GetNext(N, True);
+  CSSBeginUpdate;     // one layout for all changes
+  try
+    FBoard.Clear;
+    for I := 0 to High(COLUMNS) do
+      FBoard.AppendHTML(ColumnHTML(I));
+    Bind(FBoard);
+    HideFiltered(FBoard);
+    UpdateCounts;
+    FShape.Changed;
+  finally
+    CSSEndUpdate;
   end;
-  UpdateCounts;
-  FShape.Changed;
 end;
 
 procedure TKanbanForm.UpdateCounts;
@@ -622,10 +678,15 @@ end;
 
 procedure TKanbanForm.BuildBoardAsync(Data: PtrInt);
 begin
-  if not FRebuildPending or FDragging or Assigned(FDownCard) then Exit;   // done later (next mouse down)
-  FRebuildPending := False;
-  BuildToolbar;
-  BuildBoard;
+  CSSBeginUpdate;     // one layout for all changes
+  try
+    if not FRebuildPending or FDragging or Assigned(FDownCard) then Exit;   // done later (next mouse down)
+    FRebuildPending := False;
+    BuildToolbar;
+    BuildBoard;
+  finally
+    CSSEndUpdate;
+  end;
 end;
 
 (*
@@ -657,45 +718,55 @@ var
   V: Integer;
   T: TTask;
 begin
-  A := THtmlNode(Sender).Attributes['data-action'];
-  V := StrToIntDef(THtmlNode(Sender).Attributes['data-v'], 0);
-  T := FModalTask;
-  if A = 'theme' then begin
-    CSSSetDarkMode(not CSSDarkMode);
-    BuildTheme;
-    UpdateControlColors;
-    FShape.Changed;
-  end
-  else if A = 'filter' then begin
-    FFilter := V;
-    BuildToolbar;
-    BuildBoard;
-  end
-  else if A = 'new' then NewTask(1)
-  else if A = 'add' then NewTask(V)
-  else if A = 'close' then CloseTask
-  else if Assigned(T) then begin
-    if A = 'delete' then begin
-      FModalTask := nil;
-      FTasks.Remove(T);
-      CloseTask;
-      Exit;
-    end;
-    if A = 'status' then T.Column := V
-    else if A = 'priority' then T.Priority := V
-    else if A = 'assignee' then begin
-      if T.Assignee = V then T.Assignee := -1 else T.Assignee := V;
+  CSSBeginUpdate;     // one layout for all changes
+  try
+    A := THtmlNode(Sender).Attributes['data-action'];
+    V := StrToIntDef(THtmlNode(Sender).Attributes['data-v'], 0);
+    T := FModalTask;
+    if A = 'theme' then begin
+      CSSSetDarkMode(not CSSDarkMode);
+      BuildTheme;
+      UpdateControlColors;
+      FShape.Changed;
     end
-    else if A = 'label' then T.Labels := T.Labels xor (1 shl V)
-    else if A = 'check' then T.Checks[V].Done := not T.Checks[V].Done;
-    BuildProps;
+    else if A = 'filter' then begin
+      FFilter := V;
+      BuildToolbar;
+      BuildBoard;
+    end
+    else if A = 'new' then NewTask(1)
+    else if A = 'add' then NewTask(V)
+    else if A = 'close' then CloseTask
+    else if Assigned(T) then begin
+      if A = 'delete' then begin
+        FModalTask := nil;
+        FTasks.Remove(T);
+        CloseTask;
+        Exit;
+      end;
+      if A = 'status' then T.Column := V
+      else if A = 'priority' then T.Priority := V
+      else if A = 'assignee' then begin
+        if T.Assignee = V then T.Assignee := -1 else T.Assignee := V;
+      end
+      else if A = 'label' then T.Labels := T.Labels xor (1 shl V)
+      else if A = 'check' then T.Checks[V].Done := not T.Checks[V].Done;
+      BuildProps;
+    end;
+  finally
+    CSSEndUpdate;
   end;
 end;
 
 procedure TKanbanForm.CardClick(Sender: TObject);
 begin
-  if FDragged then Exit;      // mouse up after drag and drop
-  OpenTask(TTask(THtmlNode(Sender).Data));
+  CSSBeginUpdate;     // one layout for all changes
+  try
+    if FDragged then Exit;      // mouse up after drag and drop
+    OpenTask(TTask(THtmlNode(Sender).Data));
+  finally
+    CSSEndUpdate;
+  end;
 end;
 
 procedure TKanbanForm.PanelClick(Sender: TObject);
@@ -705,7 +776,12 @@ end;
 
 procedure TKanbanForm.SearchChange(Sender: TObject);
 begin
-  BuildBoard;
+  CSSBeginUpdate;     // one layout for all changes
+  try
+    BuildBoard;
+  finally
+    CSSEndUpdate;
+  end;
 end;
 
 procedure TKanbanForm.FormKeyDown(Sender: TObject; var Key: Word; Shift: TShiftState);
@@ -713,6 +789,194 @@ begin
   if (Key = VK_ESCAPE) and Assigned(FModal) then begin
     CloseTask;
     Key := 0;
+  end;
+  if Key = VK_F12 then begin
+    ToggleStats;
+    Key := 0;
+  end;
+  if Key = VK_F11 then begin
+    RunBenchmark;
+    Key := 0;
+  end;
+end;
+
+{ performance }
+
+procedure TKanbanForm.ToggleStats;
+begin
+  if FStatsTimer = nil then begin
+    FStatsTimer := TTimer.Create(Self);
+    FStatsTimer.Interval := 500;
+    FStatsTimer.OnTimer := @StatsTick;
+    FStatsTimer.Enabled := False;
+  end;
+  FStatsTimer.Enabled := not FStatsTimer.Enabled;
+  FStatsLast := CSSStats;
+  FStatsTime := CSSTimeMs;
+  if not FStatsTimer.Enabled then Caption := 'Flowboard';
+end;
+
+(*
+  Statistics of last half second: paints and layouts per second, average and max time, painted area,
+  bitmaps and texts per paint, share of time spent in engine
+*)
+procedure TKanbanForm.StatsTick(Sender: TObject);
+var
+  Paints, Layouts: Integer;
+  Ms, PaintMs, LayoutMs, Area: Double;
+begin
+  Ms := Max(1, CSSTimeMs - FStatsTime);
+  Paints := CSSStats.Paints - FStatsLast.Paints;
+  Layouts := CSSStats.Layouts - FStatsLast.Layouts;
+  PaintMs := CSSStats.PaintMs - FStatsLast.PaintMs;
+  LayoutMs := CSSStats.LayoutMs - FStatsLast.LayoutMs;
+  if Paints > 0 then begin
+    Area := (CSSStats.PaintPixels - FStatsLast.PaintPixels) / Paints / Max(1, FShape.Width * FShape.Height) * 100;
+    Caption := Format('Flowboard  |  paint %.0f/s %.1f ms (max %.1f) %.0f%% of window, %d bitmaps %d texts  |  ' +
+      'layout %.0f/s %.1f ms  |  engine %.0f%% of time', [Paints * 1000 / Ms, PaintMs / Paints, CSSStats.MaxPaintMs, Area,
+      (CSSStats.Bitmaps - FStatsLast.Bitmaps) div Paints, (CSSStats.Texts - FStatsLast.Texts) div Paints,
+      Layouts * 1000 / Ms, LayoutMs / Max(1, Layouts), (PaintMs + LayoutMs) / Ms * 100])
+  end else
+    Caption := Format('Flowboard  |  no paint  |  layout %.0f/s %.1f ms', [Layouts * 1000 / Ms, LayoutMs / Max(1, Layouts)]);
+  CSSStats.MaxPaintMs := 0;
+  FStatsLast := CSSStats;
+  FStatsTime := CSSTimeMs;
+end;
+
+type
+  TShapeAccess = class(TCSSShape);    // benchmark moves mouse over shape (protected MouseMove)
+
+(*
+  Benchmark: layout, full repaint, layout with repaint, detail dialog, hover and drag of card.
+  Board is built again from tasks at the end (tasks are not changed).
+*)
+procedure TKanbanForm.RunBenchmark;
+var
+  Lines: TStringList;
+  S0: TCSSStats;
+  T: Double;
+  I: Integer;
+  Card: THtmlNode;
+  P: TPointF;
+  X, Y: Integer;
+  procedure Start;
+  begin
+    CSSStats.MaxPaintMs := 0;
+    S0 := CSSStats;
+    T := CSSTimeMs;
+  end;
+  procedure Report(const AName: String; ASteps: Integer);
+  var
+    Paints, Layouts: Integer;
+  begin
+    T := CSSTimeMs - T;
+    Paints := CSSStats.Paints - S0.Paints;
+    Layouts := CSSStats.Layouts - S0.Layouts;
+    Lines.Add(Format('%-16s %6.1f ms per step | %3d paints %5.1f ms (max %5.1f), %4d bitmaps %3d texts per paint | %3d layouts %5.1f ms',
+      [AName, T / ASteps, Paints, (CSSStats.PaintMs - S0.PaintMs) / Max(1, Paints), CSSStats.MaxPaintMs,
+      (CSSStats.Bitmaps - S0.Bitmaps) div Max(1, Paints), (CSSStats.Texts - S0.Texts) div Max(1, Paints),
+      Layouts, (CSSStats.LayoutMs - S0.LayoutMs) / Max(1, Layouts)]));
+    if Paints > 0 then
+      Lines.Add(Format('%-16s per paint: bitmaps %5.1f ms, texts %5.1f ms, %d clips %4.1f ms, resized bitmaps %.0f%% of window', ['',
+        (CSSStats.BitmapMs - S0.BitmapMs) / Paints, (CSSStats.TextMs - S0.TextMs) / Paints,
+        (CSSStats.Clips - S0.Clips) div Paints, (CSSStats.ClipMs - S0.ClipMs) / Paints,
+        (CSSStats.StretchPixels - S0.StretchPixels) / Paints / Max(1, FShape.Width * FShape.Height) * 100]));
+  end;
+  procedure Flush;
+  begin
+    FShape.Update;
+    Application.ProcessMessages;
+  end;
+begin
+  if Assigned(FModal) then CloseTask;
+  Lines := TStringList.Create;
+  try
+    Lines.Add(Format('Flowboard benchmark: %s, FPC %s, LCL %s, window %dx%d, PPI %d, pixel ratio %.2f, %d nodes',
+      [{$I %FPCTARGETOS%}, {$I %FPCVERSION%}, LCLPlatformDisplayNames[WidgetSet.LCLPlatform], FShape.Width, FShape.Height,
+      Screen.PixelsPerInch, FShape.Body.PixelRatio, FShape.Body.CountNodes(FShape.Body.FirstChild)]));
+    Start;
+    for I := 1 to 20 do FShape.Body.LayoutTo(0, 0, FShape.Width, FShape.Height);
+    Report('layout only', 20);
+    Start;
+    for I := 1 to 10 do begin
+      FShape.Invalidate;
+      Flush;
+    end;
+    Report('full repaint', 10);
+    {$ifdef windows}
+    CSSFastBlend := False;               // drawing of bitmaps by LCL (for comparison)
+    Start;
+    for I := 1 to 10 do begin
+      FShape.Invalidate;
+      Flush;
+    end;
+    Report('repaint (LCL)', 10);
+    CSSFastBlend := True;
+    {$endif}
+    Start;
+    for I := 1 to 10 do begin
+      FShape.Changed;
+      Flush;
+    end;
+    Report('layout+repaint', 10);
+    Start;
+    for I := 1 to 60 do begin
+      TShapeAccess(FShape).MouseMove([], 320 + (I * 97) mod (FShape.Width - 340), 160 + (I * 53) mod (FShape.Height - 200));
+      Flush;
+    end;
+    Report('hover', 60);
+    // detail dialog: open and change priority (properties are built again)
+    Start;
+    OpenTask(TTask(FTasks[0]));
+    Report('open: build', 1);
+    Lines.Add(Format('  (native controls %.1f ms, the rest is HTML, styles and layout)', [FControlsMs]));
+    Start;
+    Flush;
+    Report('open: paint', 1);
+    // second opening: bitmaps of dialog (shadow, corners, icons) are already cached
+    CloseTask;
+    Flush;
+    Start;
+    OpenTask(TTask(FTasks[0]));
+    Flush;
+    Report('open again', 1);
+    Start;
+    for I := 0 to 5 do begin
+      FModalTask.Priority := I mod 3;
+      BuildProps;
+      Flush;
+    end;
+    Report('dialog click', 6);
+    FModalTask.Priority := TTask(FTasks[0]).Priority;
+    CloseTask;
+    Flush;
+    // drag first card of second column to the right (only nodes are moved, tasks are not changed)
+    Card := FindByAttr(FindByAttr(FBoard.GetNext(FBoard.FirstChild), 'data-list'), 'data-task');
+    if Assigned(Card) then begin
+      P := Card.LayoutToScreen(PointF(Card.CompSize.MarginRect.Left + 40, Card.CompSize.MarginRect.Top + 20));
+      X := Round(P.x);
+      Y := Round(P.y);
+      FDownCard := Card;
+      FDownPos := Point(X, Y);
+      Start;
+      StartDrag(X, Y);
+      for I := 1 to 40 do begin
+        MoveDrag(X + I * 10, Y + (I mod 20) * 12);
+        Flush;
+      end;
+      Report('drag', 40);
+      FreeAndNil(FGhost);
+      FDragging := False;
+      FShape.HoverEnabled := True;
+      FDownCard := nil;
+    end;
+    BuildToolbar;
+    BuildBoard;
+    Flush;
+    Clipboard.AsText := Lines.Text;
+    ShowMessage(Lines.Text + LineEnding + '(copied to clipboard)');
+  finally
+    Lines.Free;
   end;
 end;
 
@@ -763,25 +1027,31 @@ var
   K: Single;
   R: TRect;
 begin
-  FDragging := True;
-  FDragged := True;
-  R := FDownCard.CompSize.MarginRect;
-  P := FDownCard.LayoutToScreen(PointF(R.Left, R.Top));
-  FGrab := Point(FDownPos.X - Round(P.x) + PAD, FDownPos.Y - Round(P.y) + PAD);
-  K := Max(0.1, FShape.Body.PixelRatio);
-  // ghost is a transparent TCSSShape above board: moving it repaints only the area under it
-  FGhost := TCSSShape.Create(Self);
-  FGhost.Enabled := False;                 // mouse stays with board
-  FGhostSize := Point(R.Width + 2 * PAD, R.Height + 2 * PAD);
-  FGhost.SetBounds(FShape.Left + X - FGrab.X, FShape.Top + Y - FGrab.Y, FGhostSize.X, FGhostSize.Y);
-  FGhost.Body.SetClass(Format('p-[%dpx]', [Round(PAD / K)]));
-  FGhost.Body.AppendHTML('<div class="rotate-2">' + CardHTML(TTask(FDownCard.Data)) + '</div>');
-  FGhost.Body.FirstChild.FirstChild.SetClass(CARD_CLASS + ' shadow-2xl ring-1 ring-indigo-500/30');
-  FGhost.Parent := Self;
-  // card becomes placeholder with the same height (board is built again after drop)
-  FDownCard.InlineStyle := Format('height: %dpx', [Round(FDownCard.CompSize.MarginRect.Height / K)]);
-  FDownCard.Clear;
-  FDownCard.SetClass('shrink-0 rounded-xl border-2 border-dashed border-indigo-300 dark:border-indigo-500/40 bg-indigo-50/60 dark:bg-indigo-500/5');
+  CSSBeginUpdate;     // one layout for all changes
+  try
+    FDragging := True;
+    FDragged := True;
+    FShape.HoverEnabled := False;            // cards under the dragged card don't react
+    R := FDownCard.CompSize.MarginRect;
+    P := FDownCard.LayoutToScreen(PointF(R.Left, R.Top));
+    FGrab := Point(FDownPos.X - Round(P.x) + PAD, FDownPos.Y - Round(P.y) + PAD);
+    K := Max(0.1, FShape.Body.PixelRatio);
+    // ghost is a transparent TCSSShape above board: moving it repaints only the area under it
+    FGhost := TCSSShape.Create(Self);
+    FGhost.Enabled := False;                 // mouse stays with board
+    FGhostSize := Point(R.Width + 2 * PAD, R.Height + 2 * PAD);
+    FGhost.SetBounds(FShape.Left + X - FGrab.X, FShape.Top + Y - FGrab.Y, FGhostSize.X, FGhostSize.Y);
+    FGhost.Body.SetClass(Format('p-[%dpx]', [Round(PAD / K)]));
+    FGhost.Body.AppendHTML('<div class="rotate-2">' + CardHTML(TTask(FDownCard.Data)) + '</div>');
+    FGhost.Body.FirstChild.FirstChild.SetClass(CARD_CLASS + ' shadow-2xl ring-1 ring-indigo-500/30');
+    FGhost.Parent := Self;
+    // card becomes placeholder with the same height (board is built again after drop)
+    FDownCard.InlineStyle := Format('height: %dpx', [Round(FDownCard.CompSize.MarginRect.Height / K)]);
+    FDownCard.Clear;
+    FDownCard.SetClass('shrink-0 rounded-xl border-2 border-dashed border-indigo-300 dark:border-indigo-500/40 bg-indigo-50/60 dark:bg-indigo-500/5');
+  finally
+    CSSEndUpdate;
+  end;
 end;
 
 procedure TKanbanForm.MoveDrag(X, Y: Integer);
@@ -836,6 +1106,7 @@ var
   I: Integer;
 begin
   FDragging := False;
+  FShape.HoverEnabled := True;
   FreeAndNil(FGhost);
   if FDownCard = nil then Exit;
   Task := TTask(FDownCard.Data);
@@ -873,65 +1144,78 @@ procedure TKanbanForm.NewTask(ACol: Integer);
 var
   T: TTask;
 begin
-  T := TTask.Create;
-  T.Title := 'New task';
-  T.Column := ACol;
-  T.Priority := 1;
-  T.Assignee := ME;
-  FTasks.Add(T);
-  SaveTasks;
-  BuildToolbar;
-  BuildBoard;
-  OpenTask(T);
-  if Assigned(FTitleEdit) then FTitleEdit.SelectAll;
+  CSSBeginUpdate;     // one layout for all changes
+  try
+    T := TTask.Create;
+    T.Title := 'New task';
+    T.Column := ACol;
+    T.Priority := 1;
+    T.Assignee := ME;
+    FTasks.Add(T);
+    SaveTasks;
+    BuildToolbar;
+    BuildBoard;
+    OpenTask(T);
+    if Assigned(FTitleEdit) then FTitleEdit.SelectAll;
+  finally
+    CSSEndUpdate;
+  end;
 end;
 
 procedure TKanbanForm.OpenTask(T: TTask);
 begin
-  if Assigned(FModal) then CloseTask;
-  FModalTask := T;
-  FSearch.Visible := False;              // native control is not dimmed by backdrop
-  FShape.Body.AppendHTML(
-    '<div id="modal" class="absolute inset-0 z-40 flex items-center justify-center bg-slate-950/50" data-action="close">' +
-    '<div id="panel" class="w-[600px] flex flex-col gap-5 p-7 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 ' +
-    'dark:border-slate-800 shadow-2xl">' +
-    '<div class="flex items-center gap-2 text-xs text-slate-400">' + SvgIcon(icSquareKanban, 'size-4') +
-    '<div class="flex-1">Product launch</div>' +
-    '<div class="' + ICON_BUTTON + ' hover:text-rose-600 dark:hover:text-rose-400" data-action="delete">' + SvgIcon(icTrash2, 'size-[18px]') + '</div>' +
-    '<div class="' + ICON_BUTTON + '" data-action="close">' + SvgIcon(icX, 'size-[18px]') + '</div></div>' +
-    '<div class="h-9" id="title"></div>' +
-    '<div class="flex flex-col gap-2"><div class="flex items-center gap-2 text-xs font-semibold text-slate-500 dark:text-slate-400">' +
-    SvgIcon(icAlignLeft, 'size-4') + 'Description</div>' +
-    '<div class="h-24 px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700">' +
-    '<div class="h-full" id="desc"></div></div></div>' +
-    '<div id="props" class="flex flex-col gap-5"></div>' +
-    '<div class="flex justify-end"><div class="h-10 flex items-center px-5 rounded-xl bg-indigo-600 hover:bg-indigo-500 ' +
-    'text-white text-sm font-semibold shadow-md shadow-indigo-500/25 transition-colors cursor-pointer" data-action="close">Done</div></div>' +
-    '</div></div>');
-  FModal := FShape.Body.GetElementById('modal');
-  FPanel := FShape.Body.GetElementById('panel');
-  FProps := FShape.Body.GetElementById('props');
-  Bind(FModal);
-  FPanel.OnClick := @PanelClick;
-  FTitleEdit := TEdit.Create(Self);
-  FTitleEdit.BorderStyle := bsNone;
-  FTitleEdit.Font.Size := 16;
-  FTitleEdit.Font.Style := [fsBold];
-  FTitleEdit.Text := T.Title;
-  FTitleEdit.OnChange := @TitleChange;
-  FTitleEdit.Parent := Self;
-  FDescMemo := TMemo.Create(Self);
-  FDescMemo.BorderStyle := bsNone;
-  FDescMemo.WordWrap := True;
-  FDescMemo.Text := T.Description;
-  FDescMemo.OnChange := @DescChange;
-  FDescMemo.Parent := Self;
-  FShape.Body.GetElementById('title').SetAlignControl(FTitleEdit);
-  FShape.Body.GetElementById('desc').SetAlignControl(FDescMemo);
-  UpdateControlColors;
-  BuildProps;
-  // dialog is shown at once (no animation: whole window would be painted again in every frame)
-  if FTitleEdit.CanFocus then FTitleEdit.SetFocus;
+  CSSBeginUpdate;     // one layout for all changes
+  try
+    if Assigned(FModal) then CloseTask;
+    FModalTask := T;
+    FModalColumn := T.Column;
+    FSearch.Visible := False;              // native control is not dimmed by backdrop
+    FShape.Body.AppendHTML(
+      '<div id="modal" class="absolute inset-0 z-40 flex items-center justify-center bg-slate-950/50" data-action="close">' +
+      '<div id="panel" class="w-[600px] flex flex-col gap-5 p-7 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 ' +
+      'dark:border-slate-800 shadow-2xl">' +
+      '<div class="flex items-center gap-2 text-xs text-slate-400">' + SvgIcon(icSquareKanban, 'size-4') +
+      '<div class="flex-1">Product launch</div>' +
+      '<div class="' + ICON_BUTTON + ' hover:text-rose-600 dark:hover:text-rose-400" data-action="delete">' + SvgIcon(icTrash2, 'size-[18px]') + '</div>' +
+      '<div class="' + ICON_BUTTON + '" data-action="close">' + SvgIcon(icX, 'size-[18px]') + '</div></div>' +
+      '<div class="h-9" id="title"></div>' +
+      '<div class="flex flex-col gap-2"><div class="flex items-center gap-2 text-xs font-semibold text-slate-500 dark:text-slate-400">' +
+      SvgIcon(icAlignLeft, 'size-4') + 'Description</div>' +
+      '<div class="h-24 px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700">' +
+      '<div class="h-full" id="desc"></div></div></div>' +
+      '<div id="props" class="flex flex-col gap-5"></div>' +
+      '<div class="flex justify-end"><div class="h-10 flex items-center px-5 rounded-xl bg-indigo-600 hover:bg-indigo-500 ' +
+      'text-white text-sm font-semibold shadow-md shadow-indigo-500/25 transition-colors cursor-pointer" data-action="close">Done</div></div>' +
+      '</div></div>');
+    FModal := FShape.Body.GetElementById('modal');
+    FPanel := FShape.Body.GetElementById('panel');
+    FProps := FShape.Body.GetElementById('props');
+    Bind(FModal);
+    FPanel.OnClick := @PanelClick;
+    FControlsMs := CSSTimeMs;
+    FTitleEdit := TEdit.Create(Self);
+    FTitleEdit.BorderStyle := bsNone;
+    FTitleEdit.Font.Size := 16;
+    FTitleEdit.Font.Style := [fsBold];
+    FTitleEdit.Text := T.Title;
+    FTitleEdit.OnChange := @TitleChange;
+    FTitleEdit.Parent := Self;
+    FDescMemo := TMemo.Create(Self);
+    FDescMemo.BorderStyle := bsNone;
+    FDescMemo.WordWrap := True;
+    FDescMemo.Text := T.Description;
+    FDescMemo.OnChange := @DescChange;
+    FDescMemo.Parent := Self;
+    FShape.Body.GetElementById('title').SetAlignControl(FTitleEdit);
+    FShape.Body.GetElementById('desc').SetAlignControl(FDescMemo);
+    FControlsMs := CSSTimeMs - FControlsMs;
+    UpdateControlColors;
+    BuildProps;
+    // dialog is shown at once (no animation: whole window would be painted again in every frame)
+    if FTitleEdit.CanFocus then FTitleEdit.SetFocus;
+  finally
+    CSSEndUpdate;
+  end;
 end;
 
 procedure TKanbanForm.BuildProps;
@@ -953,64 +1237,76 @@ var
       '<div class="flex flex-wrap items-center gap-2">' + AContent + '</div></div>';
   end;
 begin
-  T := FModalTask;
-  if (T = nil) or (FProps = nil) then Exit;
-  FProps.Clear;
-  S := '';
-  for I := 0 to High(COLUMNS) do
-    S := S + PropPill(T.Column = I, 'status', I, '<div class="size-2 rounded-full ' + COLUMNS[I].Dot + '"></div>' + COLUMNS[I].Name);
-  FProps.AppendHTML(Row(icSquareKanban, 'Status', S));
-  S := '';
-  for I := 0 to 2 do
-    S := S + PropPill(T.Priority = I, 'priority', I, PRIORITIES[I]);
-  FProps.AppendHTML(Row(icFlag, 'Priority', S));
-  S := '';
-  for I := 0 to High(PEOPLE) do
-    if T.Assignee = I then
-      S := S + Format('<div class="rounded-full ring-2 ring-indigo-500 ring-offset-2 cursor-pointer" data-action="assignee" data-v="%d">%s</div>',
-        [I, Avatar(I, 'size-8 text-[11px]')])
-    else
-      S := S + Format('<div class="rounded-full opacity-50 hover:opacity-100 transition-opacity cursor-pointer" data-action="assignee" data-v="%d">%s</div>',
-        [I, Avatar(I, 'size-8 text-[11px]')]);
-  FProps.AppendHTML(Row(icUserRound, 'Assignee', S));
-  S := '';
-  for I := 0 to High(LABELS) do
-    S := S + PropPill(T.Labels and (1 shl I) <> 0, 'label', I, '<div class="size-2 rounded-full bg-' + LABELS[I].Color + '-500"></div>' +
-      LABELS[I].Name);
-  FProps.AppendHTML(Row(icTag, 'Labels', S));
-  if Length(T.Checks) > 0 then begin
-    S := Format('<div class="flex flex-col gap-2"><div class="flex items-center gap-2 text-xs font-semibold text-slate-500 ' +
-      'dark:text-slate-400">%sChecklist<div class="flex-1"></div>%d/%d</div>', [SvgIcon(icListChecks, 'size-4'), T.DoneChecks, Length(T.Checks)]);
-    for I := 0 to High(T.Checks) do
-      if T.Checks[I].Done then
-        S := S + Format('<div class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 ' +
-          'cursor-pointer" data-action="check" data-v="%d">%s<div class="text-sm text-slate-400 line-through">%s</div></div>',
-          [I, SvgIcon(icCircleCheckBig, 'size-[18px] text-emerald-500'), Esc(T.Checks[I].Text)])
+  CSSBeginUpdate;     // one layout for all changes
+  try
+    T := FModalTask;
+    if (T = nil) or (FProps = nil) then Exit;
+    FProps.Clear;
+    S := '';
+    for I := 0 to High(COLUMNS) do
+      S := S + PropPill(T.Column = I, 'status', I, '<div class="size-2 rounded-full ' + COLUMNS[I].Dot + '"></div>' + COLUMNS[I].Name);
+    FProps.AppendHTML(Row(icSquareKanban, 'Status', S));
+    S := '';
+    for I := 0 to 2 do
+      S := S + PropPill(T.Priority = I, 'priority', I, PRIORITIES[I]);
+    FProps.AppendHTML(Row(icFlag, 'Priority', S));
+    S := '';
+    for I := 0 to High(PEOPLE) do
+      if T.Assignee = I then
+        S := S + Format('<div class="rounded-full ring-2 ring-indigo-500 ring-offset-2 cursor-pointer" data-action="assignee" data-v="%d">%s</div>',
+          [I, Avatar(I, 'size-8 text-[11px]')])
       else
-        S := S + Format('<div class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 ' +
-          'cursor-pointer" data-action="check" data-v="%d">%s<div class="text-sm">%s</div></div>',
-          [I, SvgIcon(icCircle, 'size-[18px] text-slate-300 dark:text-slate-600'), Esc(T.Checks[I].Text)]);
-    FProps.AppendHTML(S + '</div>');
+        S := S + Format('<div class="rounded-full opacity-50 hover:opacity-100 transition-opacity cursor-pointer" data-action="assignee" data-v="%d">%s</div>',
+          [I, Avatar(I, 'size-8 text-[11px]')]);
+    FProps.AppendHTML(Row(icUserRound, 'Assignee', S));
+    S := '';
+    for I := 0 to High(LABELS) do
+      S := S + PropPill(T.Labels and (1 shl I) <> 0, 'label', I, '<div class="size-2 rounded-full bg-' + LABELS[I].Color + '-500"></div>' +
+        LABELS[I].Name);
+    FProps.AppendHTML(Row(icTag, 'Labels', S));
+    if Length(T.Checks) > 0 then begin
+      S := Format('<div class="flex flex-col gap-2"><div class="flex items-center gap-2 text-xs font-semibold text-slate-500 ' +
+        'dark:text-slate-400">%sChecklist<div class="flex-1"></div>%d/%d</div>', [SvgIcon(icListChecks, 'size-4'), T.DoneChecks, Length(T.Checks)]);
+      for I := 0 to High(T.Checks) do
+        if T.Checks[I].Done then
+          S := S + Format('<div class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 ' +
+            'cursor-pointer" data-action="check" data-v="%d">%s<div class="text-sm text-slate-400 line-through">%s</div></div>',
+            [I, SvgIcon(icCircleCheckBig, 'size-[18px] text-emerald-500'), Esc(T.Checks[I].Text)])
+        else
+          S := S + Format('<div class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 ' +
+            'cursor-pointer" data-action="check" data-v="%d">%s<div class="text-sm">%s</div></div>',
+            [I, SvgIcon(icCircle, 'size-[18px] text-slate-300 dark:text-slate-600'), Esc(T.Checks[I].Text)]);
+      FProps.AppendHTML(S + '</div>');
+    end;
+    Bind(FProps);
+    FShape.Changed;
+  finally
+    CSSEndUpdate;
   end;
-  Bind(FProps);
-  FShape.Changed;
 end;
 
 procedure TKanbanForm.CloseTask;
 begin
-  if Assigned(FModal) then begin
-    FShape.Body.Delete(FModal);         // nodes first, then controls placed in them
-    FModal := nil;
-    FPanel := nil;
-    FProps := nil;
+  CSSBeginUpdate;     // one layout for all changes
+  try
+    if Assigned(FModal) then begin
+      FShape.Body.Delete(FModal);         // nodes first, then controls placed in them
+      FModal := nil;
+      FPanel := nil;
+      FProps := nil;
+    end;
+    FreeAndNil(FTitleEdit);
+    FreeAndNil(FDescMemo);
+    FSearch.Visible := True;
+    SaveTasks;
+    BuildToolbar;
+    // only columns with changed task are built again (old and new column)
+    BuildColumn(FModalColumn);
+    if Assigned(FModalTask) and (FModalTask.Column <> FModalColumn) then BuildColumn(FModalTask.Column);
+    FModalTask := nil;
+  finally
+    CSSEndUpdate;
   end;
-  FreeAndNil(FTitleEdit);
-  FreeAndNil(FDescMemo);
-  FSearch.Visible := True;
-  FModalTask := nil;
-  SaveTasks;
-  BuildToolbar;
-  BuildBoard;
 end;
 
 procedure TKanbanForm.TitleChange(Sender: TObject);
