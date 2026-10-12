@@ -37,6 +37,16 @@ detail with native `TEdit`/`TMemo`, search, filters, dark mode and Lucide icons:
 <img src="docs/images/kanban-dark.png" width="49%" alt="Kanban board in dark mode">
 </p>
 
+Assistant (`demo/agent/agent.lpi`), a desktop app of an AI assistant: the answer is written word by word,
+the composer is a native `TMemo` with a gradient focus frame, the model menu and tooltips are painted by
+the engine:
+
+<p>
+<img src="docs/images/agent-chat.png" width="100%" alt="Assistant with an answer containing a code block">
+<img src="docs/images/agent-home.png" width="49%" alt="Start page with the focused composer">
+<img src="docs/images/agent-menu.png" width="49%" alt="Model menu painted by the engine">
+</p>
+
 Scenes of the demo application (`demo/csscontrols_demo.lpi`), painted by the engine:
 
 <p>
