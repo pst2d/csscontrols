@@ -305,6 +305,10 @@ Open `csspckg_lazarus.lpk` in Lazarus, compile it and install it (*Use > Install
   `InsertBefore`. The detail dialog uses native controls, tasks are saved to `tasks.json` in
   the application config folder. F12 shows paint statistics, F11 runs a benchmark (layout, repaint, hover,
   dialog, drag) and copies the result to the clipboard.
+- `demo/agent/agent.lpi`: desktop app of an AI assistant: sidebar with threads, a prompt composer (native
+  `TMemo` in a node, Enter sends) with a gradient focus frame, suggestions, a model menu and tooltips painted by
+  the renderer and an animated tab switch. The answer is written word by word with paragraphs, lists and code
+  blocks, the list follows it while you stay at the bottom. Answers are prepared texts, nothing is sent anywhere.
 - `demo/renderdemo.lpi`: renders the demo scenes to PNG files, which is handy for checking changes visually
   (`renderdemo out 720 Borders 4` renders one scene zoomed 4x, `renderdemo bench` measures paint time)
 - `tests/csstests.lpi`: fpcunit tests (console runner)

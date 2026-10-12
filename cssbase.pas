@@ -513,6 +513,7 @@ type
     procedure UpdateStickyOffsets;
     function ClampLinesHeight(ALines: Integer): Integer;
     function ClampedText(AMaxWidth: Integer): String;
+    function EllipsisText(AMaxWidth: Integer): String;
     procedure LayoutDoGrid(AParentNode: THtmlNode; AList: TList; AWidth, AHeight: Integer; out NewWidth, NewHeight: Integer);
     function LayoutDoVerticalAlign(AList: TList; ClearList: Boolean = True): Integer;
     procedure LayoutGetNodeSize(ANode: THtmlNode; ParentWidth,
@@ -7267,6 +7268,9 @@ begin
     if (FCompStyle.LineClamp > 0) and (FCompStyle.WhiteSpace = cwsNormal) then begin
       S := ClampedText(R.Right - R.Left);
       DrawText(ACanvas.Handle, PChar(S), Length(S), R, Flags);
+    end else if (FCompStyle.WhiteSpace = cwsNoWrap) and (FCachedFont.CachedWidth > R.Right - R.Left) then begin
+      S := EllipsisText(R.Right - R.Left);
+      DrawText(ACanvas.Handle, PChar(S), Length(S), R, Flags);
     end else
       DrawText(ACanvas.Handle, PChar(Text), Length(Text),  R, Flags);
     CSSStats.TextMs := CSSStats.TextMs + CSSTimeMs - TextT;
@@ -8885,6 +8889,37 @@ begin
   Canvas := MeasureCanvas;
   AssignFontTo(Canvas.Font);
   Result := WrappedTextHeight(Canvas, 'W'#10'W', 1000) * ALines div 2;   // line height with leading
+end;
+
+(*
+  white-space: nowrap: longest beginning of text with ellipsis which fits to width (DrawText of Cocoa ignores
+  DT_END_ELLIPSIS). Cached like ClampedText (a node has line-clamp or nowrap, not both).
+*)
+function THtmlNode.EllipsisText(AMaxWidth: Integer): String;
+const
+  ELLIPSIS = #$E2#$80#$A6;
+var
+  Lo, Hi, Mid: Integer;
+  Canvas: TCanvas;
+  Key: String;
+begin
+  Canvas := MeasureCanvas;
+  AssignFontTo(Canvas.Font);
+  Key := Format('e|%d|%s|%d|%d|%s', [AMaxWidth, Canvas.Font.Name, Canvas.Font.Height, Integer(Canvas.Font.Style), FText]);
+  if Key = FClampKey then Exit(FClampResult);
+  FClampKey := Key;
+  Result := FText;
+  if Canvas.TextWidth(FText) > AMaxWidth then begin
+    Lo := 0;
+    Hi := Length(FText);
+    while Lo < Hi do begin
+      Mid := (Lo + Hi + 1) div 2;
+      if Canvas.TextWidth(Copy(FText, 1, Mid) + ELLIPSIS) <= AMaxWidth then Lo := Mid else Hi := Mid - 1;
+    end;
+    while (Lo > 0) and (Lo < Length(FText)) and (Ord(FText[Lo + 1]) and $C0 = $80) do Dec(Lo);   // whole UTF-8 char
+    Result := TrimRight(Copy(FText, 1, Lo)) + ELLIPSIS;
+  end;
+  FClampResult := Result;
 end;
 
 (*

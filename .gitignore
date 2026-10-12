@@ -22,3 +22,5 @@ demo/renderdemo
 demo/out/
 demo/kanban/kanban
 demo/kanban/kanban.exe
+demo/agent/agent
+demo/agent/agent.exe
